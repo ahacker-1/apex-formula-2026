@@ -1,0 +1,32 @@
+name: Feature proposal
+description: Suggest an original feature or improvement
+title: "[Proposal]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or opportunity
+      description: What player or contributor need would this address?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Explain the behavior, scope, and user experience.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What simpler approaches or tradeoffs did you consider?
+  - type: checkboxes
+    id: originality
+    attributes:
+      label: Public-project scope
+      options:
+        - label: This proposal does not require real teams, drivers, sponsors, logos, or unlicensed assets.
+          required: true
+        - label: I am willing to help implement or test this proposal.

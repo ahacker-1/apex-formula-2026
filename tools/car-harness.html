@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>APEX FORMULA 2026 — car visual harness</title>
+<!-- The page lives under /tools/ but js/car.js resolves its GLB URL relative to
+     the page; rebase to the repo root so the SAME relative paths the game uses
+     (assets/, textures/, js/) resolve here too. -->
+<base href="../">
+<script type="importmap">
+{ "imports": { "three": "./lib/three.module.js" } }
+</script>
+<style>
+  html, body { margin: 0; background: #0b0d12; color: #dfe4ec; font: 12px/1.45 ui-monospace, monospace; }
+  #log { position: fixed; right: 0; top: 0; width: 46vw; height: 100vh; overflow: auto;
+         padding: 10px 14px; background: rgba(8,10,14,0.94); white-space: pre-wrap; }
+  .p { color: #57d98a; } .f { color: #ff6b6b; } .h { color: #8fb7ff; font-weight: bold; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="log"></div>
+<script type="module">
+// =============================================================================
+// CAR visual harness — acceptance loop for the round-4 CARS package.
+//
+// Renders a Monza grid of 8 cars at the hero-01 camera angle with js/main.js's
+// lighting (HDRI env, hemi + directional, ACES, GTAO composer) and PIXEL-ASSERTS:
+//   (a) no grey/yellow floating debris around any front-row cockpit
+//   (b) mirror faces darker than the median of their cockpit surround
+//   (c) >= 20% darkening directly beneath all four tyres of both front-row cars
+//   (d) every car is the SAME art generation (sculpted GLB) — including cars
+//       built BEFORE the template resolved, which must upgrade in place
+//   (e) the APEX / VELOCE sponsor atlas has a clean gutter between glyph blocks
+//   (f) white rear-wing surfaces stay under the day bloom threshold
+//
+// Run:  python3 tools/devserver.py 8452 .   then open /tools/car-harness.html
+// Results land in window.__HARNESS__; frames are POSTed to /shot.
+// =============================================================================
+import * as THREE from 'three';
+import { EffectComposer } from '../lib/postprocessing/EffectComposer.js';
+import { RenderPass } from '../lib/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from '../lib/postprocessing/UnrealBloomPass.js';
+import { GTAOPass } from '../lib/postprocessing/GTAOPass.js';
+import { OutputPass } from '../lib/postprocessing/OutputPass.js';
+import { RGBELoader } from '../lib/loaders/RGBELoader.js';
+import { buildCircuit } from '../js/trackBuilder.js';
+import * as TEX from '../js/textures.js';
+import { TRACKS } from '../js/tracks.js';
+import * as CAR from '../js/car.js';
+import { makeContactShadow } from '../js/race.js';
+import { TEAMS, DRIVERS } from '../js/data.js';
+
+const W = 1600, H = 1000;
+const logEl = document.getElementById('log');
+const results = { checks: [], pass: 0, fail: 0, shots: [], numbers: {}, done: false, error: null };
+window.__HARNESS__ = results;
+
+const out = (cls, s) => {
+  const d = document.createElement('div');
+  d.className = cls; d.textContent = s;
+  logEl.appendChild(d);
+  console.log(s);
+};
+const head = (s) => out('h', '\n=== ' + s);
+function check(cond, label, detail = '') {
+  results.checks.push({ ok: !!cond, label, detail });
+  if (cond) { results.pass++; out('p', `  PASS  ${label}${detail ? '  ' + detail : ''}`); }
+  else { results.fail++; out('f', `  FAIL  ${label}${detail ? '  ' + detail : ''}`); }
+}
+
+// ---------------------------------------------------------------- renderer ---
+const renderer = new THREE.WebGLRenderer({
+  antialias: true, powerPreference: 'high-performance', preserveDrawingBuffer: true,
+});
+renderer.setPixelRatio(1);
+renderer.setSize(W, H);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+document.getElementById('app').appendChild(renderer.domElement);
+
+// ------------------------------------------------------------ asset preload ---
+const PHOTOS = {
+  asphalt: 'asphalt.png', grass: 'grass.png', gravel: 'gravel.png', crowd: 'crowd.png',
+  facadeDay: 'facade-day.png', facadeNight: 'facade-night.png',
+  treeBroadleaf: 'tree-broadleaf.png', treePine: 'tree-pine.png',
+  treePalm: 'tree-palm.png', scrub: 'scrub.png',
+};
+const HDRI = {};
+async function preloadAssets() {
+  await Promise.allSettled(Object.entries(PHOTOS).map(([k, f]) => new Promise((res, rej) => {
+    const img = new Image();
+    img.onload = () => { TEX.registerPhoto(k, img); res(); };
+    img.onerror = rej;
+    img.src = '../textures/' + f;
+  })));
+  const loader = new RGBELoader();
+  await Promise.allSettled(['day'].map(k => new Promise((res, rej) => {
+    loader.load(`../textures/hdri/${k}.hdr`, (t) => {
+      t.mapping = THREE.EquirectangularReflectionMapping;
+      HDRI[k] = t; res();
+    }, undefined, rej);
+  })));
+}
+
+// -------------------------------------------- main.js environment, replicated ---
+function buildScene(trackId) {
+  const scene = new THREE.Scene();
+  const circuit = buildCircuit(trackId, TRACKS[trackId], scene);
+  const th = circuit.theme;
+  scene.fog = new THREE.Fog(th.fog, 300, 1600);
+
+  const c = document.createElement('canvas');
+  c.width = 2; c.height = 256;
+  const g = c.getContext('2d');
+  const grad = g.createLinearGradient(0, 0, 0, 256);
+  grad.addColorStop(0, '#' + new THREE.Color(th.skyTop).getHexString());
+  grad.addColorStop(1, '#' + new THREE.Color(th.skyBot).getHexString());
+  g.fillStyle = grad; g.fillRect(0, 0, 2, 256);
+  const sky = new THREE.Mesh(
+    new THREE.SphereGeometry(2600, 24, 12),
+    new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(c), side: THREE.BackSide, fog: false }));
+  scene.add(sky);
+
+  const hemi = new THREE.HemisphereLight(th.skyTop, th.ground, th.hemi);
+  scene.add(hemi);
+  const sun = new THREE.DirectionalLight(th.sun, th.sunI);
+  sun.position.set(260, 380, 160);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  const sc = sun.shadow.camera;
+  sc.left = -110; sc.right = 110; sc.top = 110; sc.bottom = -110;
+  sc.near = 50; sc.far = 900;
+  sc.updateProjectionMatrix();
+  sun.shadow.bias = -0.0004;
+  scene.add(sun, sun.target);
+
+  const hdr = HDRI.day;
+  if (hdr) {
+    scene.background = hdr;
+    scene.backgroundIntensity = 1.0;
+    scene.environment = hdr;
+    scene.environmentIntensity = 0.9;
+    sky.visible = false;
+  }
+
+  const camera = new THREE.PerspectiveCamera(45, W / H, 0.3, 6500);
+  const composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, camera));
+  const gtao = new GTAOPass(scene, camera, W, H);
+  gtao.output = GTAOPass.OUTPUT.Default;
+  gtao.blendIntensity = 0.72;                      // main.js value
+  composer.addPass(gtao);
+  // Bloom stays DISABLED for measurement (this vendored UnrealBloomPass wipes
+  // complex scenes when mid-chain — see tools/visual-harness.html). Check (f)
+  // therefore measures against the bloom THRESHOLD on the pre-bloom frame:
+  // a surface that never crosses the threshold cannot clip into bloom.
+  const bloom = new UnrealBloomPass(new THREE.Vector2(W, H), 0.18, 0.55, 0.86);
+  bloom.enabled = false;
+  composer.addPass(bloom);
+  composer.addPass(new OutputPass());
+  composer.setSize(W, H);
+  return { scene, circuit, camera, composer, sun, theme: th };
+}
+
+// ------------------------------------------------------------------ pixels ---
+const _rp = new Uint8Array(W * H * 4);
+function grab() {
+  const gl = renderer.getContext();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, _rp);
+  const flip = new Uint8ClampedArray(W * H * 4);
+  for (let y = 0; y < H; y++) {
+    const src = (H - 1 - y) * W * 4, dst = y * W * 4;
+    flip.set(_rp.subarray(src, src + W * 4), dst);
+  }
+  return { data: flip };
+}
+const px = (im, x, y) => {
+  const i = ((y | 0) * W + (x | 0)) * 4;
+  return [im.data[i], im.data[i + 1], im.data[i + 2]];
+};
+const lum = (p) => 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2];
+
+function renderFrame(S) {
+  S.scene.updateMatrixWorld(true);
+  S.camera.updateMatrixWorld(true);
+  S.composer.render();
+  return grab();
+}
+
+function project(S, v) {
+  const p = v.clone().project(S.camera);
+  return [ (p.x + 1) / 2 * W, (1 - p.y) / 2 * H ];
+}
+
+function medianLumAt(im, x, y, r = 2) {
+  const vals = [];
+  for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+    const sx = x + dx, sy = y + dy;
+    if (sx < 0 || sy < 0 || sx >= W || sy >= H) continue;
+    vals.push(lum(px(im, sx, sy)));
+  }
+  vals.sort((a, b) => a - b);
+  return vals[vals.length >> 1];
+}
+
+function medianLumAnnulus(im, x, y, r0, r1) {
+  const vals = [];
+  for (let dy = -r1; dy <= r1; dy++) for (let dx = -r1; dx <= r1; dx++) {
+    const d = Math.hypot(dx, dy);
+    if (d < r0 || d > r1) continue;
+    const sx = x + dx, sy = y + dy;
+    if (sx < 0 || sy < 0 || sx >= W || sy >= H) continue;
+    vals.push(lum(px(im, sx, sy)));
+  }
+  vals.sort((a, b) => a - b);
+  return vals[vals.length >> 1];
+}
+
+// pixels won by exactly the given objects: render with them hidden, then shown
+function visibleMask(S, objs) {
+  for (const o of objs) o.visible = false;
+  const without = renderFrame(S);
+  for (const o of objs) o.visible = true;
+  const withThem = renderFrame(S);
+  const m = new Uint8Array(W * H);
+  let n = 0;
+  for (let i = 0; i < W * H; i++) {
+    const a = i * 4;
+    const d = Math.abs(withThem.data[a] - without.data[a])
+      + Math.abs(withThem.data[a + 1] - without.data[a + 1])
+      + Math.abs(withThem.data[a + 2] - without.data[a + 2]);
+    if (d > 12) { m[i] = 1; n++; }
+  }
+  return { m, n, frame: withThem };
+}
+
+async function shot(name, im) {
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  c.getContext('2d').putImageData(new ImageData(im.data, W, H), 0, 0);
+  const blob = await new Promise(res => c.toBlob(res, 'image/png'));
+  try {
+    await fetch(`/shot?name=${encodeURIComponent(name)}`, { method: 'POST', body: blob });
+    results.shots.push(`tools/shots/${name}.png`);
+    out('h', `  shot -> tools/shots/${name}.png`);
+  } catch (e) { out('f', `  shot POST failed: ${e}`); }
+}
+
+// ---------------------------------------------------------------------- run ---
+async function run() {
+  await preloadAssets();
+  head('scene: monza');
+  const S = buildScene('monza');
+  const c = S.circuit;
+
+  // grid: front row = dark, saturated, non-yellow liveries so the debris and
+  // mirror probes are unambiguous; tacn (white accent) included for check (f)
+  const wantIds = ['kuroshio', 'norvik', 'vantara', 'tacn', 'solaris', 'meridian', 'halcyon', 'zephyr'];
+  const teams = wantIds.map(id => TEAMS.find(t => t.id === id)).filter(Boolean);
+  check(teams.length === 8, 'harness grid: 8 teams resolved', `[${teams.map(t => t.id).join(',')}]`);
+
+  head('(d) one art generation: cars built BEFORE the template must upgrade');
+  const cars = teams.map((t, i) => {
+    const driver = DRIVERS.find(d => d.team === t.id) || { num: 10 + i, code: 'XXX' };
+    const h = CAR.buildCarMesh(t, driver);        // template NOT resolved yet
+    const slot = c.gridSlots[i];
+    h.group.position.copy(slot.pos);
+    h.group.rotation.y = slot.heading;
+    S.scene.add(h.group);
+    const blob = makeContactShadow();
+    blob.position.set(0, 0.028, -0.05);
+    h.group.add(blob);
+    return h;
+  });
+  const preSources = cars.map(h => h.source);
+  check(preSources.every(s => s === 'primitives'),
+    'control: cars built before preload start as primitives', `[${preSources.join(',')}]`);
+  const tpl = await CAR.preloadCarModel();
+  check(!!tpl, 'sculpted GLB template loaded');
+  const postSources = cars.map(h => h.source);
+  check(postSources.every(s => s === 'glb'),
+    'every car upgraded IN PLACE to the sculpted GLB', `[${postSources.join(',')}]`);
+  check(cars.every(h => !!h.group.getObjectByName('chassis')),
+    'every car group carries the sculpted chassis node');
+  check(cars.every(h => !h.group.getObjectByName('monocoque')),
+    'no car group still carries a primitive monocoque');
+  check(cars.every(h => h.group.getObjectByName('wheelContactShadow')),
+    'per-wheel contact patches present on every car');
+
+  // hero-01 camera: elevated, in front of the grid, looking down the field
+  const s0 = c.gridSlots[0], s1 = c.gridSlots[1];
+  const fwd = new THREE.Vector3(Math.sin(s0.heading), 0, Math.cos(s0.heading));
+  const mid01 = s0.pos.clone().add(s1.pos).multiplyScalar(0.5);
+  S.camera.position.copy(mid01).addScaledVector(fwd, 13.5).add(new THREE.Vector3(0, 5.4, 0));
+  const lookMid = c.gridSlots[2].pos.clone().add(c.gridSlots[3].pos).multiplyScalar(0.5);
+  S.camera.lookAt(lookMid.clone().add(new THREE.Vector3(0, 0.4, 0)));
+  S.sun.target.position.copy(mid01);
+
+  const rowMask = visibleMask(S, [cars[0].group, cars[1].group]);
+  const im = rowMask.frame;
+  await shot('car-01-grid-hero', im);
+
+  // -------------------------------------------------- (c) under-tyre darkening
+  // Direct measurement: render the same frame WITH and WITHOUT the contact
+  // shadow layer and ratio the SAME pixels. A candidate point that is occluded
+  // by bodywork shows no difference and is skipped automatically; painted grid
+  // lines, cast sun shadow and asphalt all measure the overlay's own effect.
+  head('(c) >= 20% darkening beneath all 8 front-row tyres');
+  const shadowGroups = [];
+  for (const h of cars) h.group.traverse(o => { if (o.name === 'contactShadow') shadowGroups.push(o); });
+  check(shadowGroups.length === cars.length, 'one contact-shadow group per car', `[${shadowGroups.length}]`);
+  for (const g of shadowGroups) g.visible = false;
+  const imNS = renderFrame(S);
+  for (const g of shadowGroups) g.visible = true;
+  {
+    let worstDark = 0, worstAt = '';
+    const darkNums = [];
+    for (const ci of [0, 1]) {
+      const h = cars[ci];
+      h.group.updateMatrixWorld(true);
+      for (const k of ['fl', 'fr', 'rl', 'rr']) {
+        const wp = h.wheels[k].position;
+        const side = Math.sign(wp.x);
+        // candidate darkened-ground points, all within the wheel patch footprint
+        const darkCands = [
+          [wp.x + side * 0.33, wp.z], [wp.x + side * 0.42, wp.z],
+          [wp.x + side * 0.36, wp.z + 0.30], [wp.x + side * 0.36, wp.z - 0.30],
+          [wp.x + side * 0.30, wp.z + 0.42], [wp.x + side * 0.30, wp.z - 0.42],
+        ];
+        let best = 0;
+        for (const [cx2, cz2] of darkCands) {
+          const [sx, sy] = project(S, h.group.localToWorld(new THREE.Vector3(cx2, 0.006, cz2)));
+          const withS = medianLumAt(im, sx, sy, 2);
+          const withoutS = medianLumAt(imNS, sx, sy, 2);
+          if (withoutS < 8) continue;                    // too dark to ratio
+          best = Math.max(best, 1 - withS / withoutS);
+        }
+        darkNums.push(`${ci}:${k}=${(best * 100).toFixed(0)}%`);
+        if (worstAt === '' || best < worstDark) { worstDark = best; worstAt = `car${ci} ${k}`; }
+      }
+    }
+    results.numbers.underTyreDarkening = darkNums;
+    check(worstDark >= 0.20, 'every front-row tyre sits on >= 20% darkening',
+      `[worst=${(worstDark * 100).toFixed(1)}% at ${worstAt}; ${darkNums.join(' ')}]`);
+  }
+
+  // -------------------------------------------------- (b) mirror luminance
+  head('(b) mirror faces darker than their cockpit surround');
+  let worstRatio = 0, worstMirror = '';
+  const mirrorNums = [];
+  for (const ci of [0, 1]) {
+    const h = cars[ci];
+    const glass = h.body.getObjectByName('mirror_glass');
+    check(!!glass, `car${ci}: sculpted mirror_glass present`);
+    if (!glass) continue;
+    const pos = glass.geometry.attributes.position;
+    const centers = { l: new THREE.Vector3(), r: new THREE.Vector3() };
+    const counts = { l: 0, r: 0 };
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i);
+      const kk = x < 0 ? 'l' : 'r';
+      centers[kk].x += x; centers[kk].y += pos.getY(i); centers[kk].z += pos.getZ(i);
+      counts[kk]++;
+    }
+    for (const kk of ['l', 'r']) {
+      if (!counts[kk]) continue;
+      centers[kk].multiplyScalar(1 / counts[kk]);
+      const wp = glass.localToWorld(centers[kk].clone());
+      const [mx, my] = project(S, wp);
+      const mLum = medianLumAt(im, mx, my, 2);
+      const around = medianLumAnnulus(im, mx, my, 10, 26);
+      const ratio = mLum / Math.max(1e-3, around);
+      mirrorNums.push(`${ci}${kk}=${mLum.toFixed(0)}/${around.toFixed(0)}`);
+      if (ratio > worstRatio) { worstRatio = ratio; worstMirror = `car${ci} ${kk}`; }
+    }
+  }
+  results.numbers.mirrorLum = mirrorNums;
+  check(worstRatio > 0 && worstRatio < 1.0, 'every mirror face is darker than its surround median',
+    `[worst mirror/surround=${worstRatio.toFixed(2)} at ${worstMirror}; ${mirrorNums.join(' ')}]`);
+
+  // -------------------------------------------------- (a) cockpit debris scan
+  head('(a) no yellow / pale-grey floating debris around front-row cockpits');
+  for (const ci of [0, 1]) {
+    const h = cars[ci];
+    // cockpit + engine-cover ROI in car space
+    const corners = [];
+    for (const cx of [-0.45, 0.45]) for (const cy of [0.52, 1.06]) for (const cz of [-1.0, 0.7]) {
+      corners.push(project(S, h.group.localToWorld(new THREE.Vector3(cx, cy, cz))));
+    }
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (const [sx, sy] of corners) {
+      x0 = Math.min(x0, sx); x1 = Math.max(x1, sx);
+      y0 = Math.min(y0, sy); y1 = Math.max(y1, sy);
+    }
+    x0 = Math.max(0, x0 | 0); y0 = Math.max(0, y0 | 0);
+    x1 = Math.min(W - 1, x1 | 0); y1 = Math.min(H - 1, y1 | 0);
+    // helmet exclusion circle
+    const hc = project(S, h.group.localToWorld(new THREE.Vector3(0, 0.62, 0.36)));
+    const ht = project(S, h.group.localToWorld(new THREE.Vector3(0, 0.80, 0.36)));
+    const hr = Math.max(10, Math.hypot(ht[0] - hc[0], ht[1] - hc[1]) * 2.2);
+    let yellow = 0, pale = 0;
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+      if (!rowMask.m[y * W + x]) continue;                       // not this car's pixel
+      if (Math.hypot(x - hc[0], y - hc[1]) < hr) continue;       // helmet
+      const [r, g, b] = px(im, x, y);
+      if (r > 140 && g > 110 && b < 90 && (r + g) > 2.8 * b) yellow++;
+      const mn = Math.min(r, g, b), mx = Math.max(r, g, b);
+      if (mn > 150 && mx - mn < 28) pale++;
+    }
+    results.numbers[`debris_car${ci}`] = { yellow, pale };
+    check(yellow <= 20, `car${ci}: no yellow debris around the cockpit`, `[yellow px=${yellow}]`);
+    check(pale <= 120, `car${ci}: no pale-grey placeholder slabs around the cockpit`, `[pale px=${pale}]`);
+  }
+
+  // -------------------------------------------------- (e) sponsor atlas gutter
+  head('(e) APEX / VELOCE sponsor atlas glyph separation');
+  {
+    const tex = CAR.sponsorTex('pod');
+    const src = tex.image;
+    const cc = document.createElement('canvas');
+    cc.width = src.width; cc.height = src.height;
+    const g = cc.getContext('2d');
+    g.drawImage(src, 0, 0);
+    const data = g.getImageData(0, 0, cc.width, cc.height).data;
+    const colHasInk = [];
+    for (let x = 0; x < cc.width; x++) {
+      let ink = false;
+      for (let y = 0; y < cc.height; y++) {
+        if (data[(y * cc.width + x) * 4 + 3] > 16) { ink = true; break; }
+      }
+      colHasInk.push(ink);
+    }
+    // runs of occupied columns, merged into word BLOCKS (letter gaps are ~4px;
+    // anything under 10px is intra-word kerning, not the APEX/VELOCE gutter)
+    const runs = [];
+    let start = -1;
+    for (let x = 0; x <= cc.width; x++) {
+      const on = x < cc.width && colHasInk[x];
+      if (on && start < 0) start = x;
+      if (!on && start >= 0) { runs.push([start, x - 1]); start = -1; }
+    }
+    const blocks = [];
+    for (const r of runs) {
+      if (blocks.length && r[0] - blocks[blocks.length - 1][1] - 1 < 10) {
+        blocks[blocks.length - 1][1] = r[1];
+      } else blocks.push([r[0], r[1]]);
+    }
+    const gap = blocks.length >= 2 ? blocks[1][0] - blocks[0][1] - 1 : 0;
+    results.numbers.sponsorGap = gap;
+    check(blocks.length >= 2 && gap >= 12,
+      'APEX block and VELOCE block are separated by a clean gutter',
+      `[blocks=${blocks.length}, gutter=${gap}px]`);
+  }
+
+  // -------------------------------------------------- (f) rear-wing bloom clip
+  head('(f) white rear-wing surfaces stay under the day bloom threshold');
+  {
+    const tac = cars[3];   // tacn: black body, WHITE accent -> white rear-wing mainplane
+    check(tac.team.id === 'tacn', 'white-accent car resolved', `[${tac.team.id}]`);
+    tac.group.updateMatrixWorld(true);
+    // rear three-quarter framing on the wing
+    const camL = tac.group.localToWorld(new THREE.Vector3(3.0, 2.0, -6.5));
+    S.camera.position.copy(camL);
+    S.camera.lookAt(tac.group.localToWorld(new THREE.Vector3(0, 0.8, -1.8)));
+    const wingParts = ['rear_wing_main', 'rear_wing_flap', 'rear_wing_endplates']
+      .map(n => tac.body.getObjectByName(n)).filter(Boolean);
+    check(wingParts.length === 3, 'sculpted rear wing parts found', `[${wingParts.length}]`);
+    const wm = visibleMask(S, wingParts);
+    const im2 = wm.frame;
+    await shot('car-02-tacn-wing', im2);
+    // The bloom high-pass thresholds LINEAR luminance at 0.86; through ACES
+    // (exposure 1.05) + sRGB that lands at ~sRGB 214. Wing pixels above it
+    // would seed a bloom halo on the white paint.
+    let over = 0, total = 0, maxL = 0, sum = 0;
+    for (let i = 0; i < W * H; i++) {
+      if (!wm.m[i]) continue;
+      total++;
+      const L = lum([im2.data[i * 4], im2.data[i * 4 + 1], im2.data[i * 4 + 2]]);
+      sum += L;
+      if (L > maxL) maxL = L;
+      if (L >= 214) over++;
+    }
+    const overFrac = total ? over / total : 1;
+    results.numbers.wing = { total, over, overFrac, maxL, mean: total ? sum / total : 0 };
+    check(total > 400, 'rear wing occupies a measurable area', `[${total} px]`);
+    check(overFrac < 0.05, 'white wing stays under the bloom threshold (no clip into bloom)',
+      `[${(overFrac * 100).toFixed(2)}% of ${total} px over sRGB 214, max=${maxL.toFixed(0)}]`);
+  }
+
+  // eyeball frame: front-row close-up
+  {
+    const h = cars[0];
+    S.camera.position.copy(h.group.localToWorld(new THREE.Vector3(1.8, 1.9, 6.4)));
+    S.camera.lookAt(h.group.localToWorld(new THREE.Vector3(0, 0.5, 0.3)));
+    const im3 = renderFrame(S);
+    await shot('car-03-front-closeup', im3);
+  }
+
+  head(`done: ${results.pass} pass, ${results.fail} fail`);
+  results.done = true;
+}
+
+run().catch((e) => {
+  results.error = String(e && e.stack || e);
+  results.done = true;
+  out('f', 'HARNESS ERROR: ' + results.error);
+});
+</script>
+</body>
+</html>

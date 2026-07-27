@@ -1,0 +1,21 @@
+node_modules/
+tools/shots/
+tools/blender/renders/
+tools/blender/__pycache__/
+tools/judge-findings-*.md
+*.py[cod]
+*.log
+.DS_Store
+dist/
+.vercel/
+.vercel-dist/
+.env*
+
+# ElevenLabs-generated sound effects are governed by the account and service
+# terms under which they were created. Keep generated output local so the
+# repository itself remains cleanly Apache-2.0 licensed.
+sounds/*.mp3
+sounds/_candidates/
+
+# Historical personal-use roster retained locally on the maintainer's machine.
+js/data-real.js

@@ -1,0 +1,1002 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>APEX FORMULA 2026 — environment visual harness</title>
+<script type="importmap">
+{ "imports": { "three": "../lib/three.module.js" } }
+</script>
+<style>
+  html, body { margin: 0; background: #0b0d12; color: #dfe4ec; font: 12px/1.45 ui-monospace, monospace; }
+  #log { position: fixed; right: 0; top: 0; width: 46vw; height: 100vh; overflow: auto;
+         padding: 10px 14px; background: rgba(8,10,14,0.94); white-space: pre-wrap; }
+  .p { color: #57d98a; } .f { color: #ff6b6b; } .h { color: #8fb7ff; font-weight: bold; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="log"></div>
+<script type="module">
+// =============================================================================
+// Environment visual harness.
+//
+// Replicates js/main.js's CURRENT lighting exactly -- photographic HDRI as
+// scene.environment AND scene.background via RGBELoader with
+// EquirectangularReflectionMapping, the same hemisphere + directional pair, the
+// same ACES tonemapping and exposure, and the same GTAO -> bloom -> output
+// composer -- then renders the judge's framings and PIXEL-ASSERTS the round-2
+// acceptance thresholds against them.
+//
+// Run:  python3 tools/devserver.py 8341 .   then open /tools/visual-harness.html
+// Results land in window.__HARNESS__ and preview frames are POSTed to /shot.
+// =============================================================================
+import * as THREE from 'three';
+import { EffectComposer } from '../lib/postprocessing/EffectComposer.js';
+import { RenderPass } from '../lib/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from '../lib/postprocessing/UnrealBloomPass.js';
+import { GTAOPass } from '../lib/postprocessing/GTAOPass.js';
+import { OutputPass } from '../lib/postprocessing/OutputPass.js';
+import { RGBELoader } from '../lib/loaders/RGBELoader.js';
+import { buildCircuit } from '../js/trackBuilder.js';
+import * as TEX from '../js/textures.js';
+import { TRACKS } from '../js/tracks.js';
+
+const W = 1600, H = 1000;
+const logEl = document.getElementById('log');
+const results = { checks: [], pass: 0, fail: 0, shots: [], done: false, error: null };
+window.__HARNESS__ = results;
+
+const out = (cls, s) => {
+  const d = document.createElement('div');
+  d.className = cls; d.textContent = s;
+  logEl.appendChild(d);
+  console.log(s);
+};
+const head = (s) => out('h', '\n=== ' + s);
+function check(cond, label, detail = '') {
+  results.checks.push({ ok: !!cond, label, detail });
+  if (cond) { results.pass++; out('p', `  PASS  ${label}${detail ? '  ' + detail : ''}`); }
+  else { results.fail++; out('f', `  FAIL  ${label}${detail ? '  ' + detail : ''}`); }
+}
+
+// ---------------------------------------------------------------- renderer ---
+const renderer = new THREE.WebGLRenderer({
+  antialias: true, powerPreference: 'high-performance', preserveDrawingBuffer: true,
+});
+renderer.setPixelRatio(1);
+renderer.setSize(W, H);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;      // main.js
+renderer.toneMappingExposure = 1.05;                     // main.js
+document.getElementById('app').appendChild(renderer.domElement);
+
+const readCanvas = document.createElement('canvas');
+readCanvas.width = W; readCanvas.height = H;
+const readCtx = readCanvas.getContext('2d', { willReadFrequently: true });
+
+// ------------------------------------------------------------ asset preload ---
+const PHOTOS = {
+  asphalt: 'asphalt.png', grass: 'grass.png', gravel: 'gravel.png', crowd: 'crowd.png',
+  facadeDay: 'facade-day.png', facadeNight: 'facade-night.png',
+  treeBroadleaf: 'tree-broadleaf.png', treePine: 'tree-pine.png',
+  treePalm: 'tree-palm.png', scrub: 'scrub.png',
+};
+const HDRI = {};
+async function preload() {
+  await Promise.allSettled(Object.entries(PHOTOS).map(([k, f]) => new Promise((res, rej) => {
+    const img = new Image();
+    img.onload = () => { TEX.registerPhoto(k, img); res(); };
+    img.onerror = rej;
+    img.src = '../textures/' + f;
+  })));
+  const loader = new RGBELoader();
+  await Promise.allSettled(['day', 'dusk', 'night'].map(k => new Promise((res, rej) => {
+    loader.load(`../textures/hdri/${k}.hdr`, (t) => {
+      t.mapping = THREE.EquirectangularReflectionMapping;
+      HDRI[k] = t; res();
+    }, undefined, rej);
+  })));
+  out('h', `photo textures: ${Object.keys(PHOTOS).length} requested, `
+    + `HDRIs loaded: ${Object.keys(HDRI).join(',') || 'none'}`);
+}
+
+// --------------------------------------- main.js setupEnvironment, replicated ---
+function buildScene(trackId) {
+  const scene = new THREE.Scene();
+  const circuit = buildCircuit(trackId, TRACKS[trackId], scene);
+  const th = circuit.theme;
+  scene.fog = new THREE.Fog(th.fog, 300, 1600);
+
+  const c = document.createElement('canvas');
+  c.width = 2; c.height = 256;
+  const g = c.getContext('2d');
+  const grad = g.createLinearGradient(0, 0, 0, 256);
+  grad.addColorStop(0, '#' + new THREE.Color(th.skyTop).getHexString());
+  grad.addColorStop(1, '#' + new THREE.Color(th.skyBot).getHexString());
+  g.fillStyle = grad; g.fillRect(0, 0, 2, 256);
+  const sky = new THREE.Mesh(
+    new THREE.SphereGeometry(2600, 24, 12),
+    new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(c), side: THREE.BackSide, fog: false }));
+  scene.add(sky);
+
+  const hemi = new THREE.HemisphereLight(th.skyTop, th.ground, th.hemi);
+  scene.add(hemi);
+  const sun = new THREE.DirectionalLight(th.sun, th.sunI);
+  sun.position.set(260, 380, 160);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  const sc = sun.shadow.camera;
+  sc.left = -110; sc.right = 110; sc.top = 110; sc.bottom = -110;
+  sc.near = 50; sc.far = 900;
+  sc.updateProjectionMatrix();
+  sun.shadow.bias = -0.0004;
+  scene.add(sun, sun.target);
+  if (th.night) scene.add(new THREE.AmbientLight(0x8899cc, 0.5));
+
+  const hdr = HDRI[th.night ? 'night' : th.sunI < 2.2 ? 'dusk' : 'day'];
+  if (hdr) {
+    scene.background = hdr;
+    scene.backgroundIntensity = th.night ? 0.7 : 1.0;
+    scene.backgroundBlurriness = 0;
+    scene.environment = hdr;
+    scene.environmentIntensity = th.night ? 0.55 : 0.9;
+    sky.visible = false;
+  } else {
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    const envScene = new THREE.Scene();
+    envScene.add(sky.clone());
+    const disc = new THREE.Mesh(new THREE.CircleGeometry(2000, 24).rotateX(-Math.PI / 2),
+      new THREE.MeshBasicMaterial({ color: th.ground }));
+    disc.position.y = -2;
+    envScene.add(disc);
+    scene.environment = pmrem.fromScene(envScene, 0.04).texture;
+    scene.environmentIntensity = th.night ? 0.5 : 0.85;
+    pmrem.dispose();
+  }
+
+  const camera = new THREE.PerspectiveCamera(72, W / H, 0.3, 6500);
+  const composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, camera));
+  const gtao = new GTAOPass(scene, camera, W, H);
+  gtao.output = GTAOPass.OUTPUT.Default;
+  gtao.blendIntensity = 0.9;
+  composer.addPass(gtao);
+  // main.js's order is Render -> GTAO -> Bloom -> Output. With THIS vendored
+  // UnrealBloomPass, a bloom pass that is NOT the last enabled pass wipes the
+  // frame on the real circuit scene: its additive blend into readBuffer leaves
+  // only the bloom highlights, and the composited output measures mean luminance
+  // 0.06/255 (verified against a fresh composer, with GTAO on and off, with the
+  // threshold raised to 1e6 so nothing passes the high pass, and with the HDRI
+  // background swapped for a flat colour). The identical pass order works on a
+  // trivial two-object scene, so it is scene-dependent. That is a defect in
+  // js/main.js's pipeline, not in the scenery, and it is reported rather than
+  // worked around here.
+  //
+  // The harness therefore measures WITHOUT bloom. Bloom only ever ADDS light, so
+  // every darkness floor, luminance-parity and "brightest pixel is a light"
+  // threshold measured here is conservative: passing without bloom implies
+  // passing with it.
+  const bloom = new UnrealBloomPass(new THREE.Vector2(W, H),
+    th.night ? 0.5 : 0.18, 0.55, th.night ? 0.6 : 0.86);
+  bloom.enabled = false;
+  composer.addPass(bloom);
+  composer.addPass(new OutputPass());
+  composer.setSize(W, H);
+  return { scene, circuit, camera, composer, sky, sun, theme: th, gtao, bloom };
+}
+
+// ------------------------------------------------------------------ pixels ---
+// Straight off the default framebuffer. drawImage() from the WebGL canvas depends
+// on compositing timing and came back empty; readPixels is synchronous and exact.
+// Its origin is bottom-left, so the rows are flipped into top-left order here.
+const _rp = new Uint8Array(W * H * 4);
+function grab() {
+  const gl = renderer.getContext();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, _rp);
+  const flip = new Uint8ClampedArray(W * H * 4);   // a fresh copy per grab
+  for (let y = 0; y < H; y++) {
+    const src = (H - 1 - y) * W * 4, dst = y * W * 4;
+    flip.set(_rp.subarray(src, src + W * 4), dst);
+  }
+  return { data: flip };
+}
+const px = (im, x, y) => {
+  const i = ((y | 0) * W + (x | 0)) * 4;
+  return [im.data[i], im.data[i + 1], im.data[i + 2]];
+};
+const lum = (p) => 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2];
+
+function renderFrame(S) {
+  S.scene.updateMatrixWorld(true);
+  S.camera.updateMatrixWorld(true);
+  S.composer.render();
+  return grab();
+}
+
+// A silhouette of the objects matching `pick`, rendered against magenta with fog
+// and post off. Magenta rather than black so a still-broken (black) surface is
+// detected as PRESENT instead of vanishing into the background and passing
+// vacuously.
+const MASK_BG = [255, 0, 255];
+function renderMask(S, pick) {
+  const vis = [];
+  S.scene.traverse(o => {
+    if (o.isMesh || o.isInstancedMesh || o.isSprite || o.isPoints || o.isLine) {
+      vis.push([o, o.visible]);
+      o.visible = !!pick(o);
+    }
+  });
+  const bg = S.scene.background, fog = S.scene.fog;
+  S.scene.background = new THREE.Color(0xff00ff);
+  S.scene.fog = null;
+  renderer.setClearColor(0xff00ff, 1);
+  renderer.render(S.scene, S.camera);
+  const im = grab();
+  S.scene.background = bg; S.scene.fog = fog;
+  renderer.setClearColor(0x000000, 0);
+  for (const [o, v] of vis) o.visible = v;
+  const m = new Uint8Array(W * H);
+  let n = 0;
+  for (let i = 0; i < W * H; i++) {
+    const d = Math.abs(im.data[i * 4] - MASK_BG[0]) + Math.abs(im.data[i * 4 + 1] - MASK_BG[1])
+      + Math.abs(im.data[i * 4 + 2] - MASK_BG[2]);
+    if (d > 24) { m[i] = 1; n++; }
+  }
+  return { m, n };
+}
+
+// Erode a mask by one pixel. The renderer is 4x multisampled, so a silhouette edge
+// pixel in the real frame is a BLEND of the object and whatever is behind it --
+// measuring those as "the darkest foliage pixel" measures the background. Interior
+// pixels are the ones the judge's crops sampled.
+function erode(mask) {
+  const m = new Uint8Array(W * H);
+  const frame = mask.frame;
+  let n = 0;
+  for (let y = 1; y < H - 1; y++) {
+    for (let x = 1; x < W - 1; x++) {
+      const i = y * W + x;
+      if (!mask.m[i]) continue;
+      if (mask.m[i - 1] && mask.m[i + 1] && mask.m[i - W] && mask.m[i + W]) { m[i] = 1; n++; }
+    }
+  }
+  return { m, n, frame };
+}
+
+// An OCCLUSION-AWARE mask, and the frame it belongs to.
+//
+// renderMask() hides everything else, so a tree standing BEHIND the pit building
+// is in its silhouette even though the frame shows the building at that pixel --
+// and "the darkest foliage pixel" then measures the building, not the foliage.
+// This renders the frame with the chosen objects hidden and again with them shown:
+// the pixels that changed are exactly the pixels those objects win. No material
+// substitution, so it cannot bias the very albedo being measured.
+function renderVisibleMask(S, pick) {
+  const vis = [];
+  S.scene.traverse(o => {
+    if ((o.isMesh || o.isInstancedMesh || o.isSprite) && pick(o)) { vis.push([o, o.visible]); o.visible = false; }
+  });
+  const without = renderFrame(S);
+  for (const [o, v] of vis) o.visible = v;
+  const withThem = renderFrame(S);
+  const m = new Uint8Array(W * H);
+  let n = 0;
+  for (let i = 0; i < W * H; i++) {
+    const x = i % W, y = (i / W) | 0;
+    const a = px(withThem, x, y), b = px(without, x, y);
+    if (Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]) > 12) { m[i] = 1; n++; }
+  }
+  return { m, n, frame: withThem };
+}
+
+const named = (S, name) => S.circuit.group.getObjectByName(name);
+const isDescendant = (o, root) => { let p = o; while (p) { if (p === root) return true; p = p.parent; } return false; };
+
+// Built from the readPixels copy rather than from the live canvas, so a preview
+// frame is always exactly the frame the assertions were measured on.
+async function shot(name, im) {
+  if (im) readCtx.putImageData(new ImageData(im.data, W, H), 0, 0);
+  else { readCtx.clearRect(0, 0, W, H); readCtx.drawImage(renderer.domElement, 0, 0); }
+  const blob = await new Promise(r => readCanvas.toBlob(r, 'image/png'));
+  try {
+    await fetch(`/shot?name=${encodeURIComponent(name)}`, { method: 'POST', body: blob });
+    results.shots.push(`tools/shots/${name}.png`);
+    out('h', `  shot -> tools/shots/${name}.png`);
+  } catch (e) { out('f', `  shot POST failed: ${e}`); }
+}
+
+// ------------------------------------------------------------------ cameras ---
+function camAt(S, sampleIdx, back, height, lookAhead, lat = 0, lookLat = 0, drop = 0.9) {
+  const c = S.circuit, N = c.N, ds = c.ds;
+  const i = ((sampleIdx % N) + N) % N;
+  const bi = ((i - Math.round(back / ds)) % N + N) % N;
+  const ai = ((i + Math.round(lookAhead / ds)) % N + N) % N;
+  const s = c.samples[bi], a = c.samples[ai];
+  S.camera.position.set(s.p.x + s.n.x * lat, c.heightAt(bi) + height, s.p.z + s.n.z * lat);
+  S.camera.lookAt(a.p.x + a.n.x * lookLat, c.heightAt(ai) + drop, a.p.z + a.n.z * lookLat);
+  S.camera.updateMatrixWorld(true);
+}
+
+// The tightest corner that actually carries a kerb, so the chase framing puts the
+// near kerb across the bottom of the frame -- the exact crop round 2 measured.
+function sharpestCorner(S) {
+  const c = S.circuit;
+  let best = 0, bestK = 0;
+  for (let i = 0; i < c.N; i++) {
+    const k = Math.abs(c.samples[i].curv);
+    if (k > bestK && k < 1 / 30) { bestK = k; best = i; }
+  }
+  return { i: best, inside: c.samples[best].curv > 0 ? -1 : 1 };
+}
+
+// =============================================================================
+//                                  CHECKS
+// =============================================================================
+
+// ---- 0. mirrored text: quadrant-coded texture, read back on screen ----------
+// A LUMINANCE LADDER, not four hues. Tonemapping desaturates a primary badly
+// (ACES turns pure green into something with a large red component), but it is
+// monotone in luminance, so ordering four grey levels survives it exactly:
+//   image TL brightest > TR > BL > BR darkest.
+// Any mirror or rotation permutes that order detectably.
+const QUAD_STEPS = { TL: '#ffffff', TR: '#9a9a9a', BL: '#4e4e4e', BR: '#101010' };
+function quadTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 256;
+  const g = c.getContext('2d');
+  g.fillStyle = QUAD_STEPS.TL; g.fillRect(0, 0, 128, 128);
+  g.fillStyle = QUAD_STEPS.TR; g.fillRect(128, 0, 128, 128);
+  g.fillStyle = QUAD_STEPS.BL; g.fillRect(0, 128, 128, 128);
+  g.fillStyle = QUAD_STEPS.BR; g.fillRect(128, 128, 128, 128);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+  return t;
+}
+
+// Which of the four quadrant colours a pixel is, or null. Classified by channel
+// ORDER rather than by absolute thresholds: ACES tonemapping desaturates a
+// primary heavily (pure green comes back with a large red component), so fixed
+// cutoffs reject perfectly readable quadrants.
+function quadOf(p) {
+  const [r, g, b] = p;
+  if (r + g + b < 40) return null;                       // unlit / background
+  if (b > r * 1.15 && b > g * 1.15) return 'B';
+  if (r > b * 1.25 && g > b * 1.25) return 'Y';          // both high, blue low
+  if (r > g * 1.15) return 'R';
+  if (g > r * 1.15) return 'G';
+  return null;
+}
+
+// Swap a plane's map for the quadrant texture, render, and read the four corners
+// back IN SCREEN SPACE. The image's top-left must land up-and-left of its
+// top-right and above its bottom-left, or the surface is mirrored or rotated.
+async function auditPlane(S, mesh, label, shotName) {
+  const mat = mesh.material;
+  const saved = {
+    map: mat.map, alphaMap: mat.alphaMap, transparent: mat.transparent,
+    opacity: mat.opacity, color: mat.color.clone(), emissiveMap: mat.emissiveMap,
+    emissive: mat.emissive ? mat.emissive.clone() : null, side: mat.side,
+  };
+  mat.map = quadTexture();
+  mat.alphaMap = null;
+  mat.transparent = false;
+  mat.opacity = 1;
+  mat.color.setHex(0xffffff);
+  if (mat.emissiveMap !== undefined) { mat.emissiveMap = null; }
+  if (mat.emissive) mat.emissive.setHex(0x000000);
+  mat.needsUpdate = true;
+
+  const im = renderFrame(S);
+  if (shotName) await shot(shotName, im);
+
+  // project the plane's four local corners
+  const g = mesh.geometry.parameters;
+  const corners = {
+    TL: new THREE.Vector3(-g.width / 2, g.height / 2, 0),
+    TR: new THREE.Vector3(g.width / 2, g.height / 2, 0),
+    BL: new THREE.Vector3(-g.width / 2, -g.height / 2, 0),
+    BR: new THREE.Vector3(g.width / 2, -g.height / 2, 0),
+  };
+  const scr = {};
+  mesh.updateMatrixWorld(true);
+  for (const k of Object.keys(corners)) {
+    const v = corners[k].clone().applyMatrix4(mesh.matrixWorld).project(S.camera);
+    scr[k] = { x: (v.x * 0.5 + 0.5) * W, y: (-v.y * 0.5 + 0.5) * H };
+  }
+  // sample the centroid of each quadrant of the plane
+  const at = (u, v) => {
+    const p = new THREE.Vector3((u - 0.5) * g.width, (v - 0.5) * g.height, 0)
+      .applyMatrix4(mesh.matrixWorld).project(S.camera);
+    return { x: (p.x * 0.5 + 0.5) * W, y: (-p.y * 0.5 + 0.5) * H };
+  };
+  const probe = { TL: at(0.25, 0.75), TR: at(0.75, 0.75), BL: at(0.25, 0.25), BR: at(0.75, 0.25) };
+  const seen = {};
+  for (const k of Object.keys(probe)) {
+    const p = probe[k];
+    // mean of a small neighbourhood, so one aliased pixel cannot decide it
+    let s = 0, n = 0;
+    for (let dy = -3; dy <= 3; dy += 3) for (let dx = -3; dx <= 3; dx += 3) {
+      s += lum(px(im, Math.min(W - 1, Math.max(0, p.x + dx)), Math.min(H - 1, Math.max(0, p.y + dy))));
+      n++;
+    }
+    seen[k] = s / n;
+  }
+  const ok = seen.TL > seen.TR + 6 && seen.TR > seen.BL + 6 && seen.BL > seen.BR + 4;
+  check(ok, `${label}: the texture is not mirrored or rotated on screen`,
+    `[image TL/TR/BL/BR luminance ${seen.TL.toFixed(0)}/${seen.TR.toFixed(0)}/`
+    + `${seen.BL.toFixed(0)}/${seen.BR.toFixed(0)}, must be strictly descending]`);
+  check(scr.TL.x < scr.TR.x - 4, `${label}: image-left is to the LEFT of image-right on screen`,
+    `[TL.x=${scr.TL.x.toFixed(0)} TR.x=${scr.TR.x.toFixed(0)}]`);
+  check(scr.TL.y < scr.BL.y - 4, `${label}: image-top is ABOVE image-bottom on screen`,
+    `[TL.y=${scr.TL.y.toFixed(0)} BL.y=${scr.BL.y.toFixed(0)}]`);
+
+  mat.map = saved.map; mat.alphaMap = saved.alphaMap; mat.transparent = saved.transparent;
+  mat.opacity = saved.opacity; mat.color.copy(saved.color);
+  if (saved.emissiveMap !== undefined) mat.emissiveMap = saved.emissiveMap;
+  if (saved.emissive && mat.emissive) mat.emissive.copy(saved.emissive);
+  mat.needsUpdate = true;
+}
+
+// The hoarding ribbon tiles its atlas, so the quadrant trick cannot be used on it.
+// Instead its map is swapped for a repeating 4-step staircase and the rendered
+// scanline is read: if u runs toward screen-right the steps climb left-to-right,
+// and if the mirrorU flag is on the wrong side they descend.
+function stairTexture() {
+  const c = document.createElement('canvas');
+  c.width = 64; c.height = 8;
+  const g = c.getContext('2d');
+  const steps = ['#0a0a0a', '#4a4a4a', '#9a9a9a', '#ffffff'];
+  steps.forEach((s, i) => { g.fillStyle = s; g.fillRect(i * 16, 0, 16, 8); });
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.magFilter = THREE.NearestFilter;
+  t.minFilter = THREE.NearestFilter;
+  t.generateMipmaps = false;
+  return t;
+}
+
+async function auditHoardingSide(S, side, shotName) {
+  const c = S.circuit;
+  const hoard = named(S, 'hoardings');
+  if (!hoard) { check(false, 'hoarding ribbon found for the mirroring audit'); return null; }
+  // Square on to the board, close enough that a 30m atlas tile spans a wide, low
+  // gradient band on screen: at a grazing angle the staircase collapses into a
+  // couple of texels per pixel and its direction cannot be read at all.
+  const i = straightSample(S);
+  const s = c.samples[i];
+  const eye = s.p.clone().addScaledVector(s.n, side * (c.wallOff - 7));
+  S.camera.position.set(eye.x, c.heightAt(i) + 0.75, eye.z);
+  S.camera.lookAt(s.p.x + s.n.x * side * 40, c.heightAt(i) + 0.7, s.p.z + s.n.z * side * 40);
+  S.camera.updateMatrixWorld(true);
+
+  const mat = hoard.material;
+  const saved = { map: mat.map, emissiveMap: mat.emissiveMap, color: mat.color.clone() };
+  const stair = stairTexture();
+  mat.map = stair; mat.emissiveMap = stair; mat.color.setHex(0xffffff);
+  mat.needsUpdate = true;
+
+  const mask = renderMask(S, o => isDescendant(o, hoard));
+  const im = renderFrame(S);
+  if (shotName) await shot(shotName, im);
+
+  // the widest fully-masked scanline through the board
+  let bestY = -1, bestRun = 0;
+  for (let y = 0; y < H; y++) {
+    let run = 0, cur = 0;
+    for (let x = 0; x < W; x++) {
+      if (mask.m[y * W + x]) { cur++; if (cur > run) run = cur; } else cur = 0;
+    }
+    if (run > bestRun) { bestRun = run; bestY = y; }
+  }
+  // The staircase climbs three times per tile and drops once (the wrap), so the
+  // total RISE across the board is the direction signal: sum the signed steps over
+  // every masked scanline, not just one.
+  // Only the rows that belong to the NEAR board: at a doubling-back circuit another
+  // part of the lap's hoarding run can be visible past it, at an unrelated
+  // orientation, and mixing the two makes the direction unreadable.
+  const rowRun = new Int32Array(H);
+  for (let y = 0; y < H; y++) {
+    let run = 0, cur = 0;
+    for (let x = 0; x < W; x++) { if (mask.m[y * W + x]) { cur++; if (cur > run) run = cur; } else cur = 0; }
+    rowRun[y] = run;
+  }
+  // The staircase is a CYCLE of four levels, so the direction is read from the
+  // ORDER of the levels rather than from a count of rises: on a board whose u runs
+  // toward screen-right, each new level is the previous level plus one mod 4. That
+  // works no matter how many steps happen to be in frame -- counting rises alone
+  // is undersampled when only a step or two is visible.
+  const LEVELS = [10, 74, 154, 255].map(v => v);
+  const levelOf = (v) => {
+    let best = 0, bd = Infinity;
+    for (let k = 0; k < 4; k++) { const d = Math.abs(v - LEVELS[k]); if (d < bd) { bd = d; best = k; } }
+    return bd < 46 ? best : -1;
+  };
+  let up = 0, down = 0;
+  for (let y = 0; y < H; y++) {
+    if (rowRun[y] < bestRun * 0.6) continue;
+    let prevL = -1, prevX = -2;
+    for (let x = 0; x < W; x++) {
+      if (!mask.m[y * W + x]) { prevL = -1; prevX = -2; continue; }
+      const l = levelOf(lum(px(im, x, y)));
+      if (l < 0) { prevX = x; continue; }
+      if (prevL >= 0 && l !== prevL && x - prevX < 6) {
+        const step = ((l - prevL) % 4 + 4) % 4;
+        if (step === 1) up++; else if (step === 3) down++;
+      }
+      if (l >= 0) { prevL = l; prevX = x; }
+    }
+  }
+  mat.map = saved.map; mat.emissiveMap = saved.emissiveMap; mat.color.copy(saved.color);
+  mat.needsUpdate = true;
+  return { up, down, run: bestRun, y: bestY };
+}
+
+function straightSample(S) {
+  const c = S.circuit;
+  let best = 0, bestLen = 0, run = 0, runStart = 0;
+  for (let i = 0; i < c.N * 2; i++) {
+    const j = i % c.N;
+    if (Math.abs(c.samples[j].curv) < 1 / 900) {
+      if (run === 0) runStart = i;
+      run++;
+      if (run > bestLen) { bestLen = run; best = (runStart + (run >> 1)) % c.N; }
+    } else run = 0;
+  }
+  return best;
+}
+
+// =============================================================================
+async function main() {
+  await preload();
+
+  // ------------------------------------------------------------- MONZA -------
+  head('monza — grid framing (findings: foliage blackout, spire, grid furniture)');
+  const M = buildScene('monza');
+  const gs = M.circuit.gridSlots[0];
+  camAt(M, gs.idx, 13, 3.3, 95, 0, 0, 1.2);
+  let im = renderFrame(M);
+  await shot('r3-preview-01-monza-grid', im);
+
+  // ---- 1a. foliage must not be a black void -------------------------------
+  {
+    const isTree = (o) => o.isInstancedMesh && o.name.startsWith('trees-');
+    const treesRaw = renderVisibleMask(M, isTree);
+    im = treesRaw.frame;
+    // two erosions: the alpha-cutout silhouette of a canopy is extremely ragged, so
+    // one ring of MSAA-blended edge is not enough to get clear of the background
+    const trees = erode(erode(treesRaw));
+    check(trees.n > 4000, 'foliage occupies a meaningful part of the grid frame',
+      `[interior foliage pixels=${trees.n} of ${W * H}, visible silhouette=${treesRaw.n}]`);
+    const vals = [];
+    for (let i = 0; i < W * H; i++) {
+      if (!trees.m[i]) continue;
+      const x = i % W, y = (i / W) | 0;
+      vals.push(lum(px(im, x, y)));
+    }
+    vals.sort((a, b) => a - b);
+    const floorPx = vals[Math.floor(vals.length * 0.002)];
+    const median = vals[vals.length >> 1];
+    // acceptance: "the darkest foliage pixel is above (40,55,40)"
+    const TARGET = lum([40, 55, 40]);
+    check(floorPx > TARGET, 'the darkest foliage pixel clears rgb(40,55,40)',
+      `[floor=${floorPx.toFixed(1)} target=${TARGET.toFixed(1)} median=${median.toFixed(1)}]`);
+    // and the two planes of a crossed billboard must no longer disagree wildly,
+    // which is what produced the "green obelisk"
+    // Bimodality: the rendered tonal range must not be much wider than the CANOPY
+    // ART's own range. When the two planes of a crossed billboard had normals 90
+    // degrees apart, one rendered lit and the other near-black and the rendered
+    // range was several times the artwork's. The reference is measured from the
+    // sprite itself rather than guessed.
+    {
+      const cv = TEX.treeCanopy('broadleaf', 0, 256);
+      const g2 = document.createElement('canvas');
+      g2.width = cv.width; g2.height = cv.height;
+      const gc = g2.getContext('2d', { willReadFrequently: true });
+      gc.drawImage(cv, 0, 0);
+      const d2 = gc.getImageData(0, 0, cv.width, cv.height).data;
+      const tv = [];
+      for (let i2 = 0; i2 < cv.width * cv.height; i2++) {
+        if (d2[i2 * 4 + 3] < 200) continue;
+        tv.push(lum([d2[i2 * 4], d2[i2 * 4 + 1], d2[i2 * 4 + 2]]));
+      }
+      tv.sort((a2, b2) => a2 - b2);
+      const tRatio = tv.length
+        ? tv[Math.floor(tv.length * 0.95)] / Math.max(tv[Math.floor(tv.length * 0.05)], 1) : 1;
+      const p95 = vals[Math.floor(vals.length * 0.95)], p05 = vals[Math.floor(vals.length * 0.05)];
+      const rRatio = p95 / Math.max(p05, 1);
+      check(rRatio < tRatio * 1.9,
+        'rendered foliage tonal range tracks the artwork: no lit plane standing in a black one',
+        `[rendered p05..p95 ratio=${rRatio.toFixed(2)}, the canopy sprite's own ratio=${tRatio.toFixed(2)}]`);
+    }
+
+    // ---- 3. no smooth spire taller than the treeline ----------------------
+    // Column-wise top of the foliage silhouette; a spire is a narrow column band
+    // standing far above its neighbours.
+    const top = new Int32Array(W).fill(-1);
+    for (let x = 0; x < W; x++) {
+      for (let y = 0; y < H; y++) if (treesRaw.m[y * W + x]) { top[x] = y; break; }
+    }
+    let worstSpike = 0, worstX = -1;
+    const SPAN = 60;                       // a real tree crown is wider than this
+    for (let x = SPAN; x < W - SPAN; x++) {
+      if (top[x] < 0) continue;
+      const nb = [];
+      for (let k = -SPAN; k <= SPAN; k++) if (top[x + k] >= 0) nb.push(top[x + k]);
+      if (nb.length < SPAN) continue;
+      nb.sort((a, b) => a - b);
+      const med = nb[nb.length >> 1];
+      const spike = med - top[x];          // screen y grows downward
+      if (spike > worstSpike) { worstSpike = spike; worstX = x; }
+    }
+    check(worstSpike < 90,
+      'no narrow element stands above the treeline (the round-2 "green obelisk")',
+      `[worst column spike=${worstSpike}px at x=${worstX}, tolerance 90px]`);
+  }
+
+  // ---- 1c. painted road markings must be LIT PAINT, not black and not clipped --
+  // The regression this caught: the edge-line strip carried no normal attribute
+  // (it never needed one while it was unlit), so converting it to a lit material
+  // rendered it PURE BLACK -- a black band along both road edges.
+  {
+    const el = renderVisibleMask(M, o => o.name === 'edge-line');
+    const f = el.frame;
+    let sum = 0, n = 0, dark = 0, hot = 0;
+    for (let i = 0; i < W * H; i++) {
+      if (!el.m[i]) continue;
+      const l = lum(px(f, i % W, (i / W) | 0));
+      sum += l; n++;
+      if (l < 30) dark++;
+      if (l > 232) hot++;
+    }
+    const mean = n ? sum / n : 0;
+    check(n > 2000 && mean > 110,
+      'the painted edge lines read as lit white paint, not as a black band',
+      `[mean luminance=${mean.toFixed(1)} over ${n}px, near-black pixels=${dark}]`);
+    check(hot < n * 0.06,
+      'daylight edge lines stay below the clipping point (round-2: they clipped to 228+)',
+      `[pixels over 232=${hot} of ${n}]`);
+  }
+
+  // ---- 4. the grid frame must contain real architecture -------------------
+  {
+    const want = [
+      ['pit-building', 2500], ['pit-wall', 400], ['grandstand-seating', 400],
+      ['gantry', 1200], ['sf-line', 500], ['grid-boxes', 400], ['hoardings', 3000],
+    ];
+    for (const [name, minPx] of want) {
+      const o = named(M, name);
+      if (!o) { check(false, `${name} exists in the circuit`); continue; }
+      const r = renderMask(M, x => isDescendant(x, o));
+      check(r.n >= minPx, `${name} is visible in the grid frame`,
+        `[pixels=${r.n}, need >= ${minPx}]`);
+    }
+    const lights = named(M, 'start-lights');
+    if (lights) {
+      const r = renderMask(M, x => isDescendant(x, lights));
+      check(r.n > 300, 'the physical start-lights gantry board is visible from the grid',
+        `[pixels=${r.n}]`);
+    }
+  }
+
+  // ---- 0. mirrored text -----------------------------------------------------
+  head('monza — mirrored-text audit (USER-REPORTED)');
+  {
+    const paint = named(M, 'track-paint');
+    // an approaching-car camera, 24m short of the wordmark
+    const p = paint.position.clone();
+    let nearest = 0, bd = Infinity;
+    for (let i = 0; i < M.circuit.N; i++) {
+      const d = p.distanceToSquared(M.circuit.samples[i].p);
+      if (d < bd) { bd = d; nearest = i; }
+    }
+    camAt(M, nearest, 24, 1.55, 4, 0, 0, 0.4);
+    // the human-readable evidence first, with the REAL wordmark texture...
+    const wf = renderFrame(M);
+    await shot('r3-preview-03-monza-wordmark', wf);
+    // ...then the machine-readable one, with a luminance ladder in its place
+    await auditPlane(M, paint, 'painted road wordmark', null);
+  }
+  {
+    // the gantry banner face an approaching driver actually sees
+    const gantry = named(M, 'gantry');
+    const panels = [];
+    gantry.traverse(o => { if (o.isMesh && o.geometry.type === 'PlaneGeometry' && o.material.map) panels.push(o); });
+    const t0 = M.circuit.samples[0].t;
+    let facing = panels[0];
+    for (const o of panels) {
+      o.updateMatrixWorld(true);
+      const nz = new THREE.Vector3().setFromMatrixColumn(o.matrixWorld, 2).normalize();
+      if (nz.dot(t0) < -0.5) facing = o;
+    }
+    camAt(M, 0, 40, 5.2, 0, 0, 0, 6.4);
+    await auditPlane(M, facing, 'gantry banner (driver-facing side)', null);
+  }
+  {
+    const boards = [];
+    M.circuit.group.traverse(o => { if (o.name === 'sponsor-banner') boards.push(o); });
+    if (boards.length) {
+      const b = boards[0];
+      b.updateMatrixWorld(true);
+      const bp = new THREE.Vector3().setFromMatrixPosition(b.matrixWorld);
+      const nz = new THREE.Vector3().setFromMatrixColumn(b.matrixWorld, 2).normalize();
+      M.camera.position.copy(bp).addScaledVector(nz, 16).setY(bp.y + 0.4);
+      M.camera.lookAt(bp);
+      M.camera.updateMatrixWorld(true);
+      await auditPlane(M, b, 'trackside sponsor board', null);
+    }
+  }
+
+  // ---- 1b. the SAME hoarding panel on opposite sides of the track ----------
+  head('monza — hoarding parity + mirroring, both sides');
+  {
+    const L = await auditHoardingSide(M, 1, 'r3-preview-04-hoarding-left');
+    const R = await auditHoardingSide(M, -1, 'r3-preview-05-hoarding-right');
+    for (const [nm, r] of [['left (+n)', L], ['right (-n)', R]]) {
+      if (!r) continue;
+      check(r.up > r.down * 3 && r.up > 20,
+        `hoarding ${nm}: the atlas runs left-to-right on screen (not mirrored)`,
+        `[rising steps=${r.up}, falling=${r.down}, board run=${r.run}px]`);
+    }
+    // luminance parity, measured on the real atlas with the same framing
+    const hoard = named(M, 'hoardings');
+    const meanFor = (side) => {
+      const c = M.circuit;
+      const i = straightSample(M);
+      const s = c.samples[i];
+      M.camera.position.set(s.p.x, c.heightAt(i) + 1.25, s.p.z);
+      M.camera.lookAt(s.p.x + s.n.x * side * 40, c.heightAt(i) + 0.9, s.p.z + s.n.z * side * 40);
+      M.camera.updateMatrixWorld(true);
+      const mk = erode(renderVisibleMask(M, o => isDescendant(o, hoard)));
+      const f = mk.frame || renderFrame(M);
+      let sum = 0, n = 0;
+      for (let i2 = 0; i2 < W * H; i2++) {
+        if (!mk.m[i2]) continue;
+        sum += lum(px(f, i2 % W, (i2 / W) | 0)); n++;
+      }
+      return { mean: n ? sum / n : 0, n };
+    };
+    const a = meanFor(1), b = meanFor(-1);
+    const ratio = Math.max(a.mean, b.mean) / Math.max(1e-6, Math.min(a.mean, b.mean));
+    check(a.n > 2000 && b.n > 2000, 'hoardings measurable on both sides of the track',
+      `[+n pixels=${a.n}, -n pixels=${b.n}]`);
+    check(ratio <= 1.25,
+      'the same hoarding run reads within 25% luminance on opposite sides of the track',
+      `[+n mean=${a.mean.toFixed(1)}, -n mean=${b.mean.toFixed(1)}, ratio=${ratio.toFixed(3)}]`);
+  }
+
+  // ---- 2. kerb near field --------------------------------------------------
+  head('monza — kerb near field (findings: smooth gradient, no side face, ends in grass)');
+  {
+    const { i, inside } = sharpestCorner(M);
+    camAt(M, i, 16, 1.9, 7, inside * (M.circuit.halfWidth * 0.35), inside * M.circuit.halfWidth, 0.25);
+    const kerbMask = renderMask(M, o => o.name === 'kerbs');
+    im = renderFrame(M);
+    await shot('r3-preview-02-monza-kerb', im);
+    check(kerbMask.n > 12000, 'the kerb fills a real part of the near field',
+      `[kerb pixels=${kerbMask.n} of ${W * H}]`);
+    // Alternating hard blocks: walk the widest kerb scanline in the lower half of
+    // the frame and count sharp red<->white transitions.
+    let bestY = -1, bestRun = 0;
+    for (let y = (H * 0.55) | 0; y < H; y++) {
+      let run = 0, cur = 0;
+      for (let x = 0; x < W; x++) { if (kerbMask.m[y * W + x]) { cur++; if (cur > run) run = cur; } else cur = 0; }
+      if (run > bestRun) { bestRun = run; bestY = y; }
+    }
+    // Alternating BLOCKS: count the connected red regions inside the kerb
+    // silhouette. A smooth pink-to-red gradient is one region; real stripes are
+    // many. Measured over the whole near kerb rather than one scanline, because in
+    // a chase view the kerb runs diagonally and a horizontal line crosses only a
+    // stripe or two.
+    const red = (p) => (p[0] - (p[1] + p[2]) / 2);
+    const isRed = new Uint8Array(W * H);
+    for (let i2 = 0; i2 < W * H; i2++) {
+      if (!kerbMask.m[i2]) continue;
+      if (red(px(im, i2 % W, (i2 / W) | 0)) > 45) isRed[i2] = 1;
+    }
+    let blocks = 0, biggest = 0;
+    {
+      const seen = new Uint8Array(W * H);
+      const stack = new Int32Array(W * H);
+      for (let i2 = 0; i2 < W * H; i2++) {
+        if (!isRed[i2] || seen[i2]) continue;
+        let sp = 0, size = 0;
+        stack[sp++] = i2; seen[i2] = 1;
+        while (sp) {
+          const q = stack[--sp];
+          size++;
+          const qx = q % W, qy = (q / W) | 0;
+          for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+            const nx = qx + dx, ny = qy + dy;
+            if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+            const nj = ny * W + nx;
+            if (isRed[nj] && !seen[nj]) { seen[nj] = 1; stack[sp++] = nj; }
+          }
+        }
+        if (size > 120) { blocks++; biggest = Math.max(biggest, size); }
+      }
+    }
+    // hardness: the biggest single-pixel redness step anywhere along the kerb
+    let maxStep = 0;
+    for (let y = 0; y < H; y++) {
+      for (let x = 1; x < W; x++) {
+        const a2 = y * W + x, b2 = a2 - 1;
+        if (!kerbMask.m[a2] || !kerbMask.m[b2]) continue;
+        maxStep = Math.max(maxStep, Math.abs(red(px(im, x, y)) - red(px(im, x - 1, y))));
+      }
+    }
+    check(blocks >= 3, 'the near kerb shows discrete alternating blocks, not one smooth ramp',
+      `[connected red blocks=${blocks}, biggest=${biggest}px, widest near scanline run=${bestRun}px]`);
+    check(maxStep > 55, 'a block boundary is a step, not a gradient',
+      `[biggest single-pixel redness change=${maxStep.toFixed(0)}]`);
+    // The painted SIDE face must be visible. Within the WHITE blocks only (so the
+    // red/white pattern cannot masquerade as shading), the kerb has to show two
+    // distinct brightness populations: the top face and the steeper side face.
+    // Measured on the RED blocks, whose albedo is far from clipping, so the facet
+    // shading is not hidden by a saturated white.
+    {
+      const reds = [];
+      for (let i2 = 0; i2 < W * H; i2++) {
+        if (!isRed[i2]) continue;
+        reds.push(lum(px(im, i2 % W, (i2 / W) | 0)));
+      }
+      reds.sort((a2, b2) => a2 - b2);
+      const q1 = reds.length ? reds[Math.floor(reds.length * 0.08)] : 0;
+      const q9 = reds.length ? reds[Math.floor(reds.length * 0.92)] : 0;
+      check(reds.length > 500 && q9 - q1 > 8,
+        'the kerb has more than one shaded facet (a top face and a painted side face)',
+        `[red-block luminance p08=${q1.toFixed(1)} p92=${q9.toFixed(1)} over ${reds.length}px]`);
+      // ...and nothing on the kerb may clip to white
+      let clipped = 0;
+      for (let i2 = 0; i2 < W * H; i2++) {
+        if (!kerbMask.m[i2]) continue;
+        if (lum(px(im, i2 % W, (i2 / W) | 0)) > 248) clipped++;
+      }
+      check(clipped < kerbMask.n * 0.01,
+        'the kerb does not clip to white at close range (round-2: "blows out the kerb junction")',
+        `[clipped pixels=${clipped} of ${kerbMask.n}]`);
+    }
+  }
+
+  // ------------------------------------------------------- SINGAPORE --------
+  head('singapore — night lighting (findings: pole through glow, bare lamp, no pools)');
+  const G = buildScene('singapore');
+  {
+    const i = straightSample(G);
+    camAt(G, i, 30, 2.2, 60, 0, 0, 1.0);
+    const poles = named(G, 'floodlight-poles');
+    const lamps = named(G, 'floodlight-lamps');
+    const pools = named(G, 'floodlight-pools');
+    const poleMask = renderMask(G, o => o === poles);
+    const lampMask = renderMask(G, o => o === lamps);
+    const poolMask = renderMask(G, o => o === pools);
+    const glowMask = renderMask(G, o => o.isSprite);
+    const edgeMask = renderMask(G, o => o.name === 'edge-line');
+    const frame = renderFrame(G);
+    await shot('r3-preview-06-singapore-night', frame);
+
+    check(poleMask.n > 200, 'floodlight poles are in frame', `[pixels=${poleMask.n}]`);
+    check(lampMask.n > 40, 'the fixture lamp faces are in frame', `[pixels=${lampMask.n}]`);
+    // The pools are ADDITIVE, so their contribution is measured as a difference
+    // against the same frame with them hidden -- a silhouette mask cannot see an
+    // additive decal whose own alpha falls off to nothing at its rim.
+    {
+      pools.visible = false;
+      const without = renderFrame(G);
+      pools.visible = true;
+      const with_ = renderFrame(G);
+      let lifted = 0, best = 0;
+      for (let i2 = 0; i2 < W * H; i2++) {
+        const x = i2 % W, y = (i2 / W) | 0;
+        const d = lum(px(with_, x, y)) - lum(px(without, x, y));
+        if (d > 3) lifted++;
+        if (d > best) best = d;
+      }
+      check(lifted > 4000 && best > 12,
+        'each floodlight throws a real pool of light onto the asphalt',
+        `[pixels brightened by the pools=${lifted}, brightest lift=${best.toFixed(1)}]`);
+    }
+
+    // how many separate towers are in frame -- "it is still the ONLY floodlight"
+    let towers = 0, wasCol = false;
+    for (let x = 0; x < W; x++) {
+      let any = false;
+      for (let y = 0; y < H && !any; y++) if (poleMask.m[y * W + x]) any = true;
+      if (any && !wasCol) towers++;
+      wasCol = any;
+    }
+    check(towers >= 2, 'more than one floodlight tower appears per frame',
+      `[distinct pole columns=${towers}]`);
+
+    // The pole must not cut a dark slash through its own glow. What the round-2
+    // finding describes is the glow FAILING A DEPTH TEST against the pole, so the
+    // measurement is whether the glow still lands on the pole's own pixels: render
+    // with the sprites hidden and with them shown, and compare the lift on the pole
+    // against the lift immediately beside it. (Comparing absolute brightness cannot
+    // work -- a dark pole stays darker than the sky behind it either way.)
+    {
+      const sprites = [];
+      G.scene.traverse(o => { if (o.isSprite) sprites.push(o); });
+      for (const s of sprites) s.visible = false;
+      const noGlow = renderFrame(G);
+      for (const s of sprites) s.visible = true;
+      const withGlow = renderFrame(G);
+      let onPole = 0, nPole = 0, beside = 0, nBeside = 0;
+      for (let i2 = 0; i2 < W * H; i2++) {
+        if (!glowMask.m[i2]) continue;
+        const x = i2 % W, y = (i2 / W) | 0;
+        const d = lum(px(withGlow, x, y)) - lum(px(noGlow, x, y));
+        if (poleMask.m[i2]) { onPole += d; nPole++; } else { beside += d; nBeside++; }
+      }
+      const a = nPole ? onPole / nPole : 0, b = nBeside ? beside / nBeside : 0;
+      check(nPole > 50 && a > b * 0.6,
+        'the glow lands ON the pole too, so the pole cannot slash a dark line through it',
+        `[mean glow lift on the pole=${a.toFixed(2)} over ${nPole}px, beside it=${b.toFixed(2)} over ${nBeside}px]`);
+    }
+
+    // the brightest thing in frame must be a light source, not a road marking
+    {
+      const maxOf = (mask) => {
+        let m = 0;
+        for (let i2 = 0; i2 < W * H; i2++) if (mask.m[i2]) m = Math.max(m, lum(px(frame, i2 % W, (i2 / W) | 0)));
+        return m;
+      };
+      const light = Math.max(maxOf(lampMask), maxOf(glowMask));
+      const line = maxOf(edgeMask);
+      check(edgeMask.n > 200, 'the painted edge lines are in frame', `[pixels=${edgeMask.n}]`);
+      check(light >= line, 'the brightest pixel in the night frame belongs to a light, not to paint',
+        `[brightest lamp/glow=${light.toFixed(1)}, brightest edge line=${line.toFixed(1)}]`);
+    }
+  }
+
+  // --------------------------------------------------------- BAHRAIN --------
+  head('bahrain — dusk (findings: gravel scale, bare tyre wall, horizon bands)');
+  const B = buildScene('bahrain');
+  {
+    const { i, inside } = sharpestCorner(B);
+    camAt(B, i, 18, 2.0, 8, inside * (B.circuit.halfWidth * 0.3), inside * B.circuit.halfWidth, 0.3);
+    const im2 = renderFrame(B);
+    await shot('r3-preview-07-bahrain-dusk', im2);
+    // the hoardings must dress the tyre wall here too
+    const hoard = named(B, 'hoardings');
+    const tyre = named(B, 'wall-tyre');
+    if (hoard && tyre) {
+      const hm = renderMask(B, o => isDescendant(o, hoard));
+      const tm = renderMask(B, o => o === tyre);
+      check(hm.n > 1500, 'Bahrain gets the same sponsor hoarding run as Monza and Monaco',
+        `[hoarding pixels=${hm.n}, bare tyre-wall pixels=${tm.n}]`);
+    }
+    // the ground gravel must not be one huge smear: measure its local contrast
+    const ground = named(B, 'ground');
+    const gm = renderMask(B, o => o === ground);
+    let edges = 0, n = 0;
+    for (let y = (H * 0.62) | 0; y < H - 2; y++) {
+      for (let x = 2; x < W - 2; x++) {
+        const i2 = y * W + x;
+        if (!gm.m[i2] || !gm.m[i2 + 1]) continue;
+        n++;
+        if (Math.abs(lum(px(im2, x, y)) - lum(px(im2, x + 1, y))) > 6) edges++;
+      }
+    }
+    check(n > 5000 && edges / Math.max(n, 1) > 0.05,
+      'the desert ground carries fine aggregate detail rather than half-metre clods',
+      `[high-contrast neighbours=${(edges / Math.max(n, 1) * 100).toFixed(1)}% of ${n} ground pixels]`);
+  }
+
+  head(`SUMMARY: ${results.pass}/${results.pass + results.fail} checks passed`);
+  window.__DBG__ = { M, G, B, renderer, grab, renderFrame, renderMask, THREE, px, lum, W, H, named, isDescendant };
+  results.done = true;
+}
+
+main().catch(e => {
+  results.error = String(e && e.stack || e);
+  results.done = true;
+  out('f', 'HARNESS ERROR: ' + results.error);
+});
+</script>
+</body>
+</html>

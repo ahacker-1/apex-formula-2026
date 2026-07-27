@@ -1,0 +1,29 @@
+{
+  "name": "apex-formula-2026",
+  "version": "0.1.0",
+  "private": true,
+  "description": "An original browser-based open-wheel racing simulator.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ahacker-1/apex-formula-2026.git"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "devDependencies": {
+    "three": "0.160.0"
+  },
+  "scripts": {
+    "build": "bash tools/make-public-build.sh",
+    "check:opensource": "bash tools/check-open-source-ready.sh",
+    "test:tracks": "node tools/validate-tracks.mjs",
+    "test:geometry": "node tools/validate-geometry.mjs",
+    "test:physics": "node tools/physics-envelope.mjs",
+    "test:nametags": "node tools/nametag-sim-check.mjs",
+    "test:features": "node tools/sim-race-features.mjs",
+    "test:race": "node tools/sim-race.mjs",
+    "test": "npm run check:opensource && npm run test:tracks && npm run test:geometry && npm run test:physics && npm run test:nametags && npm run test:features && npm run test:race"
+  }
+}

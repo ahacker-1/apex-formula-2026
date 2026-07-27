@@ -1,0 +1,916 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>APEX FORMULA 2026 — environment furniture harness (r4/env)</title>
+<script type="importmap">
+{ "imports": { "three": "../lib/three.module.js" } }
+</script>
+<style>
+  html, body { margin: 0; background: #0b0d12; color: #dfe4ec; font: 12px/1.45 ui-monospace, monospace; }
+  #log { position: fixed; right: 0; top: 0; width: 46vw; height: 100vh; overflow: auto;
+         padding: 10px 14px; background: rgba(8,10,14,0.94); white-space: pre-wrap; }
+  .p { color: #57d98a; } .f { color: #ff6b6b; } .h { color: #8fb7ff; font-weight: bold; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="log"></div>
+<script type="module">
+// =============================================================================
+// Environment-furniture harness (round 4, r4/env package).
+//
+// Fixed cameras + pixel assertions for:
+//   1. TV screen / jumbotron: support structure reads to the ground from range,
+//      back face is clad and framed, screen proportions sane.
+//   2. Clouds baked into the sky-dome texture: visible, soft (no straight-edged
+//      high-contrast rectangles), horizon band untouched.
+//   3. Car contact-shadow decal: no dark quad on grass detached from the car
+//      (Lesmo-style chase, car cornering over the kerb).
+//   4. Kerb closeup (outer-edge waviness), grandstand crowd banding,
+//      brake-board backs, sponsor-banner shuffle.
+//   5. Grid furniture: grandstand + gantry + pit wall framable with the field
+//      from a grid-facing hero camera at Monza.
+//
+// Run:  python3 tools/devserver.py 8412 .  then open /tools/env-harness.html
+// Results in window.__HARNESS__; frames POSTed to /shot (tools/shots/).
+// =============================================================================
+import * as THREE from 'three';
+import { EffectComposer } from '../lib/postprocessing/EffectComposer.js';
+import { RenderPass } from '../lib/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from '../lib/postprocessing/UnrealBloomPass.js';
+import { GTAOPass } from '../lib/postprocessing/GTAOPass.js';
+import { OutputPass } from '../lib/postprocessing/OutputPass.js';
+import { RGBELoader } from '../lib/loaders/RGBELoader.js';
+import { buildCircuit } from '../js/trackBuilder.js';
+import * as TEX from '../js/textures.js';
+import { TRACKS } from '../js/tracks.js';
+import { buildCarMesh, preloadCarModel } from '../js/car.js';
+import { makeContactShadow } from '../js/race.js';
+import { TEAMS, DRIVERS } from '../js/data.js';
+
+const W = 1600, H = 1000;
+const logEl = document.getElementById('log');
+const results = { checks: [], pass: 0, fail: 0, shots: [], stats: {}, done: false, error: null };
+window.__HARNESS__ = results;
+
+const out = (cls, s) => {
+  const d = document.createElement('div');
+  d.className = cls; d.textContent = s;
+  logEl.appendChild(d);
+  console.log(s);
+};
+const head = (s) => out('h', '\n=== ' + s);
+function check(cond, label, detail = '') {
+  results.checks.push({ ok: !!cond, label, detail });
+  if (cond) { results.pass++; out('p', `  PASS  ${label}${detail ? '  ' + detail : ''}`); }
+  else { results.fail++; out('f', `  FAIL  ${label}${detail ? '  ' + detail : ''}`); }
+}
+const note = (k, v) => { results.stats[k] = v; out('h', `  ${k} = ${typeof v === 'object' ? JSON.stringify(v) : v}`); };
+
+// ---------------------------------------------------------------- renderer ---
+const renderer = new THREE.WebGLRenderer({
+  antialias: true, powerPreference: 'high-performance', preserveDrawingBuffer: true,
+});
+renderer.setPixelRatio(1);
+renderer.setSize(W, H);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+document.getElementById('app').appendChild(renderer.domElement);
+
+const readCanvas = document.createElement('canvas');
+readCanvas.width = W; readCanvas.height = H;
+const readCtx = readCanvas.getContext('2d', { willReadFrequently: true });
+
+// ------------------------------------------------------------ asset preload ---
+const PHOTOS = {
+  asphalt: 'asphalt.png', grass: 'grass.png', gravel: 'gravel.png', crowd: 'crowd.png',
+  facadeDay: 'facade-day.png', facadeNight: 'facade-night.png',
+  treeBroadleaf: 'tree-broadleaf.png', treePine: 'tree-pine.png',
+  treePalm: 'tree-palm.png', scrub: 'scrub.png',
+};
+const HDRI = {};
+async function preload() {
+  await Promise.allSettled(Object.entries(PHOTOS).map(([k, f]) => new Promise((res, rej) => {
+    const img = new Image();
+    img.onload = () => { TEX.registerPhoto(k, img); res(); };
+    img.onerror = rej;
+    img.src = '../textures/' + f;
+  })));
+  const loader = new RGBELoader();
+  await Promise.allSettled(['day', 'dusk', 'night'].map(k => new Promise((res, rej) => {
+    loader.load(`../textures/hdri/${k}.hdr`, (t) => {
+      t.mapping = THREE.EquirectangularReflectionMapping;
+      HDRI[k] = t; res();
+    }, undefined, rej);
+  })));
+  await preloadCarModel('../assets/f1car-2026.glb').catch(() => {});
+  out('h', `photo textures registered; HDRIs loaded: ${Object.keys(HDRI).join(',') || 'none'}`);
+}
+
+// --------------------------------------- main.js setupEnvironment, replicated ---
+function buildScene(trackId) {
+  const scene = new THREE.Scene();
+  const circuit = buildCircuit(trackId, TRACKS[trackId], scene);
+  const th = circuit.theme;
+  scene.fog = new THREE.Fog(th.fog, 300, 1600);
+
+  // Sky dome exactly as main.js builds it (must stay in sync with setupEnvironment)
+  const domeCanvas = TEX.skyDome
+    ? TEX.skyDome('#' + new THREE.Color(th.skyTop).getHexString(),
+                  '#' + new THREE.Color(th.skyBot).getHexString(),
+                  { clouds: !th.night, dusk: th.sunI < 2.2 })
+    : (() => {
+        const c = document.createElement('canvas');
+        c.width = 2; c.height = 256;
+        const g = c.getContext('2d');
+        const grad = g.createLinearGradient(0, 0, 0, 256);
+        grad.addColorStop(0, '#' + new THREE.Color(th.skyTop).getHexString());
+        grad.addColorStop(1, '#' + new THREE.Color(th.skyBot).getHexString());
+        g.fillStyle = grad; g.fillRect(0, 0, 2, 256);
+        return c;
+      })();
+  const sky = new THREE.Mesh(
+    new THREE.SphereGeometry(2600, 24, 12),
+    new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(domeCanvas), side: THREE.BackSide, fog: false }));
+  sky.name = 'sky-dome';
+  scene.add(sky);
+
+  scene.add(new THREE.HemisphereLight(th.skyTop, th.ground, th.hemi));
+  const sun = new THREE.DirectionalLight(th.sun, th.sunI);
+  sun.position.set(260, 380, 160);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  const sc = sun.shadow.camera;
+  sc.left = -110; sc.right = 110; sc.top = 110; sc.bottom = -110;
+  sc.near = 50; sc.far = 900;
+  sc.updateProjectionMatrix();
+  sun.shadow.bias = -0.0004;
+  scene.add(sun, sun.target);
+  if (th.night) scene.add(new THREE.AmbientLight(0x8899cc, 0.5));
+
+  const hdr = HDRI[th.night ? 'night' : th.sunI < 2.2 ? 'dusk' : 'day'];
+  if (hdr) {
+    scene.environment = hdr;
+    scene.environmentIntensity = th.night ? 0.55 : 0.9;
+    if (th.night) {
+      scene.background = hdr;
+      scene.backgroundIntensity = 0.7;
+      sky.visible = false;
+    } else {
+      scene.background = null;
+      sky.visible = true;
+    }
+  } else {
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    const envScene = new THREE.Scene();
+    envScene.add(sky.clone());
+    const disc = new THREE.Mesh(new THREE.CircleGeometry(2000, 24).rotateX(-Math.PI / 2),
+      new THREE.MeshBasicMaterial({ color: th.ground }));
+    disc.position.y = -2;
+    envScene.add(disc);
+    scene.environment = pmrem.fromScene(envScene, 0.04).texture;
+    scene.environmentIntensity = th.night ? 0.5 : 0.85;
+    pmrem.dispose();
+  }
+
+  const camera = new THREE.PerspectiveCamera(72, W / H, 0.3, 6500);
+  const composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, camera));
+  const gtao = new GTAOPass(scene, camera, W, H);
+  gtao.output = GTAOPass.OUTPUT.Default;
+  gtao.blendIntensity = 0.72;
+  composer.addPass(gtao);
+  const bloom = new UnrealBloomPass(new THREE.Vector2(W, H),
+    th.night ? 0.5 : 0.18, 0.55, th.night ? 0.6 : 0.86);
+  composer.addPass(bloom);
+  composer.addPass(new OutputPass());
+  composer.setSize(W, H);
+  return { scene, circuit, camera, composer, sky, sun, theme: th, gtao, bloom };
+}
+
+// ------------------------------------------------------------------ pixels ---
+const _rp = new Uint8Array(W * H * 4);
+function grab() {
+  const gl = renderer.getContext();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, _rp);
+  const flip = new Uint8ClampedArray(W * H * 4);
+  for (let y = 0; y < H; y++) {
+    const src = (H - 1 - y) * W * 4, dst = y * W * 4;
+    flip.set(_rp.subarray(src, src + W * 4), dst);
+  }
+  return { data: flip };
+}
+const px = (im, x, y) => {
+  const i = ((y | 0) * W + (x | 0)) * 4;
+  return [im.data[i], im.data[i + 1], im.data[i + 2]];
+};
+const lumAt = (im, i) => 0.2126 * im.data[i * 4] + 0.7152 * im.data[i * 4 + 1] + 0.0722 * im.data[i * 4 + 2];
+const lum = (p) => 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2];
+const pct = (sorted, q) => sorted.length ? sorted[Math.min(sorted.length - 1, Math.max(0, Math.floor(sorted.length * q)))] : 0;
+
+function renderFrame(S) {
+  S.scene.updateMatrixWorld(true);
+  S.camera.updateMatrixWorld(true);
+  S.composer.render();
+  return grab();
+}
+
+const MASK_BG = [255, 0, 255];
+function renderMask(S, pick) {
+  const vis = [];
+  S.scene.traverse(o => {
+    if (o.isMesh || o.isInstancedMesh || o.isSprite || o.isPoints || o.isLine) {
+      vis.push([o, o.visible]);
+      o.visible = !!pick(o);
+    }
+  });
+  const bg = S.scene.background, fog = S.scene.fog;
+  S.scene.background = new THREE.Color(0xff00ff);
+  S.scene.fog = null;
+  renderer.setClearColor(0xff00ff, 1);
+  renderer.render(S.scene, S.camera);
+  const im = grab();
+  S.scene.background = bg; S.scene.fog = fog;
+  renderer.setClearColor(0x000000, 0);
+  for (const [o, v] of vis) o.visible = v;
+  const m = new Uint8Array(W * H);
+  let n = 0;
+  for (let i = 0; i < W * H; i++) {
+    const d = Math.abs(im.data[i * 4] - MASK_BG[0]) + Math.abs(im.data[i * 4 + 1] - MASK_BG[1])
+      + Math.abs(im.data[i * 4 + 2] - MASK_BG[2]);
+    if (d > 24) { m[i] = 1; n++; }
+  }
+  return { m, n };
+}
+
+// with/without pair for objects picked by `pick` (hidden in the "without" frame)
+function maskPair(S, pick) {
+  const vis = [];
+  S.scene.traverse(o => {
+    if ((o.isMesh || o.isInstancedMesh || o.isSprite) && pick(o)) { vis.push([o, o.visible]); o.visible = false; }
+  });
+  const without = renderFrame(S);
+  for (const [o, v] of vis) o.visible = v;
+  const withThem = renderFrame(S);
+  const m = new Uint8Array(W * H);
+  let n = 0;
+  for (let i = 0; i < W * H; i++) {
+    const d = Math.abs(withThem.data[i * 4] - without.data[i * 4])
+      + Math.abs(withThem.data[i * 4 + 1] - without.data[i * 4 + 1])
+      + Math.abs(withThem.data[i * 4 + 2] - without.data[i * 4 + 2]);
+    if (d > 12) { m[i] = 1; n++; }
+  }
+  return { m, n, frame: withThem, without };
+}
+
+function dilate(src, r) {
+  let a = src;
+  for (let k = 0; k < r; k++) {
+    const b = new Uint8Array(W * H);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = y * W + x;
+        if (!a[i]) continue;
+        for (let dy = -1; dy <= 1; dy++) {
+          const yy = y + dy; if (yy < 0 || yy >= H) continue;
+          for (let dx = -1; dx <= 1; dx++) {
+            const xx = x + dx; if (xx < 0 || xx >= W) continue;
+            b[yy * W + xx] = 1;
+          }
+        }
+      }
+    }
+    a = b;
+  }
+  return a;
+}
+
+async function shot(name, im) {
+  if (im) readCtx.putImageData(new ImageData(im.data, W, H), 0, 0);
+  else { readCtx.clearRect(0, 0, W, H); readCtx.drawImage(renderer.domElement, 0, 0); }
+  const blob = await new Promise(r => readCanvas.toBlob(r, 'image/png'));
+  try {
+    await fetch(`/shot?name=${encodeURIComponent(name)}`, { method: 'POST', body: blob });
+    results.shots.push(`tools/shots/${name}.png`);
+    out('h', `  shot -> tools/shots/${name}.png`);
+  } catch (e) { out('f', `  shot POST failed: ${e}`); }
+}
+
+// world -> screen
+function toScreen(S, v) {
+  const p = v.clone().project(S.camera);
+  return [(p.x * 0.5 + 0.5) * W, (0.5 - p.y * 0.5) * H, p.z];
+}
+
+function bboxOfMask(mask) {
+  let x0 = W, x1 = -1, y0 = H, y1 = -1;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    if (!mask[y * W + x]) continue;
+    if (x < x0) x0 = x; if (x > x1) x1 = x;
+    if (y < y0) y0 = y; if (y > y1) y1 = y;
+  }
+  return x1 < 0 ? null : { x0, x1, y0, y1 };
+}
+
+// =============================================================================
+//                                  CHECKS
+// =============================================================================
+async function main() {
+  await preload();
+  head('building monza scene');
+  const M = buildScene('monza');
+  window.__DBG__.M = M;
+  const c = M.circuit;
+  const named = (n) => { let r = null; c.group.traverse(o => { if (o.name === n && !r) r = o; }); return r; };
+
+  // =========================================================================
+  // 1. TV SCREEN
+  // =========================================================================
+  head('1. tv screen / jumbotron');
+  const tv = named('tv-screen');
+  check(!!tv, 'tv-screen group exists at monza');
+  if (tv) {
+    tv.updateMatrixWorld(true);
+    const tvPos = new THREE.Vector3().setFromMatrixPosition(tv.matrixWorld);
+    const ti = c.nearestSample(tvPos, null);
+
+    // -- geometric: support structure reaches the ground -------------------
+    {
+      const inv = new THREE.Matrix4().copy(tv.matrixWorld).invert();
+      let minY = Infinity, supports = 0, supMinY = Infinity, supMaxY = -Infinity;
+      const v = new THREE.Vector3();
+      tv.traverse(o => {
+        if (!o.isMesh) return;
+        o.updateMatrixWorld(true);
+        const local = new THREE.Matrix4().multiplyMatrices(inv, o.matrixWorld);
+        const g = o.geometry;
+        if (!g.boundingBox) g.computeBoundingBox();
+        const bb = g.boundingBox.clone().applyMatrix4(local);
+        minY = Math.min(minY, bb.min.y);
+        if (o.name && o.name.startsWith('tv-support')) {
+          supports++;
+          supMinY = Math.min(supMinY, bb.min.y);
+          supMaxY = Math.max(supMaxY, bb.max.y);
+        }
+      });
+      note('tv: local minY / supports / support y-range',
+        `${minY.toFixed(3)} / ${supports} / [${supMinY.toFixed(2)}, ${supMaxY.toFixed(2)}]`);
+      check(minY <= 0.05, 'tv structure reaches its own ground plane', `[minY=${minY.toFixed(3)}]`);
+      check(supports >= 2, 'tv has named support structure', `[tv-support* meshes=${supports}]`);
+    }
+
+    // -- shot: the driver's approach view from up the track ----------------
+    {
+      const bi = ((ti - Math.round(150 / c.ds)) % c.N + c.N) % c.N;
+      const b = c.samples[bi];
+      M.camera.position.set(b.p.x, c.heightAt(bi) + 4.5, b.p.z);
+      M.camera.lookAt(tvPos.x, tvPos.y + 8, tvPos.z);
+      M.camera.updateMatrixWorld(true);
+      await shot('env-tv-approach', renderFrame(M));
+    }
+
+    // -- metric camera: frontal at range (the "floating slab" framing) -----
+    // 140m out along the screen's own facing direction, elevated over the
+    // treeline: does the structure read continuously down to the ground?
+    {
+      const s = c.samples[ti];
+      const toTrack = s.p.clone().setY(0).sub(tvPos.clone().setY(0)).normalize();
+      M.camera.position.copy(tvPos).addScaledVector(toTrack, 140).setY(tvPos.y + 16);
+      M.camera.lookAt(tvPos.x, tvPos.y + 7, tvPos.z);
+      M.camera.updateMatrixWorld(true);
+      const im = renderFrame(M);
+      await shot('env-tv-far', im);
+      const isTV = (o) => { let p = o; while (p) { if (p === tv) return true; p = p.parent; } return false; };
+      const tvMask = renderMask(M, isTV);
+      // projection-anchored bands: cabinet bottom and the ground at the tv
+      let cab = null;
+      tv.traverse(o => { if (o.name === 'tv-cabinet') cab = o; });
+      check(!!cab, 'tv publishes a named cabinet');
+      let cabBottomY = 0, groundY = 0;
+      if (cab) {
+        cab.geometry.computeBoundingBox();
+        const bb = cab.geometry.boundingBox;
+        // tv-local (0, cabinet bottom, 0) -> world (tv rotates about y only)
+        const bot = new THREE.Vector3(0, bb.min.y + cab.position.y, 0).applyMatrix4(tv.matrixWorld);
+        cabBottomY = toScreen(M, bot)[1];
+        groundY = toScreen(M, tvPos.clone())[1];
+      }
+      let supRows = 0, coveredRows = 0, supWidthSum = 0, gapRows = 0;
+      for (let y = Math.ceil(cabBottomY) + 2; y <= Math.floor(groundY) - 2; y++) {
+        if (y < 0 || y >= H) continue;
+        supRows++;
+        let w = 0;
+        for (let x = 0; x < W; x++) if (tvMask.m[y * W + x]) w++;
+        if (w >= 2) { coveredRows++; supWidthSum += w; } else gapRows++;
+      }
+      const meanSupW = coveredRows ? supWidthSum / coveredRows : 0;
+      note('tv far: mask px / support rows / covered / gaps / mean width px',
+        `${tvMask.n} / ${supRows} / ${coveredRows} / ${gapRows} / ${meanSupW.toFixed(1)}`);
+      check(supRows >= 10 && gapRows === 0,
+        'tv support structure is continuous from cabinet to ground at 140m',
+        `[support rows=${supRows}, gap rows=${gapRows}]`);
+      check(meanSupW >= 6,
+        'tv support structure is substantial enough to read at 140m',
+        `[mean support width=${meanSupW.toFixed(1)}px]`);
+    }
+
+    // -- camera: back view (clad + framed, not flat grey) ------------------
+    {
+      const s = c.samples[ti];
+      // stand behind the tv (away from the track), look at its back
+      const away = tvPos.clone().sub(s.p.clone().setY(tvPos.y)).setY(0).normalize();
+      M.camera.position.copy(tvPos).addScaledVector(away, 42).setY(tvPos.y + 6);
+      M.camera.lookAt(tvPos.x, tvPos.y + 8.5, tvPos.z);
+      M.camera.updateMatrixWorld(true);
+      const im2 = renderFrame(M);
+      await shot('env-tv-back', im2);
+      const isTV = (o) => { let p = o; while (p) { if (p === tv) return true; p = p.parent; } return false; };
+      const tvMask = renderMask(M, isTV);
+      const bb = bboxOfMask(tvMask.m);
+      // luminance variance across the tv's back: flat unclad grey ~ tiny variance
+      const vals = [];
+      if (bb) {
+        for (let y = bb.y0; y <= bb.y1; y++) for (let x = bb.x0; x <= bb.x1; x++) {
+          const i = y * W + x;
+          if (tvMask.m[i]) vals.push(lumAt(im2, i));
+        }
+      }
+      vals.sort((a, b) => a - b);
+      const p10 = pct(vals, 0.1), p90 = pct(vals, 0.9);
+      const mean = vals.reduce((a, b) => a + b, 0) / Math.max(1, vals.length);
+      let sd = 0;
+      for (const v of vals) sd += (v - mean) * (v - mean);
+      sd = Math.sqrt(sd / Math.max(1, vals.length));
+      note('tv back: px / p10 / p90 / sd', `${vals.length} / ${p10.toFixed(1)} / ${p90.toFixed(1)} / ${sd.toFixed(2)}`);
+      const ribs = [];
+      tv.traverse(o => { if (o.name === 'tv-back-rib') ribs.push(o); });
+      const ribMask = renderMask(M, o => o.name === 'tv-back-rib');
+      note('tv back framing ribs / visible rib px', `${ribs.length} / ${ribMask.n}`);
+      check(ribs.length >= 4 && ribMask.n > 400 && sd >= 4,
+        'tv back is clad with visible framing (not one flat grey face)',
+        `[ribs=${ribs.length}, rib px=${ribMask.n}, back luminance sd=${sd.toFixed(2)}]`);
+    }
+
+    // -- proportions -------------------------------------------------------
+    {
+      let area = 0, screen = null;
+      tv.traverse(o => {
+        if (o.geometry && o.geometry.type === 'PlaneGeometry') {
+          const g = o.geometry.parameters;
+          if (g.width * g.height > area) { area = g.width * g.height; screen = o; }
+        }
+      });
+      const ar = screen ? screen.geometry.parameters.width / screen.geometry.parameters.height : 0;
+      note('tv screen w x h / aspect', screen
+        ? `${screen.geometry.parameters.width} x ${screen.geometry.parameters.height} / ${ar.toFixed(2)}` : 'none');
+      check(!!screen && area >= 100, 'screen is still a big surface', `[${area.toFixed(0)} m2]`);
+      check(!!screen && ar >= 1.4 && ar <= 2.1, 'screen proportions read as a real big screen (16:9-ish)',
+        `[aspect=${ar.toFixed(2)}]`);
+    }
+  }
+
+  // =========================================================================
+  // 2. CLOUDS in the sky dome
+  // =========================================================================
+  head('2. clouds baked into the sky dome');
+  {
+    const hasSkyDome = !!TEX.skyDome;
+    check(hasSkyDome, 'textures.js exports skyDome()');
+    // canvas-level, for BOTH cloud palettes main.js can request (day + dusk)
+    if (hasSkyDome) for (const [label, top, bot, dusk] of [
+      ['day', '#3577d4', '#bfd9f2', false],
+      ['dusk', '#25336e', '#e89a5f', true],
+    ]) {
+      const withC = TEX.skyDome(top, bot, { clouds: true, dusk });
+      const noC = TEX.skyDome(top, bot, { clouds: false, dusk });
+      const cw = withC.width, ch = withC.height;
+      const g1 = withC.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, cw, ch).data;
+      const g0 = noC.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, cw, ch).data;
+      const L = (d, i) => 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+      // horizon band: the dome's equator is at v = 0.5 (full sphere). Rows in
+      // [0.40, 0.52] of height must be untouched by the clouds.
+      let horizonMaxD = 0;
+      for (let y = Math.floor(ch * 0.40); y < Math.floor(ch * 0.52); y++) {
+        for (let x = 0; x < cw; x++) {
+          const i = (y * cw + x) * 4;
+          horizonMaxD = Math.max(horizonMaxD, Math.abs(L(g1, i) - L(g0, i)));
+        }
+      }
+      // cloud band: [0.05, 0.38]
+      let cloudPx = 0, bandPx = 0, maxDev = 0;
+      for (let y = Math.floor(ch * 0.05); y < Math.floor(ch * 0.38); y++) {
+        for (let x = 0; x < cw; x++) {
+          const i = (y * cw + x) * 4;
+          const d = Math.abs(L(g1, i) - L(g0, i));
+          bandPx++;
+          if (d >= 5) cloudPx++;
+          if (d > maxDev) maxDev = d;
+        }
+      }
+      // softness: max horizontal adjacent-pixel luminance step anywhere above horizon
+      let maxStep = 0;
+      for (let y = 0; y < Math.floor(ch * 0.52); y++) {
+        for (let x = 1; x < cw; x++) {
+          const i = (y * cw + x) * 4;
+          const s = Math.abs(L(g1, i) - L(g1, i - 4));
+          if (s > maxStep) maxStep = s;
+        }
+      }
+      note(`dome(${label}): horizon-band max delta / cloud px share / max dev / max h-step`,
+        `${horizonMaxD.toFixed(1)} / ${(cloudPx / bandPx * 100).toFixed(2)}% / ${maxDev.toFixed(1)} / ${maxStep.toFixed(1)}`);
+      check(horizonMaxD <= 2, `dome(${label}): clouds leave the horizon band untouched`,
+        `[max delta=${horizonMaxD.toFixed(1)}]`);
+      check(cloudPx / bandPx >= 0.015, `dome(${label}): clouds are actually visible in the upper dome band`,
+        `[${(cloudPx / bandPx * 100).toFixed(2)}% of band pixels]`);
+      check(maxStep <= 22, `dome(${label}): cloud edges are soft (no hard steps in the dome texture)`,
+        `[max adjacent-px step=${maxStep.toFixed(1)}]`);
+    }
+
+    // rendered: camera pitched up; compare against a cloudless dome swap
+    {
+      const si = Math.round(60 / c.ds);          // clear of the gantry overhead
+      const s0 = c.samples[si];
+      M.camera.position.set(s0.p.x, c.heightAt(si) + 3, s0.p.z);
+      const aim = s0.p.clone().addScaledVector(s0.t, 200);
+      M.camera.lookAt(aim.x, c.heightAt(si) + 160, aim.z);   // ~38 deg up
+      M.camera.updateMatrixWorld(true);
+      const withFrame = renderFrame(M);
+      await shot('env-sky', withFrame);
+      let noCFrame = null;
+      if (TEX.skyDome) {
+        const th = M.theme;
+        const top = '#' + new THREE.Color(th.skyTop).getHexString();
+        const bot = '#' + new THREE.Color(th.skyBot).getHexString();
+        const noC = TEX.skyDome(top, bot, { clouds: false });
+        const oldMap = M.sky.material.map;
+        M.sky.material.map = new THREE.CanvasTexture(noC);
+        M.sky.material.needsUpdate = true;
+        noCFrame = renderFrame(M);
+        M.sky.material.map = oldMap;
+        M.sky.material.needsUpdate = true;
+      }
+      if (noCFrame) {
+        // sky-only pixels (nothing but the dome behind them)
+        const opaque = renderMask(M, o => o !== M.sky);
+        let cloudPx = 0, maxD = 0, skyPx = 0;
+        const dmask = new Uint8Array(W * H);
+        for (let i = 0; i < W * H; i++) {
+          if (opaque.m[i]) continue;
+          skyPx++;
+          const d = Math.abs(lumAt(withFrame, i) - lumAt(noCFrame, i));
+          if (d > 4) { cloudPx++; dmask[i] = 1; }
+          if (d > maxD) maxD = d;
+        }
+        // hard-edge scan within the sky: adjacent-pixel steps in the WITH frame
+        // restricted to the sky region (a slab pane = a long straight high step)
+        let hardSteps = 0, worstStep = 0;
+        for (let y = 1; y < H - 1; y++) {
+          for (let x = 1; x < W - 1; x++) {
+            const i = y * W + x;
+            if (opaque.m[i] || opaque.m[i - 1] || opaque.m[i - W]) continue;
+            const dh = Math.abs(lumAt(withFrame, i) - lumAt(withFrame, i - 1));
+            const dv = Math.abs(lumAt(withFrame, i) - lumAt(withFrame, i - W));
+            const st = Math.max(dh, dv);
+            if (st > worstStep) worstStep = st;
+            if (st > 14) hardSteps++;
+          }
+        }
+        note('sky render: sky px / cloud px / max cloud delta / hard steps / worst step',
+          `${skyPx} / ${cloudPx} / ${maxD.toFixed(1)} / ${hardSteps} / ${worstStep.toFixed(1)}`);
+        check(cloudPx > skyPx * 0.02, 'clouds visible in the rendered sky', `[${cloudPx}px of ${skyPx}px sky]`);
+        check(hardSteps === 0, 'no hard-edged rectangles anywhere in the rendered sky',
+          `[steps over 14/255=${hardSteps}, worst=${worstStep.toFixed(1)}]`);
+      }
+    }
+  }
+
+  // =========================================================================
+  // 3. CONTACT SHADOW on the grass (Lesmo chase)
+  // =========================================================================
+  head('3. contact-shadow decal at a kerbed corner (chase view)');
+  {
+    // find a corner run away from S/F: max |curv| sample in [0.35, 0.75] of lap
+    let ci = 0, cbest = 0;
+    for (let i = Math.floor(c.N * 0.35); i < Math.floor(c.N * 0.75); i++) {
+      if (Math.abs(c.samples[i].curv) > cbest) { cbest = Math.abs(c.samples[i].curv); ci = i; }
+    }
+    note('corner sample / radius', `${ci} / ${(1 / cbest).toFixed(0)}m`);
+    const s = c.samples[ci];
+    const inside = s.curv > 0 ? -1 : 1;
+    // place the car at the kerb edge on the inside of the corner (cutting the kerb)
+    const team = TEAMS[0], driver = DRIVERS.find(d => d.team === team.id) || DRIVERS[0];
+    const handle = buildCarMesh(team, driver);
+    const car = handle.group;
+    const lat = inside * (c.halfWidth - 0.55);
+    car.position.set(s.p.x + s.n.x * lat, c.heightAt(ci), s.p.z + s.n.z * lat);
+    car.rotation.y = Math.atan2(s.t.x, s.t.z);
+    M.scene.add(car);
+    const blob = makeContactShadow();
+    blob.position.set(0, 0.028, -0.05);
+    car.add(blob);
+    car.updateMatrixWorld(true);
+
+    // chase camera: behind and above, as main.js chase cam sits
+    const bi = ((ci - Math.round(9 / c.ds)) % c.N + c.N) % c.N;
+    const b = c.samples[bi];
+    M.camera.position.set(b.p.x + b.n.x * lat * 0.6, c.heightAt(bi) + 3.1, b.p.z + b.n.z * lat * 0.6);
+    M.camera.lookAt(car.position.x, car.position.y + 0.8, car.position.z);
+    M.camera.updateMatrixWorld(true);
+
+    const im = renderFrame(M);
+    await shot('env-lesmo-chase', im);
+
+    // shadow-affected pixels = with/without blob diff
+    const pair = maskPair(M, o => o === blob);
+    // car silhouette (without the blob)
+    const carMask = renderMask(M, o => { let p = o; while (p) { if (p === car && o !== blob) return true; p = p.parent; } return false; });
+    const carNear = dilate(carMask.m, 6);
+    // visible grass = the ground mesh is on the ray AND nothing else covers it
+    const groundMask = renderMask(M, o => o.name === 'ground');
+    const coverMask = renderMask(M, o => o !== M.sky && o !== blob && o.name !== 'ground'
+      && !(() => { let p = o; while (p) { if (p === car) return true; p = p.parent; } return false; })());
+    let detached = 0, attached = 0, onGrassDetached = 0;
+    for (let i = 0; i < W * H; i++) {
+      if (!pair.m[i]) continue;
+      if (carNear[i]) { attached++; continue; }
+      detached++;
+      if (groundMask.m[i] && !coverMask.m[i]) onGrassDetached++;
+    }
+    note('shadow px: under/near car / detached / detached-on-grass',
+      `${attached} / ${detached} / ${onGrassDetached}`);
+    check(attached > 150, 'the car still casts a visible contact shadow', `[near-car shadow px=${attached}]`);
+    check(onGrassDetached <= 40,
+      'no dark shadow quad on the grass detached from the car',
+      `[detached-on-grass px=${onGrassDetached}]`);
+    await shot('env-lesmo-chase-noblob', pair.without);
+
+    M.scene.remove(car);
+  }
+
+  // =========================================================================
+  // 4a. KERB closeup — outer edge vs track edge
+  // =========================================================================
+  head('4a. kerb closeup');
+  {
+    // camera low over the kerb looking along it at the same corner
+    let ci = 0, cbest = 0;
+    for (let i = Math.floor(c.N * 0.35); i < Math.floor(c.N * 0.75); i++) {
+      if (Math.abs(c.samples[i].curv) > cbest) { cbest = Math.abs(c.samples[i].curv); ci = i; }
+    }
+    const s = c.samples[ci];
+    const inside = s.curv > 0 ? -1 : 1;
+    const bi = ((ci - Math.round(26 / c.ds)) % c.N + c.N) % c.N;
+    const b = c.samples[bi];
+    const ai = (ci + Math.round(18 / c.ds)) % c.N;
+    const a = c.samples[ai];
+    M.camera.position.set(
+      b.p.x + b.n.x * inside * (c.halfWidth - 1.2),
+      c.heightAt(bi) + 1.7,
+      b.p.z + b.n.z * inside * (c.halfWidth - 1.2));
+    M.camera.lookAt(a.p.x + a.n.x * inside * c.halfWidth, c.heightAt(ai), a.p.z + a.n.z * inside * c.halfWidth);
+    M.camera.updateMatrixWorld(true);
+    const im = renderFrame(M);
+    await shot('env-kerb-closeup', im);
+
+    // outer-boundary waviness: silhouette of the kerb mesh against everything else
+    const kerbMask = renderMask(M, o => o.name === 'kerbs');
+    note('kerb closeup mask px', kerbMask.n);
+    // For each screen column crossed by the kerb: outermost (topmost) kerb pixel.
+    // Split into CONTINUOUS boundary segments (columns can jump between the two
+    // separate kerb ribbons in frame), then measure the LOW-FREQUENCY wobble:
+    // residual of the boundary against its own 51-column moving average. A
+    // pinch/swell (the round-4 defect: abutting tapered runs mid-corner) shows
+    // up as a multi-pixel residual dip; a clean offset ribbon stays sub-pixel.
+    const topAt = new Int32Array(W).fill(-1);
+    for (let x = 0; x < W; x++) {
+      for (let y = 0; y < H; y++) {
+        if (kerbMask.m[y * W + x]) { topAt[x] = y; break; }
+      }
+    }
+    const segs = [];
+    let segStart = -1;
+    for (let x = 0; x <= W; x++) {
+      const cont = x < W && topAt[x] >= 0 && (segStart < 0 || x === segStart
+        || Math.abs(topAt[x] - topAt[x - 1]) <= 6);
+      if (cont) { if (segStart < 0) segStart = x; }
+      else { if (segStart >= 0 && x - segStart >= 120) segs.push([segStart, x]); segStart = x < W && topAt[x] >= 0 ? x : -1; }
+    }
+    const resids = [];
+    const HALF = 25;
+    for (const [x0, x1] of segs) {
+      for (let x = x0 + HALF; x < x1 - HALF; x++) {
+        let s2 = 0;
+        for (let j = -HALF; j <= HALF; j++) s2 += topAt[x + j];
+        resids.push(Math.abs(topAt[x] - s2 / (2 * HALF + 1)));
+      }
+    }
+    resids.sort((q, w) => q - w);
+    const rp95 = pct(resids, 0.95), rmax = resids[resids.length - 1] || 0;
+    note('kerb outer boundary: segments / residual cols / p95 / max',
+      `${segs.length} / ${resids.length} / ${rp95.toFixed(2)} / ${rmax.toFixed(2)}`);
+    results.stats.kerbWaviness = { p95: rp95, max: rmax };
+    check(resids.length > 400, 'kerb boundary segments long enough to measure', `[cols=${resids.length}]`);
+    check(rp95 <= 1.5 && rmax <= 5,
+      'kerb outer boundary runs smooth against the track edge (no pinch/swell wobble)',
+      `[residual p95=${rp95.toFixed(2)}px max=${rmax.toFixed(2)}px vs pre-fix visible pinches]`);
+  }
+
+  // =========================================================================
+  // 4b. GRANDSTAND crowd banding
+  // =========================================================================
+  head('4b. grandstand crowd closeup');
+  {
+    const seats = named('grandstand-seating');
+    check(!!seats, 'grandstand seating found');
+    if (seats) {
+      // camera in front of the first stand
+      const m4 = new THREE.Matrix4();
+      seats.getMatrixAt(0, m4);
+      const sp = new THREE.Vector3().setFromMatrixPosition(m4);
+      const si = c.nearestSample(sp, null);
+      const ss = c.samples[si];
+      const toTrack = ss.p.clone().sub(sp.clone().setY(0)).setY(0).normalize();
+      M.camera.position.copy(sp).addScaledVector(toTrack, 26).setY(sp.y + 4);
+      M.camera.lookAt(sp.x, sp.y + 1.5, sp.z);
+      M.camera.updateMatrixWorld(true);
+      const im = renderFrame(M);
+      await shot('env-grandstand', im);
+      const seatMask = renderMask(M, o => o.name === 'grandstand-seating');
+      note('seating mask px', seatMask.n);
+      // banding metric: per-row mean luminance inside the mask, detrended by a
+      // 9-row moving average; banding = p95 of |residual|
+      const rowSum = new Float64Array(H), rowN = new Float64Array(H);
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+        const i = y * W + x;
+        if (!seatMask.m[i]) continue;
+        rowSum[y] += lumAt(im, i); rowN[y]++;
+      }
+      const rows = [], ys = [];
+      for (let y = 0; y < H; y++) if (rowN[y] > 40) { rows.push(rowSum[y] / rowN[y]); ys.push(y); }
+      const res = [];
+      for (let k = 4; k < rows.length - 4; k++) {
+        let s2 = 0;
+        for (let j = -4; j <= 4; j++) s2 += rows[k + j];
+        res.push(Math.abs(rows[k] - s2 / 9));
+      }
+      res.sort((q, w) => q - w);
+      note('crowd closeup detail (real rows are FINE here): residual p50 / p95',
+        `${pct(res, 0.5).toFixed(2)} / ${pct(res, 0.95).toFixed(2)}`);
+
+      // The judged banding was baked into the TEXTURE: TEX.crowd used to be
+      // sampled at [512,128], which squashed the 1024x512 crowd photo 4:1
+      // vertically; the resample aliased the photo's seating rows into hard
+      // horizontal stripes that survive at every distance. Measure the banding
+      // on the texture itself, at a mip-2-style working size, and require the
+      // shipped [1024,512] sampling to carry materially less row-banding than
+      // the old squashed path.
+      // The banding mechanism: the 4:1 vertical squash smeared each seating row
+      // of the photo into a soft horizontal streak (people unresolvable), and on
+      // the slab those streaks read as horizontal bands. The signature is LOST
+      // VERTICAL DETAIL: measure mean |d/dy| luminance gradient of both texture
+      // paths evaluated at the same 1024x512 display scale -- the shipped
+      // native-res path must carry materially more vertical detail than the old
+      // squashed path (i.e. rows resolve into people again, not into bands).
+      const vDetail = (canvas) => {
+        const dc = document.createElement('canvas');
+        dc.width = 1024; dc.height = 512;
+        const dg = dc.getContext('2d', { willReadFrequently: true });
+        dg.drawImage(canvas, 0, 0, 1024, 512);
+        const d = dg.getImageData(0, 0, 1024, 512).data;
+        const L2 = (i) => 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+        let s2 = 0, n = 0;
+        for (let y = 1; y < 512; y += 2) {
+          for (let x = 0; x < 1024; x += 2) {
+            s2 += Math.abs(L2((y * 1024 + x) * 4) - L2(((y - 1) * 1024 + x) * 4));
+            n++;
+          }
+        }
+        return s2 / n;
+      };
+      const oldV = vDetail(TEX.crowd(512, 128));   // the pre-fix squashed path
+      const newV = vDetail(TEX.crowd(1024, 512));  // what trackBuilder now samples
+      note('crowd texture vertical-detail |d/dy|: old squashed vs native',
+        `${oldV.toFixed(2)} vs ${newV.toFixed(2)}`);
+      results.stats.crowdBanding = { oldV, newV, ratio: newV / oldV };
+      check(newV >= oldV * 1.4,
+        'crowd rows resolve into people again instead of smeared horizontal bands',
+        `[vertical detail old=${oldV.toFixed(2)}, new=${newV.toFixed(2)}, ratio=${(newV / oldV).toFixed(2)}]`);
+    }
+  }
+
+  // =========================================================================
+  // 4c. BRAKE BOARD backs
+  // =========================================================================
+  head('4c. brake-board backs');
+  {
+    const b100 = named('brake-board-100');
+    check(!!b100, 'brake boards exist');
+    if (b100) {
+      // stand BEHIND the first board: its textured face is on its local +z
+      // (facing the oncoming cars), so the back is on the -z side
+      const m4 = new THREE.Matrix4();
+      b100.getMatrixAt(0, m4);
+      const bp = new THREE.Vector3().setFromMatrixPosition(m4);
+      const bz = new THREE.Vector3().setFromMatrixColumn(m4, 2).normalize();
+      M.camera.position.copy(bp).addScaledVector(bz, -14).add(new THREE.Vector3(0, 1.2, 0));
+      M.camera.lookAt(bp.x, bp.y, bp.z);
+      M.camera.updateMatrixWorld(true);
+      const im = renderFrame(M);
+      await shot('env-brakeboard-back', im);
+      const mask = renderMask(M, o => o.name === 'brake-board-100');
+      const vals = [];
+      for (let i = 0; i < W * H; i++) if (mask.m[i]) vals.push(lumAt(im, i));
+      vals.sort((q, w) => q - w);
+      note('board-back px / p50 / p95', `${vals.length} / ${pct(vals, 0.5).toFixed(1)} / ${pct(vals, 0.95).toFixed(1)}`);
+      check(vals.length > 100, 'board back is visible in the back framing', `[${vals.length}px]`);
+      check(pct(vals, 0.95) <= 150,
+        'brake-board backs are clad/darkened (not bright white)',
+        `[p95 luminance=${pct(vals, 0.95).toFixed(1)}]`);
+    }
+  }
+
+  // =========================================================================
+  // 4d. SPONSOR-BANNER shuffle
+  // =========================================================================
+  head('4d. sponsor-banner shuffle');
+  {
+    const boards = [];
+    c.group.traverse(o => { if (o.name === 'sponsor-banner') boards.push(o); });
+    note('sponsor-banner boards', boards.length);
+    check(boards.length >= 4, 'enough banner boards to audit', `[n=${boards.length}]`);
+    // boards must publish their brand + sequence for the shuffle audit
+    const seqOk = boards.every(b => b.userData && b.userData.brand !== undefined && b.userData.seq !== undefined);
+    check(seqOk, 'banner boards publish brand + placement sequence');
+    if (seqOk) {
+      const inOrder = boards.slice().sort((a, b) => a.userData.seq - b.userData.seq);
+      let repeats = 0;
+      const brands = new Set();
+      for (let i = 0; i < inOrder.length; i++) {
+        brands.add(inOrder[i].userData.brand);
+        for (let j = Math.max(0, i - 3); j < i; j++) {
+          if (inOrder[j].userData.brand === inOrder[i].userData.brand) repeats++;
+        }
+      }
+      note('banner brands distinct / window-4 repeats', `${brands.size} / ${repeats}`);
+      check(brands.size >= 4, 'at least 4 distinct banner sponsors', `[distinct=${brands.size}]`);
+      check(repeats === 0, 'no sponsor repeats within any 4 consecutive banner boards', `[repeats=${repeats}]`);
+    }
+  }
+
+  // =========================================================================
+  // 5. GRID FURNITURE hero framing
+  // =========================================================================
+  head('5. grid furniture — hero-01 framing');
+  {
+    // grid-facing camera: from behind the last grid slot looking down the straight
+    const slots = c.gridSlots;
+    const last = slots[slots.length - 1];
+    const li = c.nearestSample(last.pos, null);
+    const bi = ((li - Math.round(30 / c.ds)) % c.N + c.N) % c.N;
+    const b = c.samples[bi];
+    M.camera.position.set(b.p.x, c.heightAt(bi) + 7.5, b.p.z);
+    const s0 = c.samples[0];
+    M.camera.lookAt(s0.p.x, c.heightAt(0) + 2, s0.p.z);
+    M.camera.updateMatrixWorld(true);
+    const im = renderFrame(M);
+    await shot('env-hero01-grid', im);
+    const gantryMask = renderMask(M, o => { let p = o; while (p) { if (p.name === 'gantry') return true; p = p.parent; } return false; });
+    const standMask = renderMask(M, o => o.name === 'grandstand-seating' || o.name === 'grandstand-base' || o.name === 'grandstand-frame');
+    const pitwallMask = renderMask(M, o => { let p = o; while (p) { if (p.name === 'pit-wall') return true; p = p.parent; } return false; });
+    note('hero-01 visible px: gantry / grandstand / pit wall',
+      `${gantryMask.n} / ${standMask.n} / ${pitwallMask.n}`);
+    check(gantryMask.n > 400, 'start gantry in the hero-01 frame', `[${gantryMask.n}px]`);
+    check(standMask.n > 2000, 'a grandstand in the hero-01 frame', `[${standMask.n}px]`);
+    check(pitwallMask.n > 300, 'the pit wall in the hero-01 frame', `[${pitwallMask.n}px]`);
+  }
+
+  head(`RESULT  ${results.pass} passed, ${results.fail} failed`);
+  results.done = true;
+}
+
+window.__DBG__ = {
+  at(x, y, S) {
+    S = S || window.__DBG__.M;
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera(new THREE.Vector2((x / W) * 2 - 1, -((y / H) * 2 - 1)), S.camera);
+    ray.far = 6500;
+    return ray.intersectObjects([S.scene], true)
+      .slice(0, 6)
+      .map(h => `${h.object.name || h.object.type}@${h.distance.toFixed(0)}m`);
+  },
+  shot, renderFrame, px, lum, THREE,
+};
+
+main().catch(e => {
+  results.error = String(e && e.stack || e);
+  results.done = true;
+  out('f', 'HARNESS ERROR: ' + results.error);
+});
+</script>
+</body>
+</html>

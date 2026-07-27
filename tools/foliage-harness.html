@@ -1,0 +1,911 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>APEX FORMULA 2026 — foliage halo + horizon harness</title>
+<script type="importmap">
+{ "imports": { "three": "../lib/three.module.js" } }
+</script>
+<style>
+  html, body { margin: 0; background: #0b0d12; color: #dfe4ec; font: 12px/1.45 ui-monospace, monospace; }
+  #log { position: fixed; right: 0; top: 0; width: 46vw; height: 100vh; overflow: auto;
+         padding: 10px 14px; background: rgba(8,10,14,0.94); white-space: pre-wrap; }
+  .p { color: #57d98a; } .f { color: #ff6b6b; } .h { color: #8fb7ff; font-weight: bold; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="log"></div>
+<script type="module">
+// =============================================================================
+// Foliage-halo + horizon-silhouette harness.
+//
+// Same pattern as tools/visual-harness.html (real buildCircuit scene, real
+// composer, readPixels assertions, shots POSTed to /shot) with two deliberate
+// differences, both required by what is being measured:
+//
+//  1. scene.background follows js/main.js EXACTLY -- procedural gradient dome on
+//     day/dusk, HDRI only at night. visual-harness.html always uses the HDRI as
+//     the backdrop, which is NOT what main.js shows and which puts the day
+//     panorama's own baked skyline behind the treeline. A halo assertion that
+//     samples "the sky just outside a canopy" has to sample the sky the game
+//     actually draws.
+//  2. Bloom is ENABLED, at main.js's strength/radius/threshold, and GTAO's
+//     blendIntensity is main.js's 0.72. A glow *around* a canopy is a bloom
+//     artefact by definition; measuring it with bloom off cannot see it.
+//
+// Run:  python3 tools/devserver.py 8341 .   then open /tools/foliage-harness.html
+// Results land in window.__HARNESS__ and preview frames are POSTed to /shot.
+// =============================================================================
+import * as THREE from 'three';
+import { EffectComposer } from '../lib/postprocessing/EffectComposer.js';
+import { RenderPass } from '../lib/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from '../lib/postprocessing/UnrealBloomPass.js';
+import { GTAOPass } from '../lib/postprocessing/GTAOPass.js';
+import { OutputPass } from '../lib/postprocessing/OutputPass.js';
+import { RGBELoader } from '../lib/loaders/RGBELoader.js';
+import { buildCircuit } from '../js/trackBuilder.js';
+import * as TEX from '../js/textures.js';
+import { TRACKS } from '../js/tracks.js';
+
+const W = 1600, H = 1000;
+const logEl = document.getElementById('log');
+const results = { checks: [], pass: 0, fail: 0, shots: [], stats: {}, done: false, error: null };
+window.__HARNESS__ = results;
+
+const out = (cls, s) => {
+  const d = document.createElement('div');
+  d.className = cls; d.textContent = s;
+  logEl.appendChild(d);
+  console.log(s);
+};
+const head = (s) => out('h', '\n=== ' + s);
+function check(cond, label, detail = '') {
+  results.checks.push({ ok: !!cond, label, detail });
+  if (cond) { results.pass++; out('p', `  PASS  ${label}${detail ? '  ' + detail : ''}`); }
+  else { results.fail++; out('f', `  FAIL  ${label}${detail ? '  ' + detail : ''}`); }
+}
+const note = (k, v) => { results.stats[k] = v; out('h', `  ${k} = ${typeof v === 'object' ? JSON.stringify(v) : v}`); };
+
+// ---------------------------------------------------------------- renderer ---
+const renderer = new THREE.WebGLRenderer({
+  antialias: true, powerPreference: 'high-performance', preserveDrawingBuffer: true,
+});
+renderer.setPixelRatio(1);
+renderer.setSize(W, H);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;      // main.js
+renderer.toneMappingExposure = 1.05;                     // main.js
+document.getElementById('app').appendChild(renderer.domElement);
+
+const readCanvas = document.createElement('canvas');
+readCanvas.width = W; readCanvas.height = H;
+const readCtx = readCanvas.getContext('2d', { willReadFrequently: true });
+
+// ------------------------------------------------------------ asset preload ---
+const PHOTOS = {
+  asphalt: 'asphalt.png', grass: 'grass.png', gravel: 'gravel.png', crowd: 'crowd.png',
+  facadeDay: 'facade-day.png', facadeNight: 'facade-night.png',
+  treeBroadleaf: 'tree-broadleaf.png', treePine: 'tree-pine.png',
+  treePalm: 'tree-palm.png', scrub: 'scrub.png',
+};
+const HDRI = {};
+async function preload() {
+  await Promise.allSettled(Object.entries(PHOTOS).map(([k, f]) => new Promise((res, rej) => {
+    const img = new Image();
+    img.onload = () => { TEX.registerPhoto(k, img); res(); };
+    img.onerror = rej;
+    img.src = '../textures/' + f;
+  })));
+  const loader = new RGBELoader();
+  await Promise.allSettled(['day', 'dusk', 'night'].map(k => new Promise((res, rej) => {
+    loader.load(`../textures/hdri/${k}.hdr`, (t) => {
+      t.mapping = THREE.EquirectangularReflectionMapping;
+      HDRI[k] = t; res();
+    }, undefined, rej);
+  })));
+  out('h', `photo textures registered; HDRIs loaded: ${Object.keys(HDRI).join(',') || 'none'}`);
+}
+
+// --------------------------------------- main.js setupEnvironment, replicated ---
+function buildScene(trackId) {
+  const scene = new THREE.Scene();
+  const circuit = buildCircuit(trackId, TRACKS[trackId], scene);
+  const th = circuit.theme;
+  scene.fog = new THREE.Fog(th.fog, 300, 1600);
+
+  const c = document.createElement('canvas');
+  c.width = 2; c.height = 256;
+  const g = c.getContext('2d');
+  const grad = g.createLinearGradient(0, 0, 0, 256);
+  grad.addColorStop(0, '#' + new THREE.Color(th.skyTop).getHexString());
+  grad.addColorStop(1, '#' + new THREE.Color(th.skyBot).getHexString());
+  g.fillStyle = grad; g.fillRect(0, 0, 2, 256);
+  const sky = new THREE.Mesh(
+    new THREE.SphereGeometry(2600, 24, 12),
+    new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(c), side: THREE.BackSide, fog: false }));
+  sky.name = 'sky-dome';
+  scene.add(sky);
+
+  scene.add(new THREE.HemisphereLight(th.skyTop, th.ground, th.hemi));
+  const sun = new THREE.DirectionalLight(th.sun, th.sunI);
+  sun.position.set(260, 380, 160);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  const sc = sun.shadow.camera;
+  sc.left = -110; sc.right = 110; sc.top = 110; sc.bottom = -110;
+  sc.near = 50; sc.far = 900;
+  sc.updateProjectionMatrix();
+  sun.shadow.bias = -0.0004;
+  scene.add(sun, sun.target);
+  if (th.night) scene.add(new THREE.AmbientLight(0x8899cc, 0.5));
+
+  // main.js: HDRI always drives LIGHTING; it is only ever the visible BACKDROP at
+  // night. Day/dusk keep the procedural dome.
+  const hdr = HDRI[th.night ? 'night' : th.sunI < 2.2 ? 'dusk' : 'day'];
+  if (hdr) {
+    scene.environment = hdr;
+    scene.environmentIntensity = th.night ? 0.55 : 0.9;
+    if (th.night) {
+      scene.background = hdr;
+      scene.backgroundIntensity = 0.7;
+      sky.visible = false;
+    } else {
+      scene.background = null;
+      sky.visible = true;
+    }
+  } else {
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    const envScene = new THREE.Scene();
+    envScene.add(sky.clone());
+    const disc = new THREE.Mesh(new THREE.CircleGeometry(2000, 24).rotateX(-Math.PI / 2),
+      new THREE.MeshBasicMaterial({ color: th.ground }));
+    disc.position.y = -2;
+    envScene.add(disc);
+    scene.environment = pmrem.fromScene(envScene, 0.04).texture;
+    scene.environmentIntensity = th.night ? 0.5 : 0.85;
+    pmrem.dispose();
+  }
+
+  const camera = new THREE.PerspectiveCamera(72, W / H, 0.3, 6500);
+  const composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, camera));
+  const gtao = new GTAOPass(scene, camera, W, H);
+  gtao.output = GTAOPass.OUTPUT.Default;
+  gtao.blendIntensity = 0.72;                 // main.js
+  composer.addPass(gtao);
+  const bloom = new UnrealBloomPass(new THREE.Vector2(W, H),
+    th.night ? 0.5 : 0.18, 0.55, th.night ? 0.6 : 0.86);   // main.js
+  composer.addPass(bloom);
+  composer.addPass(new OutputPass());
+  composer.setSize(W, H);
+  return { scene, circuit, camera, composer, sky, sun, theme: th, gtao, bloom };
+}
+
+// ------------------------------------------------------------------ pixels ---
+const _rp = new Uint8Array(W * H * 4);
+function grab() {
+  const gl = renderer.getContext();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, _rp);
+  const flip = new Uint8ClampedArray(W * H * 4);
+  for (let y = 0; y < H; y++) {
+    const src = (H - 1 - y) * W * 4, dst = y * W * 4;
+    flip.set(_rp.subarray(src, src + W * 4), dst);
+  }
+  return { data: flip };
+}
+const px = (im, x, y) => {
+  const i = ((y | 0) * W + (x | 0)) * 4;
+  return [im.data[i], im.data[i + 1], im.data[i + 2]];
+};
+const lumAt = (im, i) => 0.2126 * im.data[i * 4] + 0.7152 * im.data[i * 4 + 1] + 0.0722 * im.data[i * 4 + 2];
+const lum = (p) => 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2];
+const pct = (sorted, q) => sorted.length ? sorted[Math.min(sorted.length - 1, Math.max(0, Math.floor(sorted.length * q)))] : 0;
+
+function renderFrame(S) {
+  S.scene.updateMatrixWorld(true);
+  S.camera.updateMatrixWorld(true);
+  S.composer.render();
+  return grab();
+}
+
+const MASK_BG = [255, 0, 255];
+// Silhouette of everything `pick` accepts, against magenta, post/fog off.
+function renderMask(S, pick) {
+  const vis = [];
+  S.scene.traverse(o => {
+    if (o.isMesh || o.isInstancedMesh || o.isSprite || o.isPoints || o.isLine) {
+      vis.push([o, o.visible]);
+      o.visible = !!pick(o);
+    }
+  });
+  const bg = S.scene.background, fog = S.scene.fog;
+  S.scene.background = new THREE.Color(0xff00ff);
+  S.scene.fog = null;
+  renderer.setClearColor(0xff00ff, 1);
+  renderer.render(S.scene, S.camera);
+  const im = grab();
+  S.scene.background = bg; S.scene.fog = fog;
+  renderer.setClearColor(0x000000, 0);
+  for (const [o, v] of vis) o.visible = v;
+  const m = new Uint8Array(W * H);
+  let n = 0;
+  for (let i = 0; i < W * H; i++) {
+    const d = Math.abs(im.data[i * 4] - MASK_BG[0]) + Math.abs(im.data[i * 4 + 1] - MASK_BG[1])
+      + Math.abs(im.data[i * 4 + 2] - MASK_BG[2]);
+    if (d > 24) { m[i] = 1; n++; }
+  }
+  return { m, n };
+}
+
+// Occlusion-aware mask that KEEPS BOTH FRAMES. The pair is the whole point: the
+// "sky luminance adjacent to the canopy" a halo has to be compared against is
+// that same pixel with the canopies hidden, bloom and all. Nothing is recoloured,
+// so the measurement cannot bias the albedo it is measuring.
+function maskPair(S, pick) {
+  const vis = [];
+  S.scene.traverse(o => {
+    if ((o.isMesh || o.isInstancedMesh || o.isSprite) && pick(o)) { vis.push([o, o.visible]); o.visible = false; }
+  });
+  const without = renderFrame(S);
+  for (const [o, v] of vis) o.visible = v;
+  const withThem = renderFrame(S);
+  const m = new Uint8Array(W * H);
+  let n = 0;
+  for (let i = 0; i < W * H; i++) {
+    const d = Math.abs(withThem.data[i * 4] - without.data[i * 4])
+      + Math.abs(withThem.data[i * 4 + 1] - without.data[i * 4 + 1])
+      + Math.abs(withThem.data[i * 4 + 2] - without.data[i * 4 + 2]);
+    if (d > 12) { m[i] = 1; n++; }
+  }
+  return { m, n, frame: withThem, without };
+}
+
+// Erode by one pixel: a 4x-multisampled silhouette edge pixel is a BLEND of the
+// object and the background, so it is not a sample of the object.
+function erode(mask) {
+  const m = new Uint8Array(W * H);
+  let n = 0;
+  for (let y = 1; y < H - 1; y++) {
+    for (let x = 1; x < W - 1; x++) {
+      const i = y * W + x;
+      if (!mask.m[i]) continue;
+      if (mask.m[i - 1] && mask.m[i + 1] && mask.m[i - W] && mask.m[i + W]) { m[i] = 1; n++; }
+    }
+  }
+  return { m, n, frame: mask.frame, without: mask.without };
+}
+
+// Chebyshev dilation by `r` (r successive 3x3 dilations).
+function dilate(src, r) {
+  let a = src;
+  for (let k = 0; k < r; k++) {
+    const b = new Uint8Array(W * H);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = y * W + x;
+        if (!a[i]) continue;
+        for (let dy = -1; dy <= 1; dy++) {
+          const yy = y + dy; if (yy < 0 || yy >= H) continue;
+          for (let dx = -1; dx <= 1; dx++) {
+            const xx = x + dx; if (xx < 0 || xx >= W) continue;
+            b[yy * W + xx] = 1;
+          }
+        }
+      }
+    }
+    a = b;
+  }
+  return a;
+}
+
+async function shot(name, im) {
+  if (im) readCtx.putImageData(new ImageData(im.data, W, H), 0, 0);
+  else { readCtx.clearRect(0, 0, W, H); readCtx.drawImage(renderer.domElement, 0, 0); }
+  const blob = await new Promise(r => readCanvas.toBlob(r, 'image/png'));
+  try {
+    await fetch(`/shot?name=${encodeURIComponent(name)}`, { method: 'POST', body: blob });
+    results.shots.push(`tools/shots/${name}.png`);
+    out('h', `  shot -> tools/shots/${name}.png`);
+  } catch (e) { out('f', `  shot POST failed: ${e}`); }
+}
+
+// ------------------------------------------------------------------ cameras ---
+function camAt(S, sampleIdx, back, height, lookAhead, lat = 0, lookLat = 0, drop = 0.9) {
+  const c = S.circuit, N = c.N, ds = c.ds;
+  const i = ((sampleIdx % N) + N) % N;
+  const bi = ((i - Math.round(back / ds)) % N + N) % N;
+  const ai = ((i + Math.round(lookAhead / ds)) % N + N) % N;
+  const s = c.samples[bi], a = c.samples[ai];
+  S.camera.position.set(s.p.x + s.n.x * lat, c.heightAt(bi) + height, s.p.z + s.n.z * lat);
+  S.camera.lookAt(a.p.x + a.n.x * lookLat, c.heightAt(ai) + drop, a.p.z + a.n.z * lookLat);
+  S.camera.updateMatrixWorld(true);
+}
+
+// The hero-02-action framing: a chase view down the straightest stretch that has
+// the DENSEST treeline on BOTH verges, so the frame is a forest corridor.
+function forestStraight(S) {
+  const c = S.circuit;
+  // tree instance positions, bucketed by nearest centreline sample and side
+  const perSample = new Float32Array(c.N * 2);
+  const m4 = new THREE.Matrix4(), v = new THREE.Vector3();
+  S.circuit.group.traverse(o => {
+    if (!(o.isInstancedMesh && o.name.startsWith('trees-'))) return;
+    for (let k = 0; k < o.count; k++) {
+      o.getMatrixAt(k, m4);
+      v.setFromMatrixPosition(m4);
+      // nearest sample by coarse scan then refine
+      let bi = 0, bd = Infinity;
+      for (let i = 0; i < c.N; i += 4) {
+        const dx = c.samples[i].p.x - v.x, dz = c.samples[i].p.z - v.z;
+        const d = dx * dx + dz * dz;
+        if (d < bd) { bd = d; bi = i; }
+      }
+      if (bd > 120 * 120) continue;
+      const s = c.samples[bi];
+      const side = ((v.x - s.p.x) * s.n.x + (v.z - s.p.z) * s.n.z) > 0 ? 0 : 1;
+      perSample[bi * 2 + side]++;
+    }
+  });
+  const WIN = Math.max(4, Math.round(220 / c.ds));
+  let best = 0, bestScore = -1;
+  for (let i = 0; i < c.N; i++) {
+    let l = 0, r = 0, kink = 0;
+    for (let k = 0; k < WIN; k++) {
+      const j = (i + k) % c.N;
+      l += perSample[j * 2]; r += perSample[j * 2 + 1];
+      kink += Math.abs(c.samples[j].curv);
+    }
+    // both sides wooded (min, so one dense side cannot carry it) and straight
+    const score = Math.min(l, r) / (1 + kink * 260);
+    if (score > bestScore) { bestScore = score; best = (i + (WIN >> 1)) % c.N; }
+  }
+  return { i: best, score: bestScore };
+}
+
+// A framing that puts as much open horizon on screen as the circuit has: the
+// stretch with the FEWEST trees around it, looked at square across the run-off, so
+// the ground/sky seam and the two horizon layers fill the middle of the frame. The
+// hero chase view is a forest corridor and shows almost no horizon, so it cannot be
+// the only place the horizon is asserted.
+function openHorizonCam(S) {
+  const c = S.circuit;
+  const place = (i, side) => {
+    const s = c.samples[i];
+    const eye = c.heightAt(i) + 5;
+    S.camera.position.set(s.p.x, eye, s.p.z);
+    // square out across the run-off, aimed a little above the horizon line
+    S.camera.lookAt(s.p.x + s.n.x * side * 900, eye + 40, s.p.z + s.n.z * side * 900);
+    S.camera.updateMatrixWorld(true);
+  };
+  // Chosen by MEASURING how much horizon each candidate actually shows rather than
+  // by counting trees: the sparsest stretch of a circuit is the pit straight, whose
+  // trees are kept out for the pit complex that then fills the frame instead.
+  const y0 = (H * 0.34) | 0, y1 = (H * 0.62) | 0;
+  let best = 0, bestSide = 1, bestSky = -1;
+  for (let k = 0; k < 16; k++) {
+    const i = Math.round(k * c.N / 16) % c.N;
+    for (const side of [1, -1]) {
+      place(i, side);
+      const opaque = renderMask(S, o => o !== S.sky
+        && o.name !== 'horizon-ridge' && o.name !== 'horizon-haze');
+      let sky = 0;
+      for (let y = y0; y < y1; y++) for (let x = 0; x < W; x++) if (!opaque.m[y * W + x]) sky++;
+      if (sky > bestSky) { bestSky = sky; best = i; bestSide = side; }
+    }
+  }
+  place(best, bestSide);
+  return `${best} side ${bestSide} (${bestSky}px of open horizon band)`;
+}
+
+// Last resort framing for a venue whose vegetation is too sparse to meet the sky
+// from any chase view: stand off the tallest tree on the circuit and look up at its
+// crown, so the sky is guaranteed to be what the silhouette is cut against.
+function aimAtTallestCrown(S) {
+  const m4 = new THREE.Matrix4(), v = new THREE.Vector3(), sc = new THREE.Vector3();
+  let best = null, bestH = 0;
+  S.circuit.group.traverse(o => {
+    if (!(o.isInstancedMesh && o.name.startsWith('trees-'))) return;
+    for (let k = 0; k < o.count; k++) {
+      o.getMatrixAt(k, m4);
+      sc.setFromMatrixScale(m4);
+      if (sc.y <= bestH) continue;
+      bestH = sc.y;
+      best = new THREE.Vector3().setFromMatrixPosition(m4);
+    }
+  });
+  if (!best) return false;
+  // Back off along +X by twice the tree's height and stand low, so the crown sits
+  // high in frame with nothing but sky behind it.
+  S.camera.position.set(best.x + bestH * 1.9, best.y + bestH * 0.15, best.z + bestH * 0.5);
+  S.camera.lookAt(best.x, best.y + bestH * 0.95, best.z);
+  S.camera.updateMatrixWorld(true);
+  return true;
+}
+
+// =============================================================================
+//                                  CHECKS
+// =============================================================================
+async function main() {
+  await preload();
+
+  // ---------------------------------------------------------------- MONZA ----
+  head('monza — hero-02 action framing (forest corridor), bloom ON');
+  const M = buildScene('monza');
+  const fs = forestStraight(M);
+  camAt(M, fs.i, 13, 3.3, 95, 0, 0, 1.2);
+  let im = renderFrame(M);
+  window.__DBG__.M = M;
+  note('forest straight sample', `${fs.i} (score ${fs.score.toFixed(2)})`);
+
+  // A composed frame that is black would make every threshold below vacuous, and
+  // visual-harness.html reports exactly that failure mode with bloom enabled.
+  {
+    let sum = 0;
+    for (let i = 0; i < W * H; i++) sum += lumAt(im, i);
+    const mean = sum / (W * H);
+    note('frame mean luminance (bloom ON)', mean.toFixed(2));
+    check(mean > 30, 'the composed frame is a real image with bloom enabled',
+      `[mean luminance=${mean.toFixed(2)}/255]`);
+  }
+  await shot('r4-preview-foliage', im);
+
+  const isTree = (o) => o.isInstancedMesh && o.name.startsWith('trees-');
+
+  // ---- A. no bright halo ring around a canopy ------------------------------
+  // The ring is 3..5px OUTSIDE the canopy silhouette, restricted to pixels the
+  // sky stands behind, and each ring pixel is compared with ITS OWN sky value
+  // from the canopies-hidden frame -- "the adjacent sky luminance", exactly.
+  //
+  // The silhouette is the GEOMETRIC one (renderMask: no post, no bloom). Deriving
+  // it from the with/without difference instead would fold the very glow being
+  // measured into the silhouette and push the ring outside it -- the measurement
+  // would then be unable to see a halo at all.
+  const haloOf = (S, label, assertIt) => {
+    const geo = renderMask(S, isTree);
+    const pair = maskPair(S, isTree);
+    const opaqueScenery = renderMask(S, o => o !== S.sky
+      && o.name !== 'horizon-ridge' && o.name !== 'horizon-haze');
+    const near = dilate(geo.m, 2), far = dilate(geo.m, 5);
+    const ratios = [];
+    let ringN = 0, over12 = 0, worst = 0, worstXY = null;
+    for (let i = 0; i < W * H; i++) {
+      if (!far[i] || near[i]) continue;        // Chebyshev distance 3..5
+      if (opaqueScenery.m[i]) continue;        // only where the sky is behind it
+      const lo = lumAt(pair.without, i);
+      if (lo < 8) continue;
+      const r = lumAt(pair.frame, i) / lo;
+      ratios.push(r); ringN++;
+      if (r > 1.12) over12++;
+      if (r > worst) { worst = r; worstXY = [i % W, (i / W) | 0]; }
+    }
+    ratios.sort((a, b) => a - b);
+    note(`${label}: ring px / p50 / p99 / max`,
+      `${ringN} / ${pct(ratios, 0.5).toFixed(4)} / ${pct(ratios, 0.99).toFixed(4)} / ${worst.toFixed(4)}`);
+    if (assertIt) {
+      check(ringN > 3000, `${label}: the ring band actually samples sky next to canopies`,
+        `[ring pixels=${ringN}]`);
+      check(worst <= 1.12,
+        `${label}: no sky pixel 3-5px outside a canopy exceeds the adjacent sky luminance by 12%`,
+        `[worst=+${(worst * 100 - 100).toFixed(1)}%, over +12%=${over12}/${ringN}, worst px=${worstXY}]`);
+    }
+    return { worst, ringN, over12, pair, geo };
+  };
+
+  {
+    const h = haloOf(M, 'halo (main.js backdrop: procedural dome)', true);
+
+    // The AO term can only darken, so a genuine rim glow could in principle be
+    // hiding under it. Measured with GTAO off as well, so it cannot.
+    M.gtao.enabled = false;
+    haloOf(M, 'halo (GTAO off, so nothing can mask a glow)', true);
+    M.gtao.enabled = true;
+
+    // ---- B. and the canopies did NOT go black doing it --------------------
+    const inner = erode(erode(h.pair));
+    const vals = [];
+    for (let i = 0; i < W * H; i++) if (inner.m[i]) vals.push(lumAt(h.pair.frame, i));
+    vals.sort((a, b) => a - b);
+    const floorPx = pct(vals, 0.002), median = pct(vals, 0.5);
+    const TARGET = lum([40, 55, 40]);
+    check(vals.length > 4000, 'foliage occupies a meaningful part of the action frame',
+      `[interior foliage pixels=${vals.length}, silhouette=${h.pair.n}]`);
+    check(floorPx > TARGET, 'the darkest foliage pixel still clears rgb(40,55,40)',
+      `[floor=${floorPx.toFixed(1)} target=${TARGET.toFixed(1)} median=${median.toFixed(1)}]`);
+    note('foliage p02/p50/p98', [pct(vals, 0.02), median, pct(vals, 0.98)].map(v => v.toFixed(1)).join(' / '));
+
+    // ---- B1. is the foliage even ABOVE the bloom threshold? ---------------
+    // Decisive, because a rim glow blamed on "emissive lift + bloom" requires the
+    // canopy to pass the high-pass filter at all. Bloom is the only difference
+    // between the two frames, so the delta IS the bloom contribution, in output
+    // units, with no need to read the HDR buffer.
+    {
+      M.bloom.enabled = false;
+      const noBloom = renderFrame(M);
+      M.bloom.enabled = true;
+      const withBloom = renderFrame(M);
+      let maxIn = 0, sumIn = 0, nIn = 0;
+      for (let i = 0; i < W * H; i++) {
+        if (!inner.m[i]) continue;
+        const d = lumAt(withBloom, i) - lumAt(noBloom, i);
+        sumIn += d; nIn++;
+        if (d > maxIn) maxIn = d;
+      }
+      const geoDil = dilate(h.geo.m, 5);
+      let maxRing = 0;
+      for (let i = 0; i < W * H; i++) {
+        if (!geoDil[i] || h.geo.m[i]) continue;
+        const d = lumAt(withBloom, i) - lumAt(noBloom, i);
+        if (d > maxRing) maxRing = d;
+      }
+      note('bloom contribution on foliage: mean / max (0-255)',
+        `${(sumIn / Math.max(nIn, 1)).toFixed(2)} / ${maxIn.toFixed(2)}`);
+      note('bloom contribution in the 5px ring outside canopies: max', maxRing.toFixed(2));
+      check(maxRing <= 3.0,
+        'bloom adds no meaningful glow in the band just outside a canopy',
+        `[max bloom delta in the ring=${maxRing.toFixed(2)}/255]`);
+    }
+
+    // ---- B2. the canopy RIM must not read as a bright fringe --------------
+    // A halo does not have to fall outside the silhouette to be one: a pale rim of
+    // half-transparent photo-matte texels rendered at FULL opacity by alphaTest
+    // sits INSIDE the silhouette and reads as a glow around the canopy.
+    {
+      const e1 = erode(h.geo), e2 = erode(e1), core = erode(erode(e2));
+      const rim = [], body = [];
+      for (let i = 0; i < W * H; i++) {
+        if (h.geo.m[i] && !e2.m[i]) rim.push(lumAt(h.pair.frame, i));
+        else if (core.m[i]) body.push(lumAt(h.pair.frame, i));
+      }
+      rim.sort((a, b) => a - b); body.sort((a, b) => a - b);
+      const rimMed = pct(rim, 0.5), bodyMed = pct(body, 0.5);
+      const rimHot = pct(rim, 0.95), bodyHot = pct(body, 0.95);
+      note('canopy rim vs body median luminance', `${rimMed.toFixed(1)} vs ${bodyMed.toFixed(1)} (ratio ${(rimMed / bodyMed).toFixed(3)})`);
+      note('canopy rim vs body p95 luminance', `${rimHot.toFixed(1)} vs ${bodyHot.toFixed(1)} (ratio ${(rimHot / bodyHot).toFixed(3)})`);
+      // The rim is a blend with whatever is behind it, so it is allowed to differ;
+      // what it may not do is stand out as a BRIGHT edge all round the canopy.
+      check(rimMed <= bodyMed * 1.12,
+        'the canopy rim is not a bright fringe around the foliage',
+        `[rim median=${rimMed.toFixed(1)}, body median=${bodyMed.toFixed(1)}, ratio=${(rimMed / bodyMed).toFixed(3)}]`);
+    }
+
+    // ---- B3. what the canopy TEXTURE puts under its low-alpha edge --------
+    {
+      let mesh = null;
+      M.scene.traverse(o => { if (o.name === 'trees-broadleaf-v2') mesh = o; });
+      const img = mesh.material.map.image;
+      const cc = document.createElement('canvas');
+      cc.width = img.width; cc.height = img.height;
+      const gg = cc.getContext('2d', { willReadFrequently: true });
+      gg.drawImage(img, 0, 0);
+      const d = gg.getImageData(0, 0, img.width, img.height).data;
+      const bands = [[0.40, 0.60], [0.60, 0.80], [0.80, 0.99], [0.99, 1.01]];
+      const rows = bands.map(([lo, hi]) => {
+        let n = 0, r = 0, g2 = 0, b = 0;
+        for (let i = 0; i < img.width * img.height; i++) {
+          const a = d[i * 4 + 3] / 255;
+          if (a < lo || a >= hi) continue;
+          n++; r += d[i * 4]; g2 += d[i * 4 + 1]; b += d[i * 4 + 2];
+        }
+        if (!n) return `a[${lo},${hi}) n=0`;
+        const rgb = [r / n, g2 / n, b / n];
+        const sat = (Math.max(...rgb) - Math.min(...rgb)) / Math.max(...rgb);
+        return `a[${lo},${hi}) n=${n} rgb=(${rgb.map(v => v.toFixed(0)).join(',')}) lum=${lum(rgb).toFixed(1)} sat=${sat.toFixed(3)}`;
+      });
+      note('canopy map, alpha-banded mean colour', rows.join(' | '));
+    }
+
+    // ---- B4. the same canopies against the BRIGHT photographic sky --------
+    // dist/js/main.js (the build that ships) puts the day HDRI up as the visible
+    // backdrop at backgroundIntensity 1.0 instead of the procedural dome. That is
+    // a far brighter sky, so it is the harder case for a rim glow: bloom has more
+    // to work with on both sides of the silhouette. The foliage material has to
+    // hold up under it too, or the halo comes back the moment the backdrop changes.
+    if (HDRI.day) {
+      const savedBg = M.scene.background, savedInt = M.scene.backgroundIntensity;
+      const savedVis = M.sky.visible;
+      M.scene.background = HDRI.day;
+      M.scene.backgroundIntensity = 1.0;
+      M.sky.visible = false;
+      haloOf(M, 'halo (shipped backdrop: day HDRI @1.0)', true);
+      M.scene.background = savedBg;
+      M.scene.backgroundIntensity = savedInt;
+      M.sky.visible = savedVis;
+    }
+  }
+
+  // ---- C. no tower-like silhouette above the treeline ---------------------
+  const hz = (o) => o.name === 'horizon-ridge' || o.name === 'horizon-haze';
+  const skyScan = async (S, label, shotName) => {
+    const ridge = maskPair(S, hz);
+    const opaqueBehind = renderMask(S, o => o !== S.sky && !hz(o));
+    note(`${label}: horizon-ridge/haze visible pixels`, ridge.n);
+    // Only where SKY is behind them. Over the far ground these two are doing their
+    // job -- fogging the ground/sky seam out of existence -- and are supposed to
+    // change what they cover. It is against the sky that they must not read as
+    // geometry, because that is where a silhouette would stand above the treeline.
+    // ...and a few px clear of it: the requirement is about a silhouette standing
+    // ABOVE the treeline, and the 1-2px transition where the ridge's opaque base
+    // meets the ground horizon is the seam it exists to fill, not a tower.
+    const nearGround = dilate(opaqueBehind.m, 4);
+    let worstDev = 0, devXY = null;
+    const devs = [];
+    for (let i = 0; i < W * H; i++) {
+      if (!ridge.m[i] || nearGround[i]) continue;
+      const bx = i % W, by = (i / W) | 0;
+      if (bx < 6 || bx >= W - 6 || by < 6 || by >= H - 6) continue;   // no neighbourhood
+      const lo = lumAt(ridge.without, i), lw = lumAt(ridge.frame, i);
+      const d = Math.abs(lw - lo) / Math.max(lo, 1);
+      devs.push(d);
+      if (d > worstDev) { worstDev = d; devXY = [i % W, (i / W) | 0]; }
+    }
+    devs.sort((a, b) => a - b);
+    note(`${label}: ridge/haze contrast against SKY p50/p99/max`,
+      [pct(devs, 0.5), pct(devs, 0.99), worstDev].map(v => (v || 0).toFixed(4)).join(' / '));
+    check(worstDev <= 0.10,
+      `${label}: against the sky, the horizon ridge and haze never deviate from it by more than 10% luminance`,
+      `[worst=${(worstDev * 100).toFixed(1)}% at ${devXY}, sky-backed pixels=${devs.length}]`);
+
+    // Independent of which object it is: scan the SKY region for a contiguous
+    // vertical-edged region that is off the sky gradient. Column-banded, because a
+    // tower is exactly "a run of columns whose sky is wrong over the same rows".
+    //
+    // The reference is the SAME FRAME with every mesh but the dome hidden, i.e.
+    // the sky gradient this camera actually sees, per pixel. A per-row median
+    // cannot be the reference: the dome is a sphere and the frame is 100 degrees
+    // wide, so one screen row spans a wide range of true sky elevation and the
+    // gradient varies strongly ALONG the row.
+    const opaqueScenery = renderMask(S, o => o !== S.sky && !hz(o));
+    const skyRef = maskPair(S, o => o !== S.sky);
+    const frame = skyRef.frame;
+    const bad = new Uint8Array(W * H);
+    let badN = 0;
+    for (let i = 0; i < W * H; i++) {
+      if (opaqueScenery.m[i]) continue;
+      const ref = lumAt(skyRef.without, i);
+      if (ref < 8) continue;
+      if (Math.abs(lumAt(frame, i) - ref) / ref > 0.10) { bad[i] = 1; badN++; }
+    }
+    // a tower = >= 8 adjacent columns each carrying a >= 40px vertical run of bad
+    const runOf = new Int32Array(W);
+    for (let x = 0; x < W; x++) {
+      let run = 0, best = 0;
+      for (let y = 0; y < H; y++) {
+        if (bad[y * W + x]) { run++; if (run > best) best = run; } else run = 0;
+      }
+      runOf[x] = best;
+    }
+    let band = 0, worstBand = 0, bandAt = -1;
+    for (let x = 0; x < W; x++) {
+      if (runOf[x] >= 40) { band++; if (band > worstBand) { worstBand = band; bandAt = x - band + 1; } }
+      else band = 0;
+    }
+    note(`${label}: off-gradient sky pixels`, badN);
+    note(`${label}: widest tower-like column band`, `${worstBand}px at x=${bandAt}`);
+    check(worstBand < 8,
+      `${label}: no tower-like silhouette stands in the sky above the treeline`,
+      `[widest band of columns with a 40px+ off-gradient run=${worstBand}px at x=${bandAt}, tolerance 8px]`);
+    if (shotName) await shot(shotName, frame);
+  };
+
+  // on the hero action framing the coordinator asked about...
+  await skyScan(M, 'hero-02 action framing', null);
+  // ...and on the framing that shows the most open horizon Monza has, which is
+  // where these two layers have the best chance of being caught reading as
+  // geometry: the corridor view hides almost all of the horizon behind trees.
+  {
+    const at = openHorizonCam(M);
+    note('open-horizon framing sample', at);
+    await skyScan(M, 'open-horizon framing', 'r4-preview-horizon');
+  }
+
+  // ---- D. the two horizon layers stay low on the sky, from ANY track point --
+  // Geometric, not pixel: the pixel checks above only see one framing.
+  {
+    const c = M.circuit;
+    const objs = [];
+    c.group.traverse(o => { if (o.name === 'horizon-ridge' || o.name === 'horizon-haze') objs.push(o); });
+    check(objs.length === 2, 'both horizon layers are present', `[found=${objs.map(o => o.name).join(',')}]`);
+    const pts = [];
+    const v = new THREE.Vector3();
+    for (const o of objs) {
+      o.updateMatrixWorld(true);
+      const p = o.geometry.attributes.position;
+      for (let i = 0; i < p.count; i++) {
+        v.fromBufferAttribute(p, i).applyMatrix4(o.matrixWorld);
+        pts.push(v.x, v.y, v.z);
+      }
+    }
+    let worstEl = -90, worstAt = null;
+    const STEP = Math.max(1, Math.round(40 / c.ds));
+    for (let i = 0; i < c.N; i += STEP) {
+      const s = c.samples[i];
+      const ey = c.heightAt(i) + 3.0;                 // chase-camera eye height
+      for (let k = 0; k < pts.length; k += 3) {
+        const dy = pts[k + 1] - ey;
+        if (dy <= 0) continue;
+        const d = Math.hypot(pts[k] - s.p.x, pts[k + 2] - s.p.z);
+        const el = Math.atan2(dy, Math.max(d, 1e-3)) * 180 / Math.PI;
+        if (el > worstEl) { worstEl = el; worstAt = i; }
+      }
+    }
+    note('max horizon-layer elevation from the track', `${worstEl.toFixed(2)} deg at sample ${worstAt}`);
+    check(worstEl <= 10,
+      'neither horizon layer rises more than 10 degrees above the eye from any point on the track',
+      `[worst=${worstEl.toFixed(2)} deg at sample ${worstAt}]`);
+  }
+
+  // ------------------------------------------------------- other venues -----
+  // The halo is a material property, so it has to hold wherever foliage meets sky.
+  //
+  // FLOOR_BASE is the darkest-foliage figure THIS harness measured on each venue
+  // BEFORE the fix, at these framings, and it is asserted as a non-regression
+  // floor. The absolute rgb(40,55,40) bar is asserted where it was set -- the Monza
+  // daylight frame above (63.1 pre-fix). Spa's pines and Bahrain's scrub have
+  // materially darker albedo than Monza's broadleaves and already sat just under
+  // that bar at these crops, and Singapore is night; inventing a new absolute bar
+  // for them would either be arbitrary or license a regression, so the guarantee
+  // here is "no worse than it was".
+  const FLOOR_BASE = { spa: 48.9, bahrain: 41.5, singapore: 33.2 };
+  for (const id of ['spa', 'bahrain', 'singapore']) {
+    head(`${id} — foliage against sky`);
+    const S = buildScene(id);
+    window.__DBG__.S[id] = S;
+    const f2 = forestStraight(S);
+    let trees = null, opaque = null, ringN = 0, worst = 0, over = 0, ring = null;
+    // Sparse-vegetation venues put almost nothing against the sky from a level
+    // chase view, so the camera is tilted up until foliage actually meets sky, and
+    // failing that it is aimed straight at the crown of the tallest tree there is.
+    for (const drop of [1.2, 10, 20, 'crown']) {
+      if (drop === 'crown') aimAtTallestCrown(S); else camAt(S, f2.i, 13, 3.3, 95, 0, 0, drop);
+      renderFrame(S);
+      trees = maskPair(S, isTree);
+      opaque = renderMask(S, o => o !== S.sky
+        && o.name !== 'horizon-ridge' && o.name !== 'horizon-haze');
+      const geo = renderMask(S, isTree);
+      const near = dilate(geo.m, 2), far = dilate(geo.m, 5);
+      ring = new Uint8Array(W * H);
+      ringN = 0; worst = 0; over = 0;
+      let worstXY = null, worstAbs = null;
+      for (let i = 0; i < W * H; i++) {
+        if (!far[i] || near[i] || opaque.m[i]) continue;
+        const lo = lumAt(trees.without, i);
+        if (lo < 8) continue;
+        const r = lumAt(trees.frame, i) / lo;
+        ring[i] = 1; ringN++;
+        if (r > 1.12) over++;
+        if (r > worst) { worst = r; worstXY = [i % W, (i / W) | 0]; worstAbs = [lumAt(trees.frame, i), lo]; }
+      }
+      if (ringN > 500) {
+        note(`${id}: worst ring pixel`, worstXY
+          ? `${worstXY} lum ${worstAbs[0].toFixed(1)} vs sky ${worstAbs[1].toFixed(1)}` : 'none');
+        break;
+      }
+    }
+    // Bloom is the only difference between these two frames, so if the ring glow
+    // survives with it off, it is not a bloom halo.
+    {
+      S.bloom.enabled = false;
+      const nb = renderFrame(S);
+      S.bloom.enabled = true;
+      const wb = renderFrame(S);
+      let maxDelta = 0;
+      for (let i = 0; i < W * H; i++) {
+        if (!ring || !ring[i]) continue;
+        const d = lumAt(wb, i) - lumAt(nb, i);
+        if (d > maxDelta) maxDelta = d;
+      }
+      note(`${id}: bloom contribution in the ring (max, 0-255)`, maxDelta.toFixed(2));
+    }
+    check(ringN > 500 && worst <= 1.12, `${id}: no bright halo ring around its canopies`,
+      `[ring=${ringN}px worst=+${(worst * 100 - 100).toFixed(1)}% over12=${over}]`);
+    // proof render for the venue, kept whether it passes or fails: Singapore is
+    // where the glow actually was, so its frame is the one worth looking at.
+    await shot(`r4-preview-foliage-${id}`, trees.frame);
+    const inner = erode(erode(trees));
+    const vals = [];
+    for (let i = 0; i < W * H; i++) if (inner.m[i]) vals.push(lumAt(trees.frame, i));
+    vals.sort((a, b) => a - b);
+    const floorPx = pct(vals, 0.002);
+    check(vals.length > 500 && floorPx >= FLOOR_BASE[id] * 0.98,
+      `${id}: foliage is no darker than it was before the fix`,
+      `[interior=${vals.length}px floor=${floorPx.toFixed(1)} pre-fix=${FLOOR_BASE[id]} median=${pct(vals, 0.5).toFixed(1)}]`);
+    let el = -90;
+    {
+      const c = S.circuit, pts = [], v = new THREE.Vector3();
+      c.group.traverse(o => {
+        if (o.name !== 'horizon-ridge' && o.name !== 'horizon-haze') return;
+        o.updateMatrixWorld(true);
+        const p = o.geometry.attributes.position;
+        for (let i = 0; i < p.count; i++) { v.fromBufferAttribute(p, i).applyMatrix4(o.matrixWorld); pts.push(v.x, v.y, v.z); }
+      });
+      const STEP = Math.max(1, Math.round(60 / c.ds));
+      for (let i = 0; i < c.N; i += STEP) {
+        const s = c.samples[i], ey = c.heightAt(i) + 3.0;
+        for (let k = 0; k < pts.length; k += 3) {
+          const dy = pts[k + 1] - ey;
+          if (dy <= 0) continue;
+          const e = Math.atan2(dy, Math.max(Math.hypot(pts[k] - s.p.x, pts[k + 2] - s.p.z), 1e-3)) * 180 / Math.PI;
+          if (e > el) el = e;
+        }
+      }
+    }
+    check(el <= 10, `${id}: horizon layers stay within 10 degrees of the eye`, `[worst=${el.toFixed(2)} deg]`);
+  }
+
+  head(`RESULT  ${results.pass} passed, ${results.fail} failed`);
+  results.done = true;
+}
+
+// A console hook, so a failing pixel can be traced back to the object that owns
+// it without re-instrumenting the file: __DBG__.at(x, y) names what the camera
+// sees through that pixel of the monza action framing.
+window.__DBG__ = {
+  at(x, y, S) {
+    S = S || window.__DBG__.M;
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera(new THREE.Vector2((x / W) * 2 - 1, -((y / H) * 2 - 1)), S.camera);
+    ray.far = 6500;
+    return ray.intersectObjects([S.scene], true)
+      .slice(0, 6)
+      .map(h => `${h.object.name || h.object.type}@${h.distance.toFixed(0)}m`);
+  },
+  // pixel values at `pts`, optionally with everything matching `hide` switched off
+  probe(pts, hide, S) {
+    S = S || window.__DBG__.M;
+    const off = [];
+    if (hide) {
+      S.scene.traverse(o => {
+        if ((o.isMesh || o.isInstancedMesh || o.isSprite) && hide(o)) { off.push([o, o.visible]); o.visible = false; }
+      });
+    }
+    const f = renderFrame(S);
+    for (const [o, v] of off) o.visible = v;
+    return pts.map(p => `${p}: ${px(f, p[0], p[1])} lum=${lum(px(f, p[0], p[1])).toFixed(1)}`);
+  },
+  S: {},
+  // ring ratio for a scene at its current framing: max, count over +12%, and the
+  // absolute pair at the worst pixel. Used to attribute a rim glow to a cause by
+  // changing one thing at a time from the console.
+  ring(S) {
+    const isT = (o) => o.isInstancedMesh && o.name.startsWith('trees-');
+    const geo = renderMask(S, isT);
+    const pair = maskPair(S, isT);
+    const opaque = renderMask(S, o => o !== S.sky
+      && o.name !== 'horizon-ridge' && o.name !== 'horizon-haze');
+    const near = dilate(geo.m, 2), far = dilate(geo.m, 5);
+    let n = 0, over = 0, worst = 0, at = null, abs = null;
+    for (let i = 0; i < W * H; i++) {
+      if (!far[i] || near[i] || opaque.m[i]) continue;
+      const lo = lumAt(pair.without, i);
+      if (lo < 8) continue;
+      const r = lumAt(pair.frame, i) / lo;
+      n++;
+      if (r > 1.12) over++;
+      if (r > worst) { worst = r; at = [i % W, (i / W) | 0]; abs = [+lumAt(pair.frame, i).toFixed(1), +lo.toFixed(1)]; }
+    }
+    const inner = erode(erode(pair));
+    const vals = [];
+    for (let i = 0; i < W * H; i++) if (inner.m[i]) vals.push(lumAt(pair.frame, i));
+    vals.sort((a, b) => a - b);
+    return {
+      n, over, worst: +worst.toFixed(4), at, abs,
+      inner: vals.length,
+      floor: +pct(vals, 0.002).toFixed(1),
+      p50: +pct(vals, 0.5).toFixed(1),
+    };
+  },
+  shot, renderFrame, px, lum, THREE,
+};
+
+main().catch(e => {
+  results.error = String(e && e.stack || e);
+  results.done = true;
+  out('f', 'HARNESS ERROR: ' + results.error);
+});
+</script>
+</body>
+</html>

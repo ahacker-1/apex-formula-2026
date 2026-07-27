@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>APEX FORMULA 2026 — Racing Simulator</title>
+<link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="css/menus.css">
+<script type="importmap">
+{ "imports": { "three": "./lib/three.module.js" } }
+</script>
+</head>
+<body>
+<div id="app"></div>
+<div id="ui-root">
+  <div id="screen-boot" class="screen active">
+    <div class="boot-inner">
+      <div class="boot-logo">APEX<span>FORMULA</span></div>
+      <div class="boot-year">2026</div>
+      <div class="boot-sub">SIMULATION RACING</div>
+      <div class="boot-bar"><div id="boot-progress"></div></div>
+      <div id="boot-status">LOADING ASSETS…</div>
+    </div>
+  </div>
+  <div id="screen-main" class="screen"></div>
+  <div id="screen-team" class="screen"></div>
+  <div id="screen-track" class="screen"></div>
+  <div id="screen-settings" class="screen"></div>
+  <div id="screen-standings" class="screen"></div>
+  <div id="screen-loading" class="screen"></div>
+  <div id="screen-results" class="screen"></div>
+  <div id="screen-pause" class="screen"></div>
+  <div id="hud"></div>
+</div>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
