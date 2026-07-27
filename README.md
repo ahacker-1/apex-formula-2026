@@ -2,6 +2,12 @@
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
+## Play it now
+
+**[Play APEX FORMULA 2026 in your browser](https://apex-formula-2026.vercel.app)**
+
+No download or installation is required.
+
 An original open-wheel racing simulator built with Three.js. It runs in a web
 browser with no build step, no CDN, and no runtime network dependency.
 
