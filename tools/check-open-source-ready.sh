@@ -37,7 +37,8 @@ if [[ -n "$tracked_forbidden" ]]; then
 fi
 
 if git grep -nI -E 'apexf1_roster|CLASSIC roster|data-real\.js' -- \
-  ':!tools/check-open-source-ready.sh' ':!tools/make-public-build.sh' ':!.gitignore'; then
+  ':!tools/check-open-source-ready.sh' ':!tools/make-public-build.sh' \
+  ':!tools/validate-build-script.sh' ':!.gitignore'; then
   echo 'FATAL: private roster references remain in the public source tree' >&2
   exit 1
 fi

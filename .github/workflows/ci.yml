@@ -36,3 +36,9 @@ jobs:
 
       - name: Build static release
         run: npm run build
+
+      - name: Install browser runtime
+        run: npx playwright install --with-deps chromium
+
+      - name: Run browser regression checks
+        run: npm run test:browser

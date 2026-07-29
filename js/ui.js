@@ -2,7 +2,7 @@
 // quali results, race results, championship standings, pause.
 import { TEAMS, DRIVERS, CALENDAR, SEASON } from './data.js';
 import { TRACKS } from './tracks.js';
-import { fmtTime } from './race.js';
+import { fmtTime } from './format.js';
 
 const FLAGS = {
   melbourne: '🇦🇺', shanghai: '🇨🇳', suzuka: '🇯🇵', bahrain: '🇧🇭', jeddah: '🇸🇦',
@@ -23,7 +23,8 @@ const TIPS = [
 ];
 const DEFAULT_SETTINGS = {
   difficulty: 1, distance: 0, quali: true, tc: true, abs: true, autoGear: true,
-  nametags: true, volume: 1,
+  nametags: true, volume: 1, graphicsQuality: 'auto', cameraProfile: 'broadcast',
+  autoPause: true, touchControls: true,
 };
 const teamById = Object.fromEntries(TEAMS.map(t => [t.id, t]));
 
@@ -67,7 +68,12 @@ export class UI {
   constructor(cb) {
     this.cb = cb;   // (action, payload) => {}
     this.settings = this._loadSettings();
-    this.sel = { driverId: null, trackId: null, mode: 'quick' };
+    this.lastSelection = this._loadLastSelection();
+    this.sel = {
+      driverId: this.lastSelection?.driverId || null,
+      trackId: this.lastSelection?.trackId || null,
+      mode: 'quick',
+    };
     this.screens = {};
     for (const id of ['main', 'team', 'track', 'settings', 'standings', 'loading', 'results', 'pause', 'boot']) {
       this.screens[id] = document.getElementById('screen-' + id);
@@ -85,7 +91,8 @@ export class UI {
       const key = e.key === ' ' ? 'Space' : e.key;
       if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'Home', 'End', 'Escape', 'Backspace'].includes(key)) return;
       const screen = document.querySelector('#ui-root .screen.active');
-      if (!screen || screen.id === 'screen-boot' || screen.id === 'screen-loading') return;
+      if (!screen || screen.id === 'screen-boot' ||
+          (screen.id === 'screen-loading' && !screen.classList.contains('load-error-screen'))) return;
       const items = [...screen.querySelectorAll('.nav-item, .drv, .track-card, .f1-btn:not(:disabled), .seg button, .tyre-btn, [data-navitem]')]
         .filter(el => el.offsetParent !== null);
       if (key === 'Escape' || key === 'Backspace') {
@@ -131,6 +138,9 @@ export class UI {
     if (screen._navFocus) screen._navFocus.classList.remove('kb-focus');
     screen._navFocus = el;
     el.classList.add('kb-focus');
+    // Keep the DOM focus ring and assistive-technology cursor aligned with the
+    // spatial navigation highlight instead of maintaining a visual-only focus.
+    el.focus?.({ preventScroll: true });
     el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     this.cb('uiclick');
   }
@@ -142,6 +152,18 @@ export class UI {
   }
   saveSettings() {
     try { localStorage.setItem('apexf1_settings', JSON.stringify(this.settings)); } catch {}
+  }
+  _loadLastSelection() {
+    try {
+      const saved = JSON.parse(localStorage.getItem('apexf1_last_race') || 'null');
+      if (!saved || !DRIVERS.some(d => d.id === saved.driverId) || !TRACKS[saved.trackId]) return null;
+      return { driverId: saved.driverId, trackId: saved.trackId };
+    } catch { return null; }
+  }
+  _saveLastSelection() {
+    if (!this.sel.driverId || !this.sel.trackId) return;
+    this.lastSelection = { driverId: this.sel.driverId, trackId: this.sel.trackId };
+    try { localStorage.setItem('apexf1_last_race', JSON.stringify(this.lastSelection)); } catch {}
   }
 
   showOnly(id) {
@@ -209,23 +231,29 @@ export class UI {
     el.className = 'screen active menu-screen main-screen';
     let champTile;
     if (champ && champ.active) {
-      champTile = `<div class="nav-item" data-a="champ"><div><h3>CHAMPIONSHIP</h3><p>Continue Round ${champ.roundIndex + 1} of 24 — ${champ.nextRace.gp}</p></div></div>`;
+      champTile = `<button type="button" class="nav-item" data-a="champ"><span><h3>CHAMPIONSHIP</h3><p>Continue Round ${champ.roundIndex + 1} of 24 — ${champ.nextRace.gp}</p></span></button>`;
     } else if (champ && champ.finished) {
-      champTile = `<div class="nav-item" data-a="standings"><div><h3>SEASON COMPLETE</h3><p>View the final ${SEASON} standings</p></div></div>
-        <div class="nav-item" data-a="champNew"><div><h3>NEW SEASON</h3><p>Start a fresh ${SEASON} championship (replaces the finished one)</p></div></div>`;
+      champTile = `<button type="button" class="nav-item" data-a="standings"><span><h3>SEASON COMPLETE</h3><p>View the final ${SEASON} standings</p></span></button>
+        <button type="button" class="nav-item" data-a="champNew"><span><h3>NEW SEASON</h3><p>Start a fresh ${SEASON} championship (replaces the finished one)</p></span></button>`;
     } else {
-      champTile = `<div class="nav-item" data-a="champ"><div><h3>CHAMPIONSHIP</h3><p>Full ${SEASON} season — 24 rounds, full calendar, points battle</p></div></div>`;
+      champTile = `<button type="button" class="nav-item" data-a="champ"><span><h3>CHAMPIONSHIP</h3><p>Full ${SEASON} season — 24 rounds, full calendar, points battle</p></span></button>`;
     }
+    const lastRace = this.lastSelection && CALENDAR.find(r => r.trackId === this.lastSelection.trackId);
+    const lastDriver = this.lastSelection && DRIVERS.find(d => d.id === this.lastSelection.driverId);
+    const raceNow = lastRace && lastDriver
+      ? `<button type="button" class="nav-item race-now" data-a="raceNow"><span><h3>RACE NOW</h3><p>${lastDriver.code} · ${lastRace.gp} · skip qualifying</p></span></button>`
+      : '';
     el.innerHTML = `
       <div class="menu-bg" aria-hidden="true"><div class="bg-carbon"></div><div class="bg-grid"></div><div class="bg-vignette"></div></div>
       ${header('MAIN <small>MENU</small>')}
       ${seasonStrip(champ)}
       <div class="menu-body"><div class="main-nav">
-        <div class="nav-item" data-a="quick"><div><h3>QUICK RACE</h3><p>Jump straight into a race weekend — any team, any circuit</p></div></div>
+        ${raceNow}
+        <button type="button" class="nav-item" data-a="quick"><span><h3>QUICK RACE</h3><p>Jump straight into a race weekend — any team, any circuit</p></span></button>
         ${champTile}
-        <div class="nav-item" data-a="trial"><div><h3>TIME TRIAL</h3><p>Empty track, low fuel, soft tyres — chase the perfect lap</p></div></div>
-        ${champ && champ.active ? '<div class="nav-item" data-a="standings"><div><h3>STANDINGS</h3><p>Drivers & Constructors championship tables</p></div></div>' : ''}
-        <div class="nav-item" data-a="settings"><div><h3>SETTINGS</h3><p>Difficulty, race distance, assists, audio</p></div></div>
+        <button type="button" class="nav-item" data-a="trial"><span><h3>TIME TRIAL</h3><p>Empty track, low fuel, soft tyres — chase the perfect lap</p></span></button>
+        ${champ && champ.active ? '<button type="button" class="nav-item" data-a="standings"><span><h3>STANDINGS</h3><p>Drivers & Constructors championship tables</p></span></button>' : ''}
+        <button type="button" class="nav-item" data-a="settings"><span><h3>SETTINGS</h3><p>Difficulty, race distance, assists, audio, graphics</p></span></button>
       </div></div>
       <div class="menu-footer">
         <span class="key-hint"><b>W A S D</b> drive</span>
@@ -282,7 +310,7 @@ export class UI {
             <span class="livery-chips" title="Car livery">${liveryChips(team)}</span>
           </div>
           <div class="drivers">
-            ${drs.map(d => `<div class="drv" data-d="${d.id}">
+            ${drs.map(d => `<div class="drv" data-d="${d.id}" role="radio" tabindex="0" aria-checked="false" aria-label="${d.firstName} ${d.lastName}, number ${d.num}">
               <div class="drv-top">
                 <span class="num" style="color:${ink}">${d.num}</span>
                 <span class="drv-name">${d.firstName} ${d.lastName}</span><span class="code">${d.code}</span>
@@ -302,11 +330,20 @@ export class UI {
       const drv = ev.target.closest('.drv');
       if (!drv) return;
       grid.querySelectorAll('.drv.selected, .select-card.selected').forEach(x => x.classList.remove('selected'));
+      grid.querySelectorAll('.drv[aria-checked="true"]').forEach(x => x.setAttribute('aria-checked', 'false'));
       drv.classList.add('selected');
+      drv.setAttribute('aria-checked', 'true');
       drv.closest('.select-card').classList.add('selected');
       this.sel.driverId = drv.dataset.d;
       el.querySelector('#btn-next').disabled = false;
       this.cb('uiclick');
+    });
+    grid.addEventListener('keydown', ev => {
+      if (ev.key !== 'Enter' && ev.key !== ' ') return;
+      const drv = ev.target.closest('.drv');
+      if (!drv) return;
+      ev.preventDefault();
+      drv.click();
     });
     el.querySelector('#btn-back').addEventListener('click', () => this.cb('back', 'main'));
     el.querySelector('#btn-next').addEventListener('click', () => {
@@ -318,6 +355,7 @@ export class UI {
       const prev = grid.querySelector(`.drv[data-d="${this.sel.driverId}"]`);
       if (prev) {
         prev.classList.add('selected');
+        prev.setAttribute('aria-checked', 'true');
         prev.closest('.select-card').classList.add('selected');
         el.querySelector('#btn-next').disabled = false;
       }
@@ -347,6 +385,9 @@ export class UI {
       const card = document.createElement('div');
       card.className = 'select-card track-card' + (race.trackId === nextId ? ' next-round' : '');
       card.dataset.t = race.trackId;
+      card.setAttribute('role', 'button');
+      card.tabIndex = 0;
+      card.setAttribute('aria-label', `${race.gp}, ${circuitLabel(race, t)}, ${t.lengthKm.toFixed(3)} kilometres`);
       card.innerHTML = `
         <div class="round-badge">R${race.round}</div>
         ${race.trackId === nextId ? '<div class="next-badge">NEXT ROUND</div>' : ''}
@@ -365,7 +406,13 @@ export class UI {
       drawTrackPreview(card.querySelector('canvas'), t.points);
       card.addEventListener('click', () => {
         this.sel.trackId = race.trackId;
+        this._saveLastSelection();
         this.cb('trackChosen', { ...this.sel });
+      });
+      card.addEventListener('keydown', ev => {
+        if (ev.key !== 'Enter' && ev.key !== ' ') return;
+        ev.preventDefault();
+        card.click();
       });
       if (race.trackId === nextId) nextCard = card;
     }
@@ -382,8 +429,15 @@ export class UI {
     const el = this.screens.settings;
     el.className = 'screen active menu-screen';
     const s = this.settings;
-    const seg = (key, opts, cur) => `<div class="seg" data-k="${key}">${opts.map((o, i) =>
-      `<button class="${i === cur ? 'on' : ''}" data-v="${i}">${o}</button>`).join('')}</div>`;
+    const settingLabels = {
+      difficulty: 'AI difficulty', distance: 'Race distance', quali: 'Qualifying',
+      tc: 'Traction control', abs: 'Anti-lock brakes', autoGear: 'Gearbox',
+      nametags: 'Driver nametags', graphicsQuality: 'Graphics quality',
+      cameraProfile: 'Camera style', autoPause: 'Auto pause',
+      touchControls: 'Touch controls', volume: 'Master volume',
+    };
+    const seg = (key, opts, cur) => `<div class="seg" data-k="${key}" role="group" aria-label="${settingLabels[key] || key}">${opts.map((o, i) =>
+      `<button type="button" class="${i === cur ? 'on' : ''}" data-v="${i}" aria-pressed="${i === cur}">${o}</button>`).join('')}</div>`;
     const row = (title, desc, ctrl) =>
       `<div class="setting-row"><div class="label"><h4>${title}</h4><p>${desc}</p></div>${ctrl}</div>`;
     const group = (name, note, rows) =>
@@ -401,7 +455,11 @@ export class UI {
           ${row('Gearbox', 'Automatic or manual (Q/E to shift)', seg('autoGear', ['MANUAL', 'AUTO'], s.autoGear ? 1 : 0))}`)}
         ${group('DISPLAY', 'On-track information', `
           ${row('Driver Nametags', 'Show 3-letter codes above AI cars', seg('nametags', ['OFF', 'ON'], s.nametags ? 1 : 0))}
-          ${row('Ambient Occlusion', 'Deeper contact shading (costs some fps)', seg('gtao', ['OFF', 'ON'], s.gtao !== false ? 1 : 0))}`)}
+          ${row('Graphics Quality', 'Auto adjusts resolution and effects to hold frame rate', seg('graphicsQuality', ['AUTO', 'LOW', 'MED', 'HIGH'], ['auto', 'low', 'medium', 'high'].indexOf(s.graphicsQuality)))}
+          ${row('Camera Style', 'Chase-camera distance, motion and field of view', seg('cameraProfile', ['TIGHT', 'BROADCAST', 'CINEMATIC'], ['tight', 'broadcast', 'cinematic'].indexOf(s.cameraProfile)))}`)}
+        ${group('BEHAVIOUR', 'Device and focus handling', `
+          ${row('Auto Pause', 'Pause when the game loses focus', seg('autoPause', ['OFF', 'ON'], s.autoPause !== false ? 1 : 0))}
+          ${row('Touch Controls', 'Show steering and pedal controls on touch devices', seg('touchControls', ['OFF', 'ON'], s.touchControls !== false ? 1 : 0))}`)}
         ${group('AUDIO', 'Mix', `
           ${row('Master Volume', 'Engine + effects', seg('volume', ['MUTE', '50%', '100%'], s.volume === 0 ? 0 : s.volume < 0.9 ? 1 : 2))}`)}
       </div>
@@ -416,9 +474,15 @@ export class UI {
         const b = ev.target.closest('button');
         if (!b) return;
         const k = segEl.dataset.k, v = +b.dataset.v;
-        segEl.querySelectorAll('button').forEach(x => x.classList.remove('on'));
+        segEl.querySelectorAll('button').forEach(x => {
+          x.classList.remove('on');
+          x.setAttribute('aria-pressed', 'false');
+        });
         b.classList.add('on');
+        b.setAttribute('aria-pressed', 'true');
         if (k === 'difficulty' || k === 'distance') this.settings[k] = v;
+        else if (k === 'graphicsQuality') this.settings[k] = ['auto', 'low', 'medium', 'high'][v] || 'auto';
+        else if (k === 'cameraProfile') this.settings[k] = ['tight', 'broadcast', 'cinematic'][v] || 'broadcast';
         else if (k === 'volume') this.settings.volume = [0, 0.5, 1][v];
         else this.settings[k] = v === 1;
         this.saveSettings();
@@ -483,6 +547,32 @@ export class UI {
     this._stopFacts();
     this._factTimer = setInterval(paint, 3200);
     this._enter(el);
+  }
+
+  showLoadError(race, track) {
+    this.hideAll();
+    const el = this.screens.loading;
+    const venue = circuitLabel(race, track);
+    el.className = 'screen active load-screen load-error-screen';
+    el.innerHTML = `
+      <div class="load-wrap" role="alert" aria-labelledby="load-error-title">
+        <div class="load-panel">
+          <div class="load-left">
+            <div class="load-flag">${FLAGS[race.trackId] || '🏁'}</div>
+            <div class="load-track-name" id="load-error-title">RACE LOAD INTERRUPTED</div>
+            <div class="load-track-sub">${race.gp} · ${venue}</div>
+            <p class="load-tip">A required race asset could not be loaded. Check your connection, then retry without losing your selection.</p>
+            <div class="btn-row">
+              <button type="button" class="f1-btn primary" id="btn-retry">RETRY</button>
+              <button type="button" class="f1-btn" id="btn-menu">MAIN MENU</button>
+            </div>
+          </div>
+        </div>
+      </div>`;
+    el.querySelector('#btn-retry').addEventListener('click', () => this.cb('retryLoad'));
+    el.querySelector('#btn-menu').addEventListener('click', () => this.cb('back', 'main'));
+    this._enter(el);
+    this._setNavFocus(el, el.querySelector('#btn-retry'));
   }
 
   // ============ QUALI RESULTS ============
@@ -644,12 +734,15 @@ export class UI {
   showPause() {
     const el = this.screens.pause;
     el.className = 'screen active';
+    el.setAttribute('role', 'dialog');
+    el.setAttribute('aria-modal', 'true');
+    el.setAttribute('aria-labelledby', 'pause-title');
     el.innerHTML = `
       <div class="main-nav pause-nav" style="width:420px">
-        <div class="pause-title">PAUSED</div>
-        <div class="nav-item" data-a="resume"><div><h3>RESUME</h3></div></div>
-        <div class="nav-item" data-a="restart"><div><h3>RESTART</h3></div></div>
-        <div class="nav-item" data-a="quit"><div><h3>QUIT TO MENU</h3></div></div>
+        <div class="pause-title" id="pause-title">PAUSED</div>
+        <button type="button" class="nav-item" data-a="resume"><span><h3>RESUME</h3></span></button>
+        <button type="button" class="nav-item" data-a="restart"><span><h3>RESTART</h3></span></button>
+        <button type="button" class="nav-item" data-a="quit"><span><h3>QUIT TO MENU</h3></span></button>
       </div>`;
     el.querySelectorAll('.nav-item').forEach(n =>
       n.addEventListener('click', () => this.cb('pause', n.dataset.a)));

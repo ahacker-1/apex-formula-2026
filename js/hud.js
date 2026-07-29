@@ -7,7 +7,7 @@
 // when the data is actually present, and degrades to the classic layout
 // otherwise. Nothing here writes to the session except shifting radioQueue,
 // which is the documented hand-off for engineer messages.
-import { fmtTime } from './race.js';
+import { fmtTime } from './format.js';
 
 const SECTORS = 3;
 const GAP_HZ = 2;              // gap widget refresh rate
@@ -50,6 +50,7 @@ export class HUD {
         <div class="timing-box"><div class="lbl">CURRENT</div><div class="val" id="t-cur">—</div></div>
         <div class="timing-box"><div class="lbl">LAST</div><div class="val" id="t-last">—</div></div>
         <div class="timing-box"><div class="lbl">BEST</div><div class="val purple" id="t-best">—</div></div>
+        <div class="timing-box" id="tt-delta-box"><div class="lbl">DELTA</div><div class="val" id="t-delta">—</div></div>
       </div>
       <div id="sectorbar"></div>
       <div id="gapwidget"></div>
@@ -90,6 +91,30 @@ export class HUD {
           <button class="tyre-btn M" data-c="M"><div class="ring"></div><b>MEDIUM</b><small>BALANCED</small></button>
           <button class="tyre-btn H" data-c="H"><div class="ring"></div><b>HARD</b><small>DURABLE</small></button>
         </div>
+      </div>
+      <div id="onboarding" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
+        <div class="onboarding-card">
+          <span class="eyebrow">WELCOME TO APEX FORMULA</span>
+          <h2 id="onboarding-title">THREE THINGS BEFORE LIGHTS OUT</h2>
+          <div class="onboarding-grid">
+            <div><b>1 · DRIVE</b><span><kbd>WASD</kbd> or arrow keys steer, accelerate and brake.</span></div>
+            <div><b>2 · DEPLOY</b><span>Hold <kbd>SPACE</kbd> for electric override. Tap <kbd>V</kbd> to change ERS mode.</span></div>
+            <div><b>3 · ADAPT</b><span><kbd>C</kbd> changes camera. <kbd>P</kbd> calls the pit. <kbd>ESC</kbd> pauses.</span></div>
+          </div>
+          <button type="button" id="onboarding-go">GOT IT — START DRIVING</button>
+        </div>
+      </div>
+      <div id="touch-controls" aria-label="Touch driving controls">
+        <div class="touch-steer">
+          <button type="button" data-touch="left" aria-label="Steer left">◀</button>
+          <button type="button" data-touch="right" aria-label="Steer right">▶</button>
+        </div>
+        <button type="button" class="touch-pause" data-touch="pause" aria-label="Pause">Ⅱ</button>
+        <div class="touch-pedals">
+          <button type="button" class="touch-boost" data-touch="boost" aria-label="Electric override">OVR</button>
+          <button type="button" class="touch-brake" data-touch="brake" aria-label="Brake">BRK</button>
+          <button type="button" class="touch-throttle" data-touch="throttle" aria-label="Throttle">THR</button>
+        </div>
       </div>`;
     // rev lights: 5 green, 5 red, 5 blue
     const rl = this.$('revlights');
@@ -115,6 +140,27 @@ export class HUD {
       const b = ev.target.closest('.tyre-btn');
       if (b && this._pitCb) { this._pitCb(b.dataset.c); }
     });
+    this.touchState = { left: false, right: false, throttle: false, brake: false, boost: false };
+    this.$('touch-controls').addEventListener('pointerdown', (event) => {
+      const button = event.target.closest('[data-touch]');
+      if (!button) return;
+      const control = button.dataset.touch;
+      event.preventDefault();
+      if (control === 'pause') { this._touchPause?.(); return; }
+      this.touchState[control] = true;
+      button.classList.add('pressed');
+      button.setPointerCapture?.(event.pointerId);
+    });
+    const releaseTouch = (event) => {
+      const button = event.target.closest?.('[data-touch]');
+      if (!button) return;
+      const control = button.dataset.touch;
+      if (control !== 'pause') this.touchState[control] = false;
+      button.classList.remove('pressed');
+    };
+    this.$('touch-controls').addEventListener('pointerup', releaseTouch);
+    this.$('touch-controls').addEventListener('pointercancel', releaseTouch);
+    this.$('touch-controls').addEventListener('lostpointercapture', releaseTouch);
 
     this._buildSectorBar();
     this._buildGapWidget();
@@ -178,6 +224,8 @@ export class HUD {
   show() { this.root.classList.add('active'); }
   hide() {
     this.root.classList.remove('active');
+    this.$('onboarding').classList.remove('active');
+    this.$('onboarding-go').onclick = null;
     this.$('race-msg').innerHTML = '';
     this.hideLights();
     this.flash('');
@@ -185,6 +233,32 @@ export class HUD {
     this._hideRadio();
     this.$('vscbanner').classList.remove('on', 'green');
     this.$('flbanner').classList.remove('on');
+    this.enableTouchControls(false);
+  }
+
+  enableTouchControls(enabled, onPause = null) {
+    this._touchPause = onPause;
+    this.$('touch-controls').classList.toggle('enabled', !!enabled);
+    if (!enabled) this.clearTouchState();
+  }
+
+  clearTouchState() {
+    for (const key of Object.keys(this.touchState)) this.touchState[key] = false;
+    for (const button of this.$('touch-controls').querySelectorAll('.pressed')) {
+      button.classList.remove('pressed');
+    }
+  }
+
+  showOnboarding(onDone) {
+    const overlay = this.$('onboarding');
+    overlay.classList.add('active');
+    const button = this.$('onboarding-go');
+    button.onclick = () => {
+      overlay.classList.remove('active');
+      button.onclick = null;
+      onDone?.();
+    };
+    setTimeout(() => button.focus(), 0);
   }
 
   bindSession(session, circuit) {
@@ -195,6 +269,8 @@ export class HUD {
     this.$('tw-title').textContent = session.trial ? 'TIME TRIAL' : session.mode === 'quali' ? 'QUALIFYING' : 'RACE';
     this.$('tw-lap').textContent = '';
     this.$('tw-gapmode').textContent = race ? 'INT' : '';
+    this.$('tt-delta-box').style.display = session.trial ? '' : 'none';
+    this.$('t-delta').textContent = '—';
     // don't flash the fastest-lap banner for a lap that was set before we bound
     this._flKey = this._fastestKey(session);
     // gap widget / sector bar only make sense with a real player in a race
@@ -332,6 +408,20 @@ export class HUD {
     }
 
     this._drawMinimap();
+  }
+
+  updateTimeTrial(personalBest, delta) {
+    if (!this.session?.trial) return;
+    if (personalBest > 0) this.$('t-best').textContent = fmtTime(personalBest);
+    const value = this.$('t-delta');
+    if (typeof delta !== 'number' || !Number.isFinite(delta)) {
+      value.textContent = '—';
+      value.classList.remove('green', 'red');
+      return;
+    }
+    value.textContent = `${delta <= 0 ? '−' : '+'}${Math.abs(delta).toFixed(3)}`;
+    value.classList.toggle('green', delta <= 0);
+    value.classList.toggle('red', delta > 0);
   }
 
   // ================= sector times =================

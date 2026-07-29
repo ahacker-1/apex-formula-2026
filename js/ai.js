@@ -7,16 +7,17 @@ import { angleDiff, maxSteerAngle } from './physics.js';
 const ABRAKE_PLAN = 38;
 
 export class AIDriver {
-  constructor(car, circuit, driver, difficulty) {
+  constructor(car, circuit, driver, difficulty, random = () => Math.random()) {
     this.car = car;
     this.circuit = circuit;
     this.driver = driver;
+    this.random = random;
     // difficulty 0..2 (easy/med/hard); skill combines with driver pace
     const diffF = [0.925, 0.962, 1.0][difficulty] ?? 1.0;
     this.skill = diffF * (0.94 + 0.06 * driver.pace);
     this.avoidOffset = 0;
     this.mistakeTimer = 0;
-    this.mistakeCooldown = 8 + Math.random() * 8;
+    this.mistakeCooldown = 8 + this.random() * 8;
     this.lapNoise = 1;
 
     // ---- race-direction state (written by RaceSession) ----
@@ -40,7 +41,7 @@ export class AIDriver {
   }
 
   newLapNoise() {
-    this.lapNoise = 1 + (Math.random() - 0.5) * 0.012 * (2 - this.driver.consistency);
+    this.lapNoise = 1 + (this.random() - 0.5) * 0.012 * (2 - this.driver.consistency);
   }
 
   // ---- hooks used by RaceSession ----
@@ -72,9 +73,9 @@ export class AIDriver {
     this.mistakeCooldown -= dt;
     if (this.mistakeTimer > 0) this.mistakeTimer -= dt;
     else if (this.mistakeCooldown <= 0) {
-      this.mistakeCooldown = 9 + Math.random() * 14;
+      this.mistakeCooldown = 9 + this.random() * 14;
       const p = (1 - this.driver.consistency) * 0.55;
-      if (Math.random() < p && Math.abs(c.line[idx].curv) > 1 / 400) {
+      if (this.random() < p && Math.abs(c.line[idx].curv) > 1 / 400) {
         this.mistakeTimer = 1.1; // brake late / run wide
       }
     }

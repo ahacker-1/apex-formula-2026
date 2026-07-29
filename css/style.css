@@ -92,16 +92,21 @@ body {
 .main-nav { display: flex; flex-direction: column; gap: 14px; max-width: 620px; margin-top: 4vh; }
 .main-nav .nav-item {
   position: relative;
+  width: 100%; color: inherit; font: inherit; text-align: left;
   background: var(--panel); border: 1px solid rgba(255,255,255,0.07);
   border-left: 5px solid var(--red);
   padding: 20px 28px; cursor: pointer;
   transform: skewX(-8deg); transition: all 0.15s ease;
 }
-.main-nav .nav-item > div { transform: skewX(8deg); }
-.main-nav .nav-item:hover, .main-nav .nav-item.focused {
+.main-nav .nav-item > div, .main-nav .nav-item > span { display: block; transform: skewX(8deg); }
+.main-nav .nav-item:hover, .main-nav .nav-item.focused, .main-nav .nav-item:focus-visible {
   background: var(--red); border-color: var(--red);
   translate: 14px 0; box-shadow: 0 8px 30px rgba(225,6,0,0.35);
 }
+.main-nav .nav-item:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
+.main-nav .nav-item.race-now { border-left-color: var(--green); }
+.main-nav .nav-item.race-now h3 { color: var(--green); }
+.main-nav .nav-item.race-now:hover h3, .main-nav .nav-item.race-now:focus-visible h3 { color: #fff; }
 .main-nav .nav-item h3 { font-size: 24px; font-weight: 900; font-style: italic; text-transform: uppercase; }
 .main-nav .nav-item p { font-size: 13px; color: var(--text-dim); margin-top: 4px; }
 .main-nav .nav-item:hover p, .main-nav .nav-item.focused p { color: rgba(255,255,255,0.85); }
@@ -578,8 +583,53 @@ body {
 .tyre-btn b { font-size: 12px; }
 .tyre-btn small { display: block; color: var(--text-dim); font-size: 9px; margin-top: 2px; }
 
+/* First-run guide */
+#onboarding {
+  position: absolute; inset: 0; z-index: 300; display: none; place-items: center;
+  padding: 24px; pointer-events: auto; background: rgba(4,5,8,0.86); backdrop-filter: blur(12px);
+}
+#onboarding.active { display: grid; }
+.onboarding-card {
+  width: min(720px, 100%); padding: clamp(24px, 5vw, 48px);
+  background: linear-gradient(155deg, #1a1b23, #0c0d12); border: 1px solid rgba(255,255,255,0.16);
+  border-left: 6px solid var(--red); box-shadow: 0 24px 80px rgba(0,0,0,0.55);
+}
+.onboarding-card .eyebrow { color: var(--red); font-size: 10px; font-weight: 900; letter-spacing: .22em; }
+.onboarding-card h2 { margin: 8px 0 24px; font-size: clamp(25px, 4vw, 42px); font-style: italic; line-height: 1; }
+.onboarding-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.onboarding-grid > div { padding: 16px; background: rgba(255,255,255,.05); border-top: 2px solid rgba(255,255,255,.18); }
+.onboarding-grid b, .onboarding-grid span { display: block; }
+.onboarding-grid b { margin-bottom: 8px; font-size: 12px; letter-spacing: .12em; }
+.onboarding-grid span { color: var(--text-dim); font-size: 12px; line-height: 1.55; }
+kbd { padding: 2px 5px; color: #fff; background: #282a33; border: 1px solid #454854; border-radius: 3px; font: 700 10px var(--mono); }
+#onboarding-go {
+  margin-top: 24px; padding: 14px 22px; color: #fff; background: var(--red); border: 0;
+  font-family: inherit; font-size: 13px; font-weight: 900; letter-spacing: .08em; cursor: pointer;
+}
+#onboarding-go:focus-visible { outline: 3px solid #fff; outline-offset: 4px; }
+
+/* Coarse-pointer driving surface. Hidden unless both the setting and device agree. */
+#touch-controls { display: none; position: absolute; inset: 0; z-index: 80; pointer-events: none; }
+#touch-controls.enabled { display: block; }
+#touch-controls button {
+  pointer-events: auto; touch-action: none; user-select: none; -webkit-user-select: none;
+  min-width: 58px; min-height: 58px; border-radius: 50%; border: 1px solid rgba(255,255,255,.3);
+  color: #fff; background: rgba(10,10,15,.7); backdrop-filter: blur(7px);
+  font: 900 12px var(--mono); box-shadow: inset 0 0 0 2px rgba(0,0,0,.22);
+}
+#touch-controls button.pressed { transform: scale(.94); background: rgba(225,6,0,.86); border-color: #fff; }
+.touch-steer { position: absolute; left: 18px; bottom: 22px; display: flex; gap: 12px; }
+.touch-pedals { position: absolute; right: 18px; bottom: 18px; display: flex; align-items: flex-end; gap: 10px; }
+#touch-controls .touch-throttle { width: 70px; height: 88px; border-radius: 36px; border-color: var(--green); }
+#touch-controls .touch-brake { width: 62px; height: 72px; border-radius: 31px; border-color: var(--red); }
+#touch-controls .touch-boost { width: 58px; height: 58px; color: var(--gold); border-color: var(--gold); }
+#touch-controls .touch-pause { position: absolute; right: 16px; top: 14px; min-width: 44px; min-height: 44px; }
+
 /* keyboard navigation focus */
 .kb-focus { outline: 3px solid var(--red) !important; outline-offset: 2px; border-radius: 4px; }
+.drv:focus-visible, .track-card:focus-visible, .f1-btn:focus-visible, .seg button:focus-visible {
+  outline: 3px solid #fff; outline-offset: 3px;
+}
 .nav-item.kb-focus { outline: none !important; background: var(--red); translate: 14px 0; }
 .nav-item.kb-focus p { color: rgba(255,255,255,0.85); }
 
@@ -604,6 +654,27 @@ body {
   #carstat { display: none; }
   #flbanner { left: 16px; }
   #gapwidget.shown { display: none; }
+  #minimap { display: none; }
+  #timing { top: 10px; width: calc(100% - 76px); gap: 3px; }
+  #timing .timing-box { flex: 1; min-width: 0; padding: 5px 4px; }
+  #timing .timing-box:nth-child(1), #timing .timing-box:nth-child(4) { display: none; }
+  .timing-box .lbl { font-size: 7px; }
+  .timing-box .val { font-size: 14px; }
+  #sectorbar { top: 57px; width: calc(100% - 24px); }
+  #race-msg { top: 87px; width: calc(100% - 24px); }
+  .msg-pill { max-width: 100%; padding: 6px 12px; font-size: 11px; text-align: center; }
+  #dash {
+    right: auto; left: 50%; bottom: 112px; transform: translateX(-50%);
+    width: 184px; padding: 7px 10px;
+  }
+  #dash .revlights { gap: 2px; margin-bottom: 4px; }
+  #dash .revlights i { width: 9px; height: 5px; }
+  #dash .gear { font-size: 34px; width: 42px; }
+  #dash .speed .v { font-size: 27px; }
+  #dash .bars, #dash .modes { display: none; }
+  #pit-overlay { bottom: 112px; width: calc(100% - 28px); padding: 14px 10px; }
+  .onboarding-grid { grid-template-columns: 1fr; }
+  .onboarding-card { max-height: calc(100vh - 28px); overflow-y: auto; padding: 24px; }
 }
 /* short viewports: keep the left column clear of the tower.
    1280x800 clears by 21px at the default row height; below that, compact. */

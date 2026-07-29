@@ -13,6 +13,7 @@
     "node": ">=24"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.0",
     "three": "0.160.0"
   },
   "scripts": {
@@ -20,10 +21,19 @@
     "check:opensource": "bash tools/check-open-source-ready.sh",
     "test:tracks": "node tools/validate-tracks.mjs",
     "test:geometry": "node tools/validate-geometry.mjs",
+    "test:pacing": "node tools/validate-pacing.mjs",
+    "test:game-pacing": "node tools/validate-game-pacing.mjs",
+    "test:interpolation": "node tools/validate-interpolation.mjs",
+    "test:random": "node tools/validate-random.mjs",
+    "test:championship": "node tools/validate-championship.mjs",
+    "test:build-script": "bash tools/validate-build-script.sh",
+    "test:performance-budget": "node tools/validate-performance-budget.mjs",
     "test:physics": "node tools/physics-envelope.mjs",
+    "test:effects": "node tools/validate-effects.mjs",
+    "test:browser": "npm run build && playwright test",
     "test:nametags": "node tools/nametag-sim-check.mjs",
     "test:features": "node tools/sim-race-features.mjs",
     "test:race": "node tools/sim-race.mjs",
-    "test": "npm run check:opensource && npm run test:tracks && npm run test:geometry && npm run test:physics && npm run test:nametags && npm run test:features && npm run test:race"
+    "test": "npm run check:opensource && npm run test:tracks && npm run test:geometry && npm run test:pacing && npm run test:game-pacing && npm run test:interpolation && npm run test:random && npm run test:championship && npm run test:build-script && npm run test:performance-budget && npm run test:physics && npm run test:effects && npm run test:nametags && npm run test:features && npm run test:race"
   }
 }

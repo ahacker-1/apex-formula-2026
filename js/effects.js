@@ -21,8 +21,9 @@ function radialSprite(inner, outer, size = 64) {
 }
 
 export class Effects {
-  constructor(scene) {
+  constructor(scene, random = () => Math.random()) {
     this.scene = scene;
+    this.random = random;
     this._f = new THREE.Vector3();
     this._l = new THREE.Vector3();
 
@@ -42,6 +43,7 @@ export class Effects {
     });
     this.sparks = new THREE.Points(sg, this.sparkMat);
     this.sparks.frustumCulled = false;
+    this.sparks.userData.gtaoExcluded = true;
     scene.add(this.sparks);
     this._sparkCursor = 0;
 
@@ -52,6 +54,10 @@ export class Effects {
       const m = new THREE.SpriteMaterial({ map: this.smokeTex, transparent: true, opacity: 0, depthWrite: false });
       const s = new THREE.Sprite(m);
       s.visible = false;
+      // GTAO renders with an opaque override material that cannot see the
+      // sprite's radial alpha. Excluding the card prevents a black square from
+      // flashing behind the car as smoke appears during wheelspin or braking.
+      s.userData.gtaoExcluded = true;
       scene.add(s);
       this.smoke.push({ sprite: s, life: 0, maxLife: 1 });
     }
@@ -74,6 +80,8 @@ export class Effects {
     this.skid = new THREE.Mesh(kg, this.skidMat);
     this.skid.frustumCulled = false;
     this.skid.renderOrder = 1;
+    // The mark is a transparent road overlay, not an occluding surface.
+    this.skid.userData.gtaoExcluded = true;
     scene.add(this.skid);
     this._skidCursor = 0;
     this._skidPrev = null; // {l0,l1,r0,r1} previous edge points
@@ -88,22 +96,22 @@ export class Effects {
     p.array[i * 3] = x; p.array[i * 3 + 1] = y; p.array[i * 3 + 2] = z;
     const d = this.sparkData[i];
     d.floor = floor;
-    d.life = 0.28 + Math.random() * 0.3;
+    d.life = 0.28 + this.random() * 0.3;
     // sparks stream backwards + sideways scatter
     d.vel.set(
-      -Math.sin(heading) * v * 0.55 + (Math.random() - 0.5) * 7,
-      1.2 + Math.random() * 2.4,
-      -Math.cos(heading) * v * 0.55 + (Math.random() - 0.5) * 7
+      -Math.sin(heading) * v * 0.55 + (this.random() - 0.5) * 7,
+      1.2 + this.random() * 2.4,
+      -Math.cos(heading) * v * 0.55 + (this.random() - 0.5) * 7
     );
   }
 
   _emitSmoke(x, y, z) {
     const s = this.smoke[this._smokeCursor];
     this._smokeCursor = (this._smokeCursor + 1) % SMOKE_POOL;
-    s.life = s.maxLife = 0.7 + Math.random() * 0.5;
+    s.life = s.maxLife = 0.7 + this.random() * 0.5;
     s.sprite.visible = true;
     s.sprite.position.set(x, y, z);
-    s.sprite.scale.setScalar(0.7 + Math.random() * 0.5);
+    s.sprite.scale.setScalar(0.7 + this.random() * 0.5);
     s.sprite.material.opacity = 0.4;
   }
 
@@ -178,14 +186,14 @@ export class Effects {
       const rx = p.pos.x - f.x * 1.6, rz = p.pos.z - f.z * 1.6;
       // titanium skid sparks: kerb strikes + heavy braking at speed + bottoming on straights
       const sparky = (p.onKerb && p.v > 32) || (p.brake > 0.75 && p.v > 52) ||
-        (p.aeroX && p.v > 88 && Math.random() < 0.12);
-      if (sparky && Math.random() < 0.75) {
-        const side = Math.random() < 0.5 ? 1 : -1;
+        (p.aeroX && p.v > 88 && this.random() < 0.12);
+      if (sparky && this.random() < 0.75) {
+        const side = this.random() < 0.5 ? 1 : -1;
         this._emitSpark(rx + left.x * 0.8 * side, ry + 0.06, rz + left.z * 0.8 * side, p.heading, p.v, ry);
       }
       // tyre smoke on slip
-      if (p.slip && p.v > 14 && Math.random() < 0.55) {
-        const side = Math.random() < 0.5 ? 1 : -1;
+      if (p.slip && p.v > 14 && this.random() < 0.55) {
+        const side = this.random() < 0.5 ? 1 : -1;
         this._emitSmoke(rx + left.x * 0.85 * side, ry + 0.3, rz + left.z * 0.85 * side);
       }
       // skid marks: player only
