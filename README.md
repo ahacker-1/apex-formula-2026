@@ -48,9 +48,10 @@ For development, `python3 tools/devserver.py 8341 .` adds
   open-wheel racing rules.
 - Twenty-one AI opponents with overtaking, defense, braking profiles, and three
   difficulty levels.
-- Quick Race, Championship, and Time Trial modes.
-- Keyboard and gamepad controls, synthesized engine audio, environmental
-  effects, and three camera views.
+- Quick Race, one-click Race Now, Championship, and persistent Time Trial with
+  personal-best ghosts and live delta timing.
+- Keyboard, gamepad, and responsive touch controls; a legally self-contained
+  synthesized engine/effects package; adaptive graphics; and three camera views.
 
 ## Controls
 
@@ -81,10 +82,14 @@ for Node-based validation.
 npm ci
 npm test
 npm run build
+npm run test:browser
 ```
 
 `npm test` runs the track, geometry, physics, race, UI-label, and repository
-release gates. `npm run build` creates a deployable static copy in `dist/`.
+release gates. `npm run test:browser` launches the production UI in desktop and
+mobile Chromium to cover onboarding, accessibility, adaptive rendering,
+WebGL recovery, time-trial ghosts, and touch-layout bounds. `npm run build`
+creates a deployable static copy in `dist/`.
 
 Individual checks are available through the scripts in `package.json`. The
 geometry suite is intentionally thorough and produces verbose output.
@@ -95,7 +100,9 @@ The open-source checkout uses the built-in WebAudio synthesizer. The scripts
 in `tools/` can generate an optional local sample pack with an ElevenLabs API
 key, but generated MP3s are ignored and must not be committed. Anyone using
 those scripts is responsible for the service terms and account plan that apply
-to their output.
+to their output. After generating the pack, open the local game with
+`?sampleAudio=1` (for example, `http://localhost:8341/?sampleAudio=1`) to load
+those optional files.
 
 ## Project layout
 
@@ -112,10 +119,13 @@ js/car.js           3D vehicle model and liveries
 js/hud.js           timing tower, dashboard, and overlays
 js/ui.js            menus and championship screens
 js/audio.js         synthesized audio and optional sample loading
+js/quality.js       adaptive graphics presets and frame-time scaling
+js/timeTrial.js     persistent personal bests, live delta, and local ghost
 lib/                vendored Three.js r160 runtime and add-ons
 assets/             project-authored 3D model
 textures/           project-authored environment art
 tools/              validators, development harnesses, and build scripts
+tests/browser/      Playwright desktop/mobile regression coverage
 ```
 
 ## Contributing

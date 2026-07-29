@@ -20,6 +20,8 @@ function storage() {
 }
 
 const DRIVER_BY_ID = new Map(DRIVERS.map((d) => [d.id, d]));
+const DRIVER_IDS = new Set(DRIVER_BY_ID.keys());
+const TEAM_IDS = new Set(TEAMS.map((team) => team.id));
 
 function freshState(playerDriverId) {
   return {
@@ -35,18 +37,89 @@ function freshState(playerDriverId) {
   };
 }
 
-function isValidState(s) {
-  return (
-    !!s &&
-    typeof s === 'object' &&
-    typeof s.playerDriverId === 'string' &&
-    DRIVER_BY_ID.has(s.playerDriverId) &&
-    typeof s.roundIndex === 'number' &&
-    s.roundIndex >= 0 &&
-    Array.isArray(s.results) &&
-    !!s.driverPoints &&
-    !!s.teamPoints
-  );
+function isRecord(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+function normalizeCounterMap(value, validIds) {
+  if (!isRecord(value)) return null;
+  const normalized = {};
+  for (const [id, count] of Object.entries(value)) {
+    if (!validIds.has(id) || !Number.isInteger(count) || count < 0) return null;
+    normalized[id] = count;
+  }
+  return normalized;
+}
+
+function normalizeResult(value, index, playerDriverId) {
+  if (!isRecord(value)) return null;
+  const race = CALENDAR[index];
+  if (!race || value.round !== race.round || value.trackId !== race.trackId || value.gp !== race.gp) {
+    return null;
+  }
+
+  if (!Array.isArray(value.top3) || value.top3.length < 1 || value.top3.length > 3) return null;
+  if (value.top3.some((id) => typeof id !== 'string' || !DRIVER_IDS.has(id))) return null;
+  if (new Set(value.top3).size !== value.top3.length) return null;
+
+  const playerPos = value.playerPos;
+  if (playerPos !== null &&
+      (!Number.isInteger(playerPos) || playerPos < 1 || playerPos > DRIVERS.length)) return null;
+
+  const podiumIndex = value.top3.indexOf(playerDriverId);
+  if (playerPos === null) {
+    if (podiumIndex !== -1) return null;
+  } else if (playerPos <= 3) {
+    if (value.top3[playerPos - 1] !== playerDriverId) return null;
+  } else if (podiumIndex !== -1) return null;
+
+  const fastestLap = value.fastestLap;
+  if (fastestLap !== null && (typeof fastestLap !== 'string' || !DRIVER_IDS.has(fastestLap))) {
+    return null;
+  }
+
+  return {
+    round: value.round,
+    trackId: value.trackId,
+    gp: value.gp,
+    top3: value.top3.slice(),
+    playerPos,
+    fastestLap,
+  };
+}
+
+function normalizeState(value) {
+  if (!isRecord(value) || typeof value.playerDriverId !== 'string' ||
+      !DRIVER_IDS.has(value.playerDriverId)) return null;
+  if (!Number.isInteger(value.roundIndex) || value.roundIndex < 0 ||
+      value.roundIndex > CALENDAR.length) return null;
+  if (!Array.isArray(value.results) || value.results.length !== value.roundIndex) return null;
+
+  const driverPoints = normalizeCounterMap(value.driverPoints, DRIVER_IDS);
+  const teamPoints = normalizeCounterMap(value.teamPoints, TEAM_IDS);
+  const wins = normalizeCounterMap(value.wins, DRIVER_IDS);
+  const podiums = normalizeCounterMap(value.podiums, DRIVER_IDS);
+  const teamWins = normalizeCounterMap(value.teamWins, TEAM_IDS);
+  const teamPodiums = normalizeCounterMap(value.teamPodiums, TEAM_IDS);
+  if (!driverPoints || !teamPoints || !wins || !podiums || !teamWins || !teamPodiums) return null;
+
+  const results = value.results.map((result, index) =>
+    normalizeResult(result, index, value.playerDriverId));
+  if (results.some((result) => result === null)) return null;
+
+  return {
+    playerDriverId: value.playerDriverId,
+    roundIndex: value.roundIndex,
+    driverPoints,
+    teamPoints,
+    wins,
+    podiums,
+    teamWins,
+    teamPodiums,
+    results,
+  };
 }
 
 export class Championship {
@@ -58,7 +131,7 @@ export class Championship {
         const raw = store.getItem(STORAGE_KEY);
         if (raw) {
           const parsed = JSON.parse(raw);
-          if (isValidState(parsed)) this._state = parsed;
+          this._state = normalizeState(parsed);
         }
       } catch (e) {
         // Corrupt storage -> fresh (no career) state.

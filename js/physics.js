@@ -49,6 +49,7 @@ export class CarPhysics {
     this.perf = opts.perf ?? 1;
     this.isPlayer = !!opts.isPlayer;
     this.assists = Object.assign({ tc: true, abs: true, autoGear: true }, opts.assists);
+    this.random = opts.random ?? (() => Math.random());
 
     this.pos = new THREE.Vector3();
     this.heading = 0;
@@ -257,7 +258,7 @@ export class CarPhysics {
         fDrive = traction * 0.55;
         this.slip = true;
         this.wear += 0.008 * dt * this.compoundData.wearRate;
-        if (this.gear <= 3 && this.throttle > 0.85) this._spinJitter += (Math.random() - 0.5) * 0.35;
+        if (this.gear <= 3 && this.throttle > 0.85) this._spinJitter += (this.random() - 0.5) * 0.35;
       }
     }
     // brakes — heat soak fades the discs (brakeTemp updated below)

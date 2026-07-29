@@ -660,8 +660,19 @@ export function tyreWall(w = 256, h = 64) {
   // wrap instead of clipping a tyre in half at the seam.
   const n = Math.max(2, Math.round(w / step));
   const pitch = w / n;
+  // A tyre-wall canvas is repeated along every barrier run, so ambient randomness
+  // cannot add spatial variation; it only makes the chosen cover pattern (and its
+  // brightness) change between runs. Seed from the layout instead: the mix remains
+  // irregular within the tile but the same inputs always produce the same art.
+  let coverSeed = (0x54595245 ^ Math.imul(n, 0x9e3779b1)) >>> 0;
+  const coverRandom = () => {
+    coverSeed = (Math.imul(coverSeed, 1664525) + 1013904223) >>> 0;
+    return coverSeed / 4294967296;
+  };
+  const coverPattern = [];
   for (let i = 0; i < n; i++) {
-    const covered = Math.random() < 0.34 ? covers[(Math.random() * covers.length) | 0] : null;
+    const covered = coverRandom() < 0.34 ? covers[(coverRandom() * covers.length) | 0] : null;
+    coverPattern.push(covered);
     drawTyre(pitch * (i + 0.5), y, covered);
   }
   // shadowed base and a light top rail: a tyre wall is strapped, not stacked loose
@@ -674,7 +685,7 @@ export function tyreWall(w = 256, h = 64) {
   // Published so the layout can be asserted exactly: the tile is mapped to 4m of
   // wall by the wall height, so `rows`, `count` and the radii ARE the world size of
   // a tyre, and no pixel heuristic has to infer them back out of the gradients.
-  c._tyreWall = { rows: 1, count: n, radiusX, radiusY, w, h };
+  c._tyreWall = { rows: 1, count: n, radiusX, radiusY, w, h, coverPattern };
   return c;
 }
 

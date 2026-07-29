@@ -3120,11 +3120,14 @@ export function buildCircuit(trackId, def, scene) {
         pg.computeVertexNormals();
         const pool = new THREE.Mesh(pg, new THREE.MeshBasicMaterial({
           map: poolTex,
-          color: 0x9fb6e0,
+          color: 0x829ac4,
           blending: THREE.AdditiveBlending,
           transparent: true,
           depthWrite: false,
-          opacity: 0.8,
+          // The decal is illumination, not a painted white strip.  Keeping it
+          // below half opacity preserves the asphalt, grid and car silhouettes
+          // through overlapping pools on a packed starting grid.
+          opacity: 0.46,
           polygonOffset: true,
           polygonOffsetFactor: -5,
           polygonOffsetUnits: -5,

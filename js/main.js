@@ -7,35 +7,111 @@ import { GTAOPass } from '../lib/postprocessing/GTAOPass.js';
 import { OutputPass } from '../lib/postprocessing/OutputPass.js';
 import { RGBELoader } from '../lib/loaders/RGBELoader.js';
 
-// photographic HDRI skies (CC0, PolyHaven) — loaded once, shared across sessions
-const HDRI = { day: null, dusk: null, night: null, _loaded: false };
-function loadHDRIs() {
-  if (HDRI._loaded) return;
-  HDRI._loaded = true;
-  const loader = new RGBELoader();
-  for (const key of ['day', 'dusk', 'night']) {
-    loader.load(`textures/hdri/${key}.hdr`, (tex) => {
+// Photographic HDRI skies (CC0, PolyHaven). Load only the selected session's
+// theme; fetching all three at boot used 19.8 MB before the player chose a race.
+const HDRI = { day: null, dusk: null, night: null, promises: {} };
+const CAMERA_PROFILES = {
+  tight: { back: 6.5, pull: 0.014, height: 2.2, rise: 0.005, look: 8, fov: 67, fovSpeed: 0.055 },
+  broadcast: { back: 7.2, pull: 0.022, height: 2.45, rise: 0.006, look: 10, fov: 69, fovSpeed: 0.07 },
+  cinematic: { back: 8.2, pull: 0.032, height: 2.8, rise: 0.008, look: 13, fov: 71, fovSpeed: 0.085 },
+};
+const photoManifest = {
+  asphalt: 'textures/asphalt.png', grass: 'textures/grass.png',
+  gravel: 'textures/gravel.png', crowd: 'textures/crowd.png',
+  facadeDay: 'textures/facade-day.png', facadeNight: 'textures/facade-night.png',
+  treeBroadleaf: 'textures/tree-broadleaf.png', treePine: 'textures/tree-pine.png',
+  treePalm: 'textures/tree-palm.png', scrub: 'textures/scrub.png',
+};
+let coreAssetPromise = null;
+let RaceSession = null;
+let buildCircuit = null;
+let TEX = null;
+
+function loadCoreAssets() {
+  if (coreAssetPromise) return coreAssetPromise;
+  const photos = Promise.allSettled(Object.entries(photoManifest).map(([key, url]) =>
+    new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve({ key, img });
+      img.onerror = reject;
+      img.src = url;
+    })));
+  // Keep the menu's module graph lean: the circuit, simulation, car and large
+  // procedural-texture modules are only evaluated after a venue is chosen.
+  // Their network work overlaps the photo fetches and the selected HDR.
+  coreAssetPromise = Promise.all([
+    import('./race.js'),
+    import('./trackBuilder.js'),
+    import('./textures.js'),
+    import('./car.js'),
+    photos,
+  ]).then(([raceModule, circuitModule, textureModule, carModule, loadedPhotos]) => {
+    RaceSession = raceModule.RaceSession;
+    buildCircuit = circuitModule.buildCircuit;
+    TEX = textureModule;
+    for (const result of loadedPhotos) {
+      if (result.status === 'fulfilled') TEX.registerPhoto(result.value.key, result.value.img);
+    }
+    return carModule.preloadCarModel();
+  }).catch((error) => {
+    // A rejected cached promise can never recover. Leave successfully fetched
+    // browser modules cached, but allow the user-facing Retry action to rebuild
+    // the aggregate load and refetch the missing resource.
+    coreAssetPromise = null;
+    throw error;
+  });
+  return coreAssetPromise;
+}
+
+function environmentKeyForTrack(trackId) {
+  if (['jeddah', 'lusail', 'singapore', 'lasvegas', 'qatar'].includes(trackId)) return 'night';
+  if (trackId === 'bahrain' || trackId === 'yasmarina') return 'dusk';
+  return 'day';
+}
+
+function documentIsActive() {
+  return !document.hidden &&
+    (typeof document.hasFocus !== 'function' || document.hasFocus());
+}
+
+function loadHDRI(key) {
+  if (!['day', 'dusk', 'night'].includes(key)) return Promise.reject(new Error(`Unknown HDRI theme: ${key}`));
+  if (HDRI[key]) return Promise.resolve(HDRI[key]);
+  if (!HDRI.promises[key]) {
+    HDRI.promises[key] = new Promise((resolve, reject) => {
+      new RGBELoader().load(`textures/hdri/${key}.hdr`, (tex) => {
       tex.mapping = THREE.EquirectangularReflectionMapping;
       HDRI[key] = tex;
-    }, undefined, () => { /* fallback: procedural sky remains */ });
+        resolve(tex);
+      }, undefined, reject);
+    }).catch((error) => {
+      delete HDRI.promises[key];
+      throw error;
+    });
   }
+  return HDRI.promises[key];
 }
-import { buildCircuit } from './trackBuilder.js';
-import { RaceSession } from './race.js';
 import { HUD } from './hud.js';
 import { UI } from './ui.js';
 import { AudioEngine } from './audio.js';
 import { Championship } from './championship.js';
 import { Effects } from './effects.js';
-import * as TEX from './textures.js';
+import { QualityController } from './quality.js';
+import { TimeTrialManager } from './timeTrial.js';
+import { FixedStepAccumulator } from './fixedStep.js';
+import { createRandom, deriveSeed, normalizeSeed } from './random.js';
 import { TRACKS } from './tracks.js';
-import { CALENDAR } from './data.js';
+import { CALENDAR, DRIVERS } from './data.js';
+
+const RETRY_SESSION_KEY = 'apexf1_retry_session_v1';
 
 class Game {
   constructor() {
     this.state = 'boot';
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    // Start conservatively; QualityController selects the persisted/automatic
+    // tier immediately after UI settings are available.
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1.25));
     this.renderer.setSize(innerWidth, innerHeight);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -50,25 +126,45 @@ class Game {
     this.camMode = 0; // 0 chase, 1 T-cam, 2 nose
     this._camPos = new THREE.Vector3();
     this._camLook = new THREE.Vector3();
+    this._camForward = new THREE.Vector3();
+    this._camAhead = new THREE.Vector3();
+    this._camLeft = new THREE.Vector3();
+    this._camPlayerPos = new THREE.Vector3();
+    this._camTargetPos = new THREE.Vector3();
+    this._camTargetLook = new THREE.Vector3();
 
     this.hud = new HUD(document.getElementById('hud'));
     this.audio = new AudioEngine();
     this.champ = new Championship();
     this.ui = new UI((action, payload) => this.onUI(action, payload));
+    this.quality = new QualityController(this.renderer, (tier, automatic) => {
+      if (this.session) this.hud.message(`GRAPHICS: ${tier.toUpperCase()}${automatic ? ' · AUTO' : ''}`);
+    });
+    this.quality.setMode(this.ui.settings.graphicsQuality);
 
     this.keys = {};
     this.keySteer = 0;
     this.paused = false;
     this.raceConfig = null;
     this.clock = new THREE.Clock();
+    this.fixedStep = new FixedStepAccumulator();
+    this.pacing = { steps: 0, simulatedDt: 0, alpha: 0, droppedDt: 0 };
+    this._shiftQueue = [];
+    this._gamepadShiftUp = false;
+    this._gamepadShiftDown = false;
+    this._gamepadNeedsNeutral = true;
+    this._timeTrialStatus = null;
     this._lightsShown = 0;
     this._resultsShown = false;
+    this._sessionGeneration = 0;
+    this._sessionBuildTimer = null;
+    this.onboardingActive = false;
+    this._celestialObjects = [];
 
     addEventListener('resize', () => {
       this.camera.aspect = innerWidth / innerHeight;
       this.camera.updateProjectionMatrix();
-      this.renderer.setSize(innerWidth, innerHeight);
-      if (this.composer) this.composer.setSize(innerWidth, innerHeight);
+      this.quality.resize(innerWidth, innerHeight);
     });
     addEventListener('keydown', e => this.onKey(e, true));
     addEventListener('keyup', e => this.onKey(e, false));
@@ -76,59 +172,165 @@ class Game {
     const unlock = () => {
       this.audio.init();
       this.audio.setVolume(this.ui.settings.volume);
+      // A Retry reload can restore a live session before this new document has
+      // received an autoplay-unlocking gesture. Start its engine on that first
+      // gesture instead of leaving the recovered race permanently silent.
+      if ((this.state === 'race' || this.state === 'quali') && !this.paused && documentIsActive()) {
+        this.audio.startEngine();
+      }
       removeEventListener('pointerdown', unlock);
       removeEventListener('keydown', unlock);
     };
     addEventListener('pointerdown', unlock);
     addEventListener('keydown', unlock);
     document.addEventListener('visibilitychange', () => {
-      if (document.hidden) this.audio.stopEngine();
-      else if ((this.state === 'race' || this.state === 'quali') && !this.paused) this.audio.startEngine();
+      // Never let time spent hidden become simulation catch-up work.
+      this.resetSimulationTiming();
+      if (document.hidden) {
+        if (this.ui.settings.autoPause && this.state === 'loading') this._pauseOnReady = true;
+        this.audio.stopEngine();
+        if (this.ui.settings.autoPause && (this.state === 'race' || this.state === 'quali') && !this.paused) {
+          this.togglePause(true);
+        }
+      }
+      else {
+        if (documentIsActive()) this._pauseOnReady = false;
+        if ((this.state === 'race' || this.state === 'quali') && !this.paused && documentIsActive()) {
+          this.audio.startEngine();
+        }
+      }
+    });
+    addEventListener('blur', () => {
+      // Key-up/pointer-up can be lost when focus leaves the window. Never let
+      // that turn into a stuck throttle, brake, steer, or boost input.
+      this.releaseDrivingInputs();
+      this.audio.stopEngine();
+      if (this.ui.settings.autoPause && this.state === 'loading') this._pauseOnReady = true;
+      if (this.ui.settings.autoPause && (this.state === 'race' || this.state === 'quali') && !this.paused) {
+        this.togglePause(true);
+      }
+    });
+    addEventListener('focus', () => {
+      this.resetSimulationTiming();
+      if (documentIsActive()) this._pauseOnReady = false;
+      if ((this.state === 'race' || this.state === 'quali') && !this.paused && documentIsActive()) {
+        this.audio.startEngine();
+      }
+    });
+    this.renderer.domElement.addEventListener('webglcontextlost', (event) => {
+      event.preventDefault();
+      this._wasPausedBeforeContextLoss = this.paused;
+      if ((this.state === 'race' || this.state === 'quali') && !this.paused) this.togglePause(true);
+      this.showGraphicsRecovery('GRAPHICS RESET DETECTED', 'Restoring the renderer…');
+    });
+    this.renderer.domElement.addEventListener('webglcontextrestored', () => {
+      this.quality.apply(true);
+      if (this.composer) this.composer.setSize(innerWidth, innerHeight);
+      this.showGraphicsRecovery('', '');
+      if (this.session) this.hud.message('GRAPHICS RESTORED');
     });
 
     this.boot();
     this.loop();
   }
 
+  showGraphicsRecovery(title, detail) {
+    let el = document.getElementById('graphics-recovery');
+    if (!title) {
+      if (el) el.remove();
+      return;
+    }
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'graphics-recovery';
+      el.setAttribute('role', 'status');
+      el.setAttribute('aria-live', 'assertive');
+      Object.assign(el.style, {
+        position: 'fixed', inset: '0', zIndex: '10000', display: 'grid', placeContent: 'center',
+        textAlign: 'center', color: '#fff', background: '#050608ee', fontFamily: 'Arial, sans-serif',
+        letterSpacing: '.12em', textTransform: 'uppercase',
+      });
+      document.body.appendChild(el);
+    }
+    el.innerHTML = `<strong style="font-size:clamp(18px,3vw,34px)">${title}</strong><span style="margin-top:12px;color:#aeb4bd;font-size:12px">${detail}</span>`;
+  }
+
   // ---------- boot ----------
   async boot() {
-    loadHDRIs();
     const bar = document.getElementById('boot-progress');
     const status = document.getElementById('boot-status');
-    // preload photographic textures (best-effort; procedural art is the fallback)
-    const photoManifest = {
-      asphalt: 'textures/asphalt.png', grass: 'textures/grass.png',
-      gravel: 'textures/gravel.png', crowd: 'textures/crowd.png',
-      facadeDay: 'textures/facade-day.png', facadeNight: 'textures/facade-night.png',
-      treeBroadleaf: 'textures/tree-broadleaf.png', treePine: 'textures/tree-pine.png',
-      treePalm: 'textures/tree-palm.png', scrub: 'textures/scrub.png',
-    };
-    status.textContent = 'LOADING CIRCUIT PHOTOGRAPHY…';
-    await Promise.allSettled(Object.entries(photoManifest).map(([k, url]) =>
-      new Promise((res, rej) => {
-        const img = new Image();
-        img.onload = () => { TEX.registerPhoto(k, img); res(); };
-        img.onerror = rej;
-        img.src = url;
-      })));
-    status.textContent = 'LOADING CAR MODEL…';
-    await import('./car.js').then((m) => m.preloadCarModel());
-    status.textContent = 'LOADING SOUND PACK…';
-    if (this.audio.loadSamplePack) await this.audio.loadSamplePack('sounds/').catch(() => {});
-    const steps = [
-      ['VERIFYING 2026 ENTRY LIST — 11 TEAMS · 22 DRIVERS', 25],
-      ['LOADING 24-ROUND CALENDAR', 45],
-      ['CALIBRATING ACTIVE AERO — X/Z MODES', 65],
-      ['SYNCING MANUAL OVERRIDE DEPLOYMENT', 85],
-      ['READY', 100],
-    ];
-    for (const [txt, pct] of steps) {
-      status.textContent = txt;
-      bar.style.width = pct + '%';
-      await sleep(260);
+    // Track photography, the GLB, and the selected HDR are deferred until the
+    // player chooses a venue. The menu is fully interactive without them.
+    status.textContent = 'INITIALIZING AUDIO…';
+    bar.style.width = '72%';
+    // The published build intentionally ships only the synthesized WebAudio
+    // engine. Avoid probing every optional MP3 (and generating a burst of 404s)
+    // unless a local sample-pack user explicitly opts in.
+    const sampleAudio = new URLSearchParams(location.search).get('sampleAudio') === '1';
+    if (sampleAudio && this.audio.loadSamplePack) {
+      await this.audio.loadSamplePack('sounds/').catch(() => {});
     }
-    this.state = 'menu';
-    this.ui.showMain(this.champ);
+    bar.style.width = '94%';
+    status.textContent = 'VERIFYING 2026 ENTRY LIST — 11 TEAMS · 22 DRIVERS';
+    await sleep(80);
+    status.textContent = 'READY';
+    bar.style.width = '100%';
+    await sleep(120);
+    const retryConfig = this.consumeRetrySession();
+    if (retryConfig) {
+      this.startSession(retryConfig);
+    } else {
+      this.state = 'menu';
+      this.ui.showMain(this.champ);
+    }
+  }
+
+  consumeRetrySession() {
+    let saved = null;
+    try {
+      const raw = sessionStorage.getItem(RETRY_SESSION_KEY);
+      sessionStorage.removeItem(RETRY_SESSION_KEY); // one shot: never reload-loop
+      if (raw) saved = JSON.parse(raw);
+    } catch {}
+    if (!saved || typeof saved !== 'object') return null;
+    const race = CALENDAR.find(item => item.trackId === saved.trackId);
+    if (!race || !DRIVERS.some(driver => driver.id === saved.driverId)) return null;
+    if (saved.mode !== 'race' && saved.mode !== 'quali') return null;
+    const driverIds = new Set(DRIVERS.map(driver => driver.id));
+    const gridOrder = Array.isArray(saved.gridOrder) &&
+      saved.gridOrder.length === DRIVERS.length &&
+      new Set(saved.gridOrder).size === DRIVERS.length &&
+      saved.gridOrder.every(id => driverIds.has(id))
+      ? saved.gridOrder : null;
+    return {
+      race,
+      driverId: saved.driverId,
+      mode: saved.mode,
+      trial: saved.trial === true,
+      champRound: saved.champRound === true,
+      gridOrder,
+      seed: Number.isInteger(saved.seed) ? saved.seed : undefined,
+    };
+  }
+
+  reloadForSessionRetry() {
+    const cfg = this.raceConfig;
+    if (cfg?.race?.trackId && cfg.driverId) {
+      try {
+        sessionStorage.setItem(RETRY_SESSION_KEY, JSON.stringify({
+          trackId: cfg.race.trackId,
+          driverId: cfg.driverId,
+          mode: cfg.mode,
+          trial: cfg.trial === true,
+          champRound: cfg.champRound === true,
+          gridOrder: cfg.gridOrder || null,
+          seed: cfg.seed,
+        }));
+      } catch {}
+    }
+    // Failed module imports are cached for the lifetime of this document. A
+    // reload is the only standards-compliant retry without cache-busting URLs.
+    location.reload();
   }
 
   // ---------- UI events ----------
@@ -136,7 +338,12 @@ class Game {
     this.audio.uiClick && this.audio.uiClick();
     switch (action) {
       case 'menu':
-        if (payload === 'quick') { this.state = 'team'; this.ui.showTeamSelect('quick'); }
+        if (payload === 'raceNow') {
+          const last = this.ui.lastSelection;
+          const race = last && CALENDAR.find(r => r.trackId === last.trackId);
+          if (race && last.driverId) this.startSession({ race, driverId: last.driverId, mode: 'race' });
+        }
+        else if (payload === 'quick') { this.state = 'team'; this.ui.showTeamSelect('quick'); }
         else if (payload === 'trial') { this.state = 'team'; this.ui.showTeamSelect('trial'); }
         else if (payload === 'champ') {
           if (this.champ.active) this.startChampRace();
@@ -168,11 +375,17 @@ class Game {
       case 'startRaceAfterQuali': {
         const grid = this.session.qualiClassification().map(r => r.driverId);
         const cfg = this.raceConfig;
-        this.startSession({ race: cfg.race, driverId: cfg.driverId, mode: 'race', gridOrder: grid, champRound: cfg.champRound });
+        this.startSession({
+          race: cfg.race, driverId: cfg.driverId, mode: 'race', gridOrder: grid,
+          champRound: cfg.champRound, seed: cfg.seed,
+        });
         break;
       }
       case 'restartRace':
         this.startSession(this.raceConfig);
+        break;
+      case 'retryLoad':
+        this.reloadForSessionRetry();
         break;
       case 'afterRaceChamp':
         this.teardownSession();
@@ -197,7 +410,8 @@ class Game {
       case 'settingsChanged':
         this.audio.setVolume(payload.volume);
         if (this.session) this.session.setNametags(payload.nametags);
-        if (this.gtao) this.gtao.enabled = payload.gtao !== false;
+        this.quality.setMode(payload.graphicsQuality);
+        this.updateTouchControls();
         break;
       case 'back':
         this.teardownSession();
@@ -213,9 +427,10 @@ class Game {
           const wasTrial = this.raceConfig?.trial;
           if (wasTrial && this.session) {
             const p = this.session.player;
+            const bestLap = p.bestLap || this.timeTrial?.personalBest || 0;
             this.teardownSession(true);
             this.state = 'results';
-            this.ui.showResults([{ bestLap: p.bestLap }], null, this.raceConfig.race, 'trial', false);
+            this.ui.showResults([{ bestLap }], null, this.raceConfig.race, 'trial', false);
           } else {
             this.teardownSession();
             this.state = 'menu';
@@ -240,8 +455,16 @@ class Game {
 
   // ---------- session lifecycle ----------
   startSession(cfg) {
-    this.raceConfig = cfg;
     this.teardownSession();
+    this.resetSimulationTiming();
+    const querySeed = new URLSearchParams(location.search).get('seed');
+    const requestedSeed = cfg.seed ?? querySeed;
+    const sessionSeed = requestedSeed == null ? createRandom().state : normalizeSeed(requestedSeed);
+    cfg = { ...cfg, seed: sessionSeed };
+    this.raceConfig = cfg;
+    const simulationRandom = createRandom(deriveSeed(sessionSeed, 'simulation'));
+    const effectsRandom = createRandom(deriveSeed(sessionSeed, 'effects'));
+    this.sessionSeed = sessionSeed;
     const track = TRACKS[cfg.race.trackId];
     this.state = 'loading';
     this.ui.showLoading(cfg.race, track);
@@ -249,11 +472,28 @@ class Game {
     this._lightsShown = 0;
     this._qualiDoneShown = false;
     this.ersMode = 1; // every session starts in BALANCED
+    this._pauseOnReady = !!(this.ui.settings.autoPause && !documentIsActive());
+    const sessionGeneration = this._sessionGeneration;
+    const environmentKey = environmentKeyForTrack(cfg.race.trackId);
+    // Begin the one relevant lighting environment in parallel with photos/GLB.
+    loadHDRI(environmentKey).catch(() => {});
     // let the loading screen paint before the (sync) circuit build
-    setTimeout(() => {
+    this._sessionBuildTimer = setTimeout(async () => {
+      this._sessionBuildTimer = null;
+      if (sessionGeneration !== this._sessionGeneration) return;
+      try {
+        await loadCoreAssets();
+      } catch (error) {
+        if (sessionGeneration !== this._sessionGeneration) return;
+        console.error('Race assets failed to load', error);
+        this.state = 'loadError';
+        this.ui.showLoadError(cfg.race, track);
+        return;
+      }
+      if (sessionGeneration !== this._sessionGeneration) return;
       this.scene = new THREE.Scene();
       this.circuit = buildCircuit(cfg.race.trackId, track, this.scene);
-      this.setupEnvironment();
+      this.setupEnvironment(effectsRandom, environmentKey);
       const laps = cfg.mode === 'race' ? this.ui.raceLapsFor(cfg.race.trackId) : 1;
       this.session = new RaceSession({
         scene: this.scene,
@@ -265,10 +505,26 @@ class Game {
         mode: cfg.mode,
         trial: cfg.trial,
         gridOrder: cfg.gridOrder || null,
+        random: simulationRandom,
+        seed: sessionSeed,
         onMessage: (t, c) => { this.hud.message(t, c); },
       });
       this.session.setNametags(this.ui.settings.nametags);
       this.hud.bindSession(this.session, this.circuit);
+      if (cfg.trial) {
+        this.timeTrial = new TimeTrialManager({
+          scene: this.scene,
+          circuit: this.circuit,
+          session: this.session,
+          trackId: cfg.race.trackId,
+          driverId: cfg.driverId,
+          onPersonalBest: (record) => {
+            this.hud.message(`PERSONAL BEST SAVED · ${record.lap.toFixed(3)}s`, 'purple');
+          },
+        });
+        this._timeTrialStatus = { personalBest: this.timeTrial.personalBest, delta: null };
+        this.hud.updateTimeTrial(this._timeTrialStatus.personalBest, null);
+      }
       this.hud.showPitOverlay(k => {
         this.session.playerChooseTyre(k);
         this.audio.uiConfirm();
@@ -276,14 +532,61 @@ class Game {
       this.ui.hideAll();
       this.hud.show();
       this.state = cfg.mode === 'quali' ? 'quali' : 'race';
-      this.audio.startEngine();
+      this.updateTouchControls();
       this.snapCamera();
+      // Circuit/PMREM/car construction is synchronous and can take hundreds of
+      // milliseconds. Rebase after it so no build time becomes simulation time.
+      this.resetSimulationTiming();
+      let onboardingSeen = false;
+      try { onboardingSeen = localStorage.getItem('apexf1_onboarding_v1') === '1'; } catch {}
+      const shouldPauseOnReady = () => !!(this.ui.settings.autoPause &&
+        (this._pauseOnReady || !documentIsActive()));
+      if (!onboardingSeen) {
+        this.onboardingActive = true;
+        this.paused = true;
+        this.resetSimulationTiming();
+        this.audio.stopEngine();
+        this.hud.showOnboarding(() => {
+          try { localStorage.setItem('apexf1_onboarding_v1', '1'); } catch {}
+          this.onboardingActive = false;
+          if (documentIsActive()) this._pauseOnReady = false;
+          if (shouldPauseOnReady()) {
+            this.paused = true;
+            this.resetSimulationTiming();
+            this.audio.stopEngine();
+            this.ui.showPause();
+            return;
+          }
+          this.paused = false;
+          this.resetSimulationTiming();
+          if (documentIsActive()) this.audio.startEngine();
+          else this.audio.stopEngine();
+        });
+      } else if (shouldPauseOnReady()) {
+        // Visibility or window focus may have changed while assets/build ran.
+        this.togglePause(true);
+      } else {
+        this.paused = false;
+        if (documentIsActive()) this.audio.startEngine();
+        else this.audio.stopEngine();
+      }
     }, 60);
   }
 
+  updateTouchControls() {
+    const coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+    this.hud.enableTouchControls(
+      !!(this.session && this.ui.settings.touchControls && coarse),
+      () => this.togglePause(),
+    );
+  }
+
   teardownSession(keepConfig = false) {
+    this._sessionGeneration++;
+    clearTimeout(this._sessionBuildTimer); this._sessionBuildTimer = null;
     clearTimeout(this._qualiTimer); this._qualiTimer = null;
     clearTimeout(this._resultsTimer); this._resultsTimer = null;
+    if (this.timeTrial) { this.timeTrial.dispose(); this.timeTrial = null; }
     if (this.session) { this.session.dispose(); this.session = null; }
     if (this.circuit) { this.circuit.dispose(); this.circuit = null; }
     if (this.sky) {
@@ -297,7 +600,28 @@ class Game {
     if (this._envRT) { this._envRT.dispose(); this._envRT = null; }
     if (this.scene) this.scene.environment = null;
     if (this.sun) { this.sun.dispose(); this.sun = null; }
+    if (this._celestialObjects.length) {
+      const geometries = new Set(), materials = new Set(), textures = new Set();
+      for (const root of this._celestialObjects) {
+        root.traverse((object) => {
+          // Sprite geometry is shared internally by Three.js.
+          if (object.geometry && !object.isSprite) geometries.add(object.geometry);
+          const ownedMaterials = object.material
+            ? (Array.isArray(object.material) ? object.material : [object.material]) : [];
+          for (const material of ownedMaterials) {
+            materials.add(material);
+            if (material.map) textures.add(material.map);
+          }
+        });
+        this.scene?.remove(root);
+      }
+      for (const texture of textures) texture.dispose();
+      for (const material of materials) material.dispose();
+      for (const geometry of geometries) geometry.dispose();
+      this._celestialObjects = [];
+    }
     if (this.effects) { this.effects.dispose(); this.effects = null; }
+    this.quality.bind({});
     if (this.composer) {
       for (const pass of this.composer.passes) pass.dispose && pass.dispose();
       this.composer.dispose();
@@ -310,10 +634,14 @@ class Game {
     if (this.audio.crowdAmbience) this.audio.crowdAmbience(0);
     if (this.audio.stopCrescendo) this.audio.stopCrescendo();
     this._vscAudio = false; this._radioLen = 0; this._pitAudio = false;
+    this._timeTrialStatus = null;
+    this.onboardingActive = false;
+    this.resetSimulationTiming();
     if (!keepConfig) this.paused = false;
   }
 
-  setupEnvironment() {
+  setupEnvironment(effectsRandom = () => Math.random(), environmentKey) {
+    this._celestialObjects = [];
     const th = this.circuit.theme;
     this.scene.fog = new THREE.Fog(th.fog, 300, 1600);
     // sky dome: gradient + soft clouds BAKED into the texture (day/dusk).
@@ -378,6 +706,7 @@ class Game {
       const sunGlow = glow('rgba(255,230,180,0.55)', 'rgba(255,210,140,0)', 760);
       sunGlow.position.copy(sunDir).multiplyScalar(2280);
       this.scene.add(sunDisc, sunGlow);
+      this._celestialObjects.push(sunDisc, sunGlow);
       // No cloud sprites: semi-transparent sky quads read as tinted slabs at
       // certain angles (verified by hiding all sprites — sky went clean).
       // Clouds belong painted into the sky-dome texture, where alpha blending
@@ -387,7 +716,7 @@ class Game {
       const starGeo = new THREE.BufferGeometry();
       const sp = new Float32Array(420 * 3);
       for (let i = 0; i < 420; i++) {
-        const az = Math.random() * Math.PI * 2, el = Math.random() * Math.PI * 0.42 + 0.14;
+        const az = effectsRandom() * Math.PI * 2, el = effectsRandom() * Math.PI * 0.42 + 0.14;
         const r = 2350;
         sp[i * 3] = Math.cos(az) * Math.cos(el) * r;
         sp[i * 3 + 1] = Math.sin(el) * r;
@@ -409,6 +738,7 @@ class Game {
         fog: false, transparent: true, opacity: 0.8, depthWrite: false,
       }));
       this.scene.add(stars);
+      this._celestialObjects.push(stars);
       const mc = document.createElement('canvas');
       mc.width = mc.height = 128;
       const mg = mc.getContext('2d');
@@ -422,28 +752,32 @@ class Game {
       moon.scale.setScalar(190);
       moon.position.set(-1200, 1300, -900);
       this.scene.add(moon);
+      this._celestialObjects.push(moon);
     }
 
-    this.effects = new Effects(this.scene);
+    this.effects = new Effects(this.scene, effectsRandom);
 
-    // lighting: photographic HDRI sky + true IBL when loaded; PMREM-from-dome fallback
-    const hdr = HDRI[th.night ? 'night' : th.sunI < 2.2 ? 'dusk' : 'day'];
-    if (hdr) {
-      // HDRI always drives LIGHTING (environment); but the day/dusk panoramas
-      // carry baked structures on their horizons, so only night (a clean
-      // moonlit sky) is shown as the visible backdrop — day/dusk keep the
-      // procedural dome and get the photographic light without the photobombs.
-      this.scene.environment = hdr;
-      this.scene.environmentIntensity = th.night ? 0.55 : 0.9;
+    // Lighting: photographic HDRI sky + true IBL when loaded; PMREM-from-dome
+    // fallback renders immediately while only this session's theme downloads.
+    const sceneForEnvironment = this.scene;
+    const applyHDRI = (hdr) => {
+      if (this.scene !== sceneForEnvironment || !hdr) return;
+      sceneForEnvironment.environment = hdr;
+      sceneForEnvironment.environmentIntensity = th.night ? 0.55 : 0.9;
       if (th.night) {
-        this.scene.background = hdr;
-        this.scene.backgroundIntensity = 0.7;
+        sceneForEnvironment.background = hdr;
+        sceneForEnvironment.backgroundIntensity = 0.7;
         sky.visible = false;
       } else {
-        this.scene.background = null;
+        sceneForEnvironment.background = null;
         sky.visible = true;
       }
+      if (this._envRT) { this._envRT.dispose(); this._envRT = null; }
       this._envIsHDRI = true;
+    };
+    const hdr = HDRI[environmentKey];
+    if (hdr) {
+      applyHDRI(hdr);
     } else {
       const pmrem = new THREE.PMREMGenerator(this.renderer);
       const envScene = new THREE.Scene();
@@ -462,6 +796,9 @@ class Game {
       pmrem.dispose();
       groundDisc.geometry.dispose();
       groundDisc.material.dispose();
+      loadHDRI(environmentKey).then(applyHDRI).catch(() => {
+        // The procedural PMREM environment remains a complete offline fallback.
+      });
     }
 
     // post-processing: AO grounds everything, bloom lifts lights, then output
@@ -474,13 +811,16 @@ class Game {
     this.composer.addPass(this.gtao);
     this.bloom = new UnrealBloomPass(
       new THREE.Vector2(innerWidth, innerHeight),
-      th.night ? 0.5 : 0.18,   // strength
+      // Night fixtures should glow without turning white bodywork and the
+      // racing line into a single clipped shape.  A higher threshold keeps the
+      // effect on emissive lamps while preserving paint and asphalt detail.
+      th.night ? 0.34 : 0.18,  // strength
       0.55,                    // radius
-      th.night ? 0.6 : 0.86    // threshold
+      th.night ? 0.72 : 0.86   // threshold
     );
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
-    this.composer.setSize(innerWidth, innerHeight);
+    this.quality.bind({ composer: this.composer, gtao: this.gtao, bloom: this.bloom, sun: this.sun });
   }
 
   // ---------- input ----------
@@ -508,13 +848,15 @@ class Game {
     // stop the page from scrolling / space-activating buttons while driving
     if (driving && (code.startsWith('Arrow') || code === 'Space')) e.preventDefault();
     if (e.repeat) return;
-    this.keys[code] = down;
-    if (!down) return;
+    if (!down) { this.keys[code] = false; return; }
     if (code === 'Escape') {
       if (driving) this.togglePause();
       return;
     }
     if (!driving || this.paused) return;
+    this.keys[code] = true;
+    if (code === 'KeyE') this.queueShift(1);
+    if (code === 'KeyQ') this.queueShift(-1);
     if (code === 'KeyV') {
       this.ersMode = ((this.ersMode ?? 1) + 1) % 3;
       this.hud.message(['ERS: HARVEST', 'ERS: BALANCED', 'ERS: ATTACK'][this.ersMode], this.ersMode === 2 ? 'yellow' : '');
@@ -535,16 +877,47 @@ class Game {
 
   togglePause(force) {
     const want = force !== undefined ? force : !this.paused;
+    if (this.onboardingActive && !want) return;
     this.paused = want;
+    this.resetSimulationTiming();
     if (want) {
       this.ui.showPause();
       this.audio.stopEngine();
       if (this.session && this.session.phase === 'lights' && this.audio.stopCrescendo) this.audio.stopCrescendo();
     }
-    else { this.ui.hidePause(); this.audio.startEngine(); }
+    else {
+      this.ui.hidePause();
+      if (documentIsActive()) this.audio.startEngine();
+      else this.audio.stopEngine();
+    }
   }
 
-  playerInput() {
+  resetSimulationTiming() {
+    // Rebase Three's wall clock as well as the fixed-step remainder so loading,
+    // tab suspension and pause time cannot arrive as one large frame later.
+    if (this.clock) this.clock.getDelta();
+    this.fixedStep.reset();
+    this.pacing = { steps: 0, simulatedDt: 0, alpha: 0, droppedDt: 0 };
+    this.releaseDrivingInputs();
+    this.session?.resetRenderState?.();
+  }
+
+  releaseDrivingInputs() {
+    this.keys = {};
+    this.keySteer = 0;
+    this._shiftQueue.length = 0;
+    this._gamepadShiftUp = false;
+    this._gamepadShiftDown = false;
+    this._gamepadNeedsNeutral = true;
+    this.hud?.clearTouchState?.();
+  }
+
+  queueShift(direction) {
+    if (this._shiftQueue.length >= 8) return;
+    this._shiftQueue.push(direction > 0 ? 1 : -1);
+  }
+
+  playerInput(dt) {
     const k = this.keys;
     let dir = 0;
     if (k.KeyA || k.ArrowLeft) dir += 1;
@@ -552,27 +925,75 @@ class Game {
     let throttle = (k.KeyW || k.ArrowUp) ? 1 : 0;
     let brake = (k.KeyS || k.ArrowDown) ? 1 : 0;
     let boost = !!k.Space;
-    // consume shift presses so each tap = one gear
-    let shiftUp = !!k.KeyE, shiftDown = !!k.KeyQ;
-    k.KeyE = false; k.KeyQ = false;
+    const touch = this.hud.touchState;
+    if (touch) {
+      if (touch.left) dir += 1;
+      if (touch.right) dir -= 1;
+      if (touch.throttle) throttle = 1;
+      if (touch.brake) brake = 1;
+      if (touch.boost) boost = true;
+    }
+    let shiftUp = false, shiftDown = false;
     // gamepad
     const gp = navigator.getGamepads && navigator.getGamepads()[0];
     if (gp) {
       const ax = gp.axes[0] || 0;
-      if (Math.abs(ax) > 0.08) dir = -ax;
       const rt = gp.buttons[7]?.value || 0, lt = gp.buttons[6]?.value || 0;
-      if (rt > 0.03) throttle = rt;
-      if (lt > 0.03) brake = lt;
-      if (gp.buttons[0]?.pressed) boost = true;
-      if (gp.buttons[5]?.pressed) shiftUp = true;
-      if (gp.buttons[4]?.pressed) shiftDown = true;
+      const gamepadBoost = !!gp.buttons[0]?.pressed;
+      const gamepadUp = !!gp.buttons[5]?.pressed;
+      const gamepadDown = !!gp.buttons[4]?.pressed;
+      const neutral = Math.abs(ax) <= 0.08 && rt <= 0.03 && lt <= 0.03 &&
+        !gamepadBoost && !gamepadUp && !gamepadDown;
+      if (this._gamepadNeedsNeutral) {
+        // After pause/focus loss, require every relevant control to be released
+        // once. This prevents a held trigger, stick or bumper from reasserting
+        // input on the first resumed simulation tick.
+        this._gamepadShiftUp = gamepadUp;
+        this._gamepadShiftDown = gamepadDown;
+        if (neutral) {
+          this._gamepadNeedsNeutral = false;
+          this._gamepadShiftUp = false;
+          this._gamepadShiftDown = false;
+        }
+      } else {
+        if (Math.abs(ax) > 0.08) dir = -ax;
+        if (rt > 0.03) throttle = rt;
+        if (lt > 0.03) brake = lt;
+        if (gamepadBoost) boost = true;
+        if (gamepadUp && !this._gamepadShiftUp) this.queueShift(1);
+        if (gamepadDown && !this._gamepadShiftDown) this.queueShift(-1);
+        this._gamepadShiftUp = gamepadUp;
+        this._gamepadShiftDown = gamepadDown;
+      }
+    } else {
+      this._gamepadShiftUp = false;
+      this._gamepadShiftDown = false;
+      this._gamepadNeedsNeutral = false;
+    }
+    const phys = this.session?.player?.phys;
+    if (this.ui.settings.autoGear) {
+      this._shiftQueue.length = 0;
+    } else if (phys && phys._shiftCooldown <= 0) {
+      // Preserve press order and keep requests queued through the gearbox's
+      // 150 ms cooldown. Impossible boundary shifts are discarded explicitly.
+      while (this._shiftQueue.length) {
+        const direction = this._shiftQueue[0];
+        if ((direction > 0 && phys.gear >= 8) || (direction < 0 && phys.gear <= 1)) {
+          this._shiftQueue.shift();
+          continue;
+        }
+        this._shiftQueue.shift();
+        shiftUp = direction > 0;
+        shiftDown = direction < 0;
+        break;
+      }
     }
     // steering shaping: slower ramp at speed for keyboard
     const v = this.session?.player?.phys.v || 0;
     const rate = 3.4 / (1 + v * 0.02);
     const ret = 6 / (1 + v * 0.01);
-    if (dir !== 0) this.keySteer += (dir - this.keySteer) * Math.min(1, rate * this._dt);
-    else this.keySteer += (0 - this.keySteer) * Math.min(1, ret * this._dt);
+    if (dir !== 0) this.keySteer += (dir - this.keySteer) * Math.min(1, rate * dt);
+    else this.keySteer += (0 - this.keySteer) * Math.min(1, ret * dt);
     return { steer: this.keySteer, throttle, brake, boost, shiftUp, shiftDown, ersMode: this.ersMode ?? 1 };
   }
 
@@ -587,74 +1008,101 @@ class Game {
   }
 
   snapCamera() {
-    const p = this.session?.player?.phys;
+    const e = this.session?.player;
+    const p = e?.phys;
     if (!p) return;
-    const ry = this._roadY(p);
-    const f = new THREE.Vector3(Math.sin(p.heading), 0, Math.cos(p.heading));
-    this._camPos.copy(p.pos).addScaledVector(f, -9).add(new THREE.Vector3(0, ry + 3.6, 0));
-    this._camLook.copy(p.pos).setY(ry);
+    const pose = e.renderPose;
+    const pos = pose ? this._camPlayerPos.set(pose.x, 0, pose.z) : p.pos;
+    const heading = pose?.heading ?? p.heading;
+    const ry = pose?.y ?? this._roadY(p);
+    const f = this._camForward.set(Math.sin(heading), 0, Math.cos(heading));
+    this._camPos.copy(pos).addScaledVector(f, -8.5).setY(ry + 3.25);
+    this._camLook.copy(pos).setY(ry);
   }
 
   updateCamera(dt) {
     const e = this.session?.player;
     if (!e) return;
     const p = e.phys;
-    const ry = this._roadY(p);
-    const f = new THREE.Vector3(Math.sin(p.heading), 0, Math.cos(p.heading));
-    let targetPos, targetLook, stiff = 5.5;
+    const pose = e.renderPose;
+    const pos = pose ? this._camPlayerPos.set(pose.x, 0, pose.z) : p.pos;
+    const heading = pose?.heading ?? p.heading;
+    const speed = pose?.v ?? p.v;
+    const ry = pose?.y ?? this._roadY(p);
+    const f = this._camForward.set(Math.sin(heading), 0, Math.cos(heading));
+    const targetPos = this._camTargetPos;
+    const targetLook = this._camTargetLook;
+    let stiff = 5.5;
     if (e.pitState) {
       // hold camera during pit
-      targetPos = this._camPos;
-      targetLook = this._camLook;
+      targetPos.copy(this._camPos);
+      targetLook.copy(this._camLook);
     } else if (this.camMode === 0) {
-      // broadcast-style chase: lower, tighter, sits into the car
-      const back = 7.6 + p.v * 0.04;
-      targetPos = p.pos.clone().addScaledVector(f, -back).setY(ry + 2.55 + p.v * 0.009);
-      targetLook = p.pos.clone().addScaledVector(f, 10).setY(this._roadY(p, 10) + 0.85);
+      const profile = CAMERA_PROFILES[this.ui.settings.cameraProfile] || CAMERA_PROFILES.broadcast;
+      const back = profile.back + speed * profile.pull;
+      const aheadSample = this.circuit.samples[(p.sampleIdx + Math.round(profile.look / this.circuit.ds)) % this.circuit.N];
+      const aim = this._camAhead.set(aheadSample.t.x, 0, aheadSample.t.z);
+      targetPos.copy(pos).addScaledVector(f, -back).setY(ry + profile.height + speed * profile.rise);
+      // Blend current heading with the circuit tangent ahead. The camera sees
+      // into a hairpin before the chassis finishes rotating, which removes the
+      // late snap/pan that made tight turns feel disconnected from steering.
+      targetLook.copy(pos)
+        .addScaledVector(f, profile.look * 0.35)
+        .addScaledVector(aim, profile.look * 0.65)
+        .setY(this._roadY(p, profile.look) + 0.85);
+      this._cameraFovTarget = profile.fov + speed * profile.fovSpeed + (p.boosting ? 3 : 0);
     } else if (this.camMode === 1) {
       // T-cam (onboard broadcast)
-      targetPos = p.pos.clone().addScaledVector(f, -0.75).setY(ry + 1.62);
-      targetLook = p.pos.clone().addScaledVector(f, 14).setY(this._roadY(p, 14) + 1.05);
+      targetPos.copy(pos).addScaledVector(f, -0.75).setY(ry + 1.62);
+      targetLook.copy(pos).addScaledVector(f, 14).setY(this._roadY(p, 14) + 1.05);
       stiff = 16;
+      this._cameraFovTarget = 72 + speed * 0.045 + (p.boosting ? 2 : 0);
     } else {
-      targetPos = p.pos.clone().addScaledVector(f, 2.3).setY(ry + 0.6);
-      targetLook = p.pos.clone().addScaledVector(f, 18).setY(this._roadY(p, 18) + 0.5);
+      targetPos.copy(pos).addScaledVector(f, 2.3).setY(ry + 0.6);
+      targetLook.copy(pos).addScaledVector(f, 18).setY(this._roadY(p, 18) + 0.5);
       stiff = 18;
+      this._cameraFovTarget = 75 + speed * 0.035 + (p.boosting ? 2 : 0);
     }
     const t = Math.min(1, stiff * dt);
     this._camPos.lerp(targetPos, t);
     this._camLook.lerp(targetLook, Math.min(1, (stiff + 4) * dt));
     this.camera.position.copy(this._camPos);
     // speed shake: high-frequency micro jitter, stronger on kerbs/grass
-    const shake = (p.v / 95) * 0.035 + (p.onKerb ? 0.05 : 0) + (p.offTrack ? 0.08 : 0);
+    const shake = (speed / 95) * 0.035 + (p.onKerb ? 0.05 : 0) + (p.offTrack ? 0.08 : 0);
     if (shake > 0.004 && !this.paused) {
       const tt = performance.now() * 0.001;
-      const left = new THREE.Vector3(f.z, 0, -f.x);
+      const left = this._camLeft.set(f.z, 0, -f.x);
       this.camera.position.addScaledVector(left, (Math.sin(tt * 47.3) + Math.sin(tt * 91.7) * 0.5) * shake);
       this.camera.position.y += (Math.sin(tt * 53.1) + Math.sin(tt * 78.9) * 0.5) * shake * 0.6;
     }
     this.camera.lookAt(this._camLook);
     // speed/boost FOV
-    const fovT = 70 + p.v * 0.11 + (p.boosting ? 4 : 0);
+    const fovT = this._cameraFovTarget || 70;
     this.camera.fov += (fovT - this.camera.fov) * Math.min(1, dt * 4);
     this.camera.updateProjectionMatrix();
     // sun shadow follows player (elevation-aware, or the frustum drifts off on climbs)
     if (this.sun) {
-      this.sun.position.set(p.pos.x + 260, ry + 380, p.pos.z + 160);
-      this.sun.target.position.set(p.pos.x, ry, p.pos.z);
+      this.sun.position.set(pos.x + 260, ry + 380, pos.z + 160);
+      this.sun.target.position.set(pos.x, ry, pos.z);
     }
   }
 
   // ---------- main loop ----------
   loop() {
     requestAnimationFrame(() => this.loop());
-    const dt = Math.min(this.clock.getDelta(), 0.05);
-    this._dt = dt;
+    const rawDt = this.clock.getDelta();
+    const renderDt = Math.min(rawDt, 0.05);
     if (!this.session || !this.scene) return;
+    if (!this.paused) this.quality.update(rawDt);
     const s = this.session;
 
     if (!this.paused && (this.state === 'race' || this.state === 'quali')) {
-      s.update(dt, this.playerInput());
+      this.pacing = this.fixedStep.advance(rawDt, (dt) => {
+        s.update(dt, this.playerInput(dt));
+        if (this.effects) this.effects.update(dt, s.entries);
+        if (this.timeTrial) this._timeTrialStatus = this.timeTrial.update(dt);
+      });
+      s.render?.(this.pacing.alpha);
 
       // start lights choreography
       if (s.phase === 'lights' && s.lightsOn !== this._lightsShown) {
@@ -693,7 +1141,7 @@ class Game {
       if (p) {
         // during the pit stop the car idles in the box — feed an idle snapshot
         // instead of the frozen pre-pit throttle/speed state
-        this.audio.update(dt, s.player.pitState ? PIT_IDLE_AUDIO : {
+        this.audio.update(renderDt, s.player.pitState ? PIT_IDLE_AUDIO : {
           rpmFrac: Math.max(0, Math.min(1, (p.rpmFrac - 0.18) / 0.86)),
           throttle: p.throttle,
           brake: p.brake,
@@ -720,8 +1168,10 @@ class Game {
           }
         }
       }
-      this.hud.update(dt);
-      if (this.effects) this.effects.update(dt, s.entries);
+      this.hud.update(renderDt);
+      if (this._timeTrialStatus) {
+        this.hud.updateTimeTrial(this._timeTrialStatus.personalBest, this._timeTrialStatus.delta);
+      }
 
       // quali flow (timer guarded against session swaps / pause-quit races)
       if (this.state === 'quali' && !this.raceConfig.trial && s.qualiState === 'done' && !this._qualiDoneShown) {
@@ -759,7 +1209,7 @@ class Game {
           this.ui.showResults(results, s.fastestLap, this.raceConfig.race, 'race', !!this.raceConfig.champRound);
         }, 900);
       }
-      this.updateCamera(dt);
+      this.updateCamera(renderDt);
       // nametags are laid out in screen space (cap/clamp/overlap), which
       // needs this frame's final camera — so this runs after updateCamera
       if (s.updateNametags) s.updateNametags(this.camera, innerWidth, innerHeight);

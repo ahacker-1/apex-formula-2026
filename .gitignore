@@ -7,6 +7,8 @@ tools/judge-findings-*.md
 *.log
 .DS_Store
 dist/
+test-results/
+playwright-report/
 .vercel/
 .vercel-dist/
 .env*

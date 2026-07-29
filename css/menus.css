@@ -446,6 +446,22 @@
   .round-strip { grid-template-columns: repeat(8, 1fr); }
   .trial-time { font-size: 54px; }
 }
+@media (max-width: 640px) {
+  .menu-header { padding: 14px 16px 7px; }
+  .menu-header .title { font-size: 25px; }
+  .menu-body { padding: 12px 16px 18px; overflow-x: hidden; }
+  .main-nav { margin-top: 0; gap: 9px; width: 100%; }
+  .main-nav .nav-item { transform: none; padding: 13px 16px; }
+  .main-nav .nav-item > span, .main-nav .nav-item > div { transform: none; }
+  .main-nav .nav-item:hover, .main-nav .nav-item:focus-visible, .nav-item.kb-focus { translate: 0 0; }
+  .main-nav .nav-item h3 { font-size: 18px; }
+  .main-nav .nav-item p { font-size: 11px; line-height: 1.35; }
+  .menu-footer { padding: 10px 16px 14px; gap: 8px; font-size: 10px; }
+  .main-screen .menu-footer .key-hint { display: none; }
+  .menu-footer .footer-brand, .menu-footer .tacn-mark { margin-left: 0; white-space: normal; }
+  .season-strip { padding: 8px 16px; }
+  .card-grid { grid-template-columns: 1fr; }
+}
 
 /* ===== 15. Reduced motion =============================================== */
 @media (prefers-reduced-motion: reduce) {

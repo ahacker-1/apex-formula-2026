@@ -3309,6 +3309,24 @@ async function runCanopyArt() {
   // round in tile-pixel space.
   {
     const W = 256, H = 64;
+    const rasterWithRandom = (value) => {
+      const savedRandom = Math.random;
+      try {
+        Math.random = () => value;
+        return rasterise(() => TEX.tyreWall(W, H), W, H);
+      } finally {
+        Math.random = savedRandom;
+      }
+    };
+    const rngLow = rasterWithRandom(0);
+    const rngHigh = rasterWithRandom(0.5);
+    let rngPixelDelta = 0;
+    for (let i = 0; i < rngLow._px.length; i++) {
+      if (rngLow._px[i] !== rngHigh._px[i]) rngPixelDelta++;
+    }
+    assert(rngPixelDelta === 0, 'tyreWall() is deterministic across global RNG state',
+      `[differing pixel channels=${rngPixelDelta}]`);
+
     const cv = rasterise(() => TEX.tyreWall(W, H), W, H);
     const px = cv._px;
     const lum = (x, y) => {
@@ -3357,6 +3375,11 @@ async function runCanopyArt() {
         `[${tall.toFixed(2)}m tall in a ${WALL_M}m wall]`);
       assert(Math.abs(wide / tall - 1) < 0.35, 'the tyre is round on the wall, not a flat oval',
         `[aspect=${(wide / tall).toFixed(2)}]`);
+      const coverPattern = layout.coverPattern || [];
+      const coverStyles = new Set(coverPattern.filter(Boolean));
+      assert(coverPattern.length === layout.count && coverPattern.includes(null) && coverStyles.size >= 2,
+        'deterministic tyre covers retain visual variation',
+        `[pattern=${coverPattern.map(cover => cover || '-').join(',')}]`);
     }
     // there must be a light top rail: a strapped tyre wall, not a loose stack
     assert(rowMean[1] > rowMean[Math.round(H * 0.5)] * 1.2,

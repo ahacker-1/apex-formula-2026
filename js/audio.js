@@ -808,16 +808,45 @@ export class AudioEngine {
   /** Close high-speed pass by another car: panned doppler whoosh. side: -1 left, 1 right. */
   passBy(side = 0, intensity = 1) {
     if (!this.ready) return;
-    const buf = this._sample('passby-whoosh');
-    if (!buf) return;
     const now = this.ctx.currentTime;
     if (now - (this._lastPass || 0) < 1.6) return;
     this._lastPass = now;
+    const strength = 0.35 * Math.min(1, intensity);
+    const buf = this._sample('passby-whoosh');
+    if (!buf) {
+      // Original procedural fallback: a band-limited airflow burst sweeps from
+      // bright approach to dark departure while crossing the stereo field.
+      // This makes close racing audible in the stock, legally self-contained
+      // build instead of requiring the optional generated sample pack.
+      const src = this.ctx.createBufferSource();
+      src.buffer = this._noiseBuffer;
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = 'bandpass'; bp.Q.value = 0.72;
+      bp.frequency.setValueAtTime(2600, now);
+      bp.frequency.exponentialRampToValueAtTime(720, now + 0.72);
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0.0001, now);
+      g.gain.exponentialRampToValueAtTime(Math.max(0.001, strength), now + 0.12);
+      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.78);
+      const pan = this.ctx.createStereoPanner ? this.ctx.createStereoPanner() : null;
+      if (pan) {
+        const s = Math.max(-1, Math.min(1, side || 1));
+        pan.pan.setValueAtTime(s * 0.88, now);
+        pan.pan.linearRampToValueAtTime(-s * 0.42, now + 0.72);
+        src.connect(bp).connect(g).connect(pan).connect(this.master);
+      } else {
+        src.connect(bp).connect(g).connect(this.master);
+      }
+      src.start(now);
+      src.stop(now + 0.82);
+      src.onended = () => { try { src.disconnect(); bp.disconnect(); g.disconnect(); pan?.disconnect(); } catch {} };
+      return;
+    }
     const srcN = this.ctx.createBufferSource();
     srcN.buffer = buf;
     srcN.playbackRate.value = 0.92 + Math.random() * 0.12;
     const g = this.ctx.createGain();
-    g.gain.value = 0.35 * Math.min(1, intensity);
+    g.gain.value = strength;
     const pan = this.ctx.createStereoPanner ? this.ctx.createStereoPanner() : null;
     if (pan) {
       pan.pan.value = Math.max(-1, Math.min(1, side * 0.7));

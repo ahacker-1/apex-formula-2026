@@ -6,6 +6,11 @@ import { AIDriver } from './ai.js';
 import * as CAR from './car.js';
 import { layoutNametags } from './nametags.js';
 import { DRIVERS, TEAMS, POINTS } from './data.js';
+import { fmtTime } from './format.js';
+
+// Preserve the established public race-module API for headless tooling while
+// allowing menu code to import the tiny formatter without loading this module.
+export { fmtTime } from './format.js';
 
 const { buildCarMesh, buildNameTag } = CAR;
 
@@ -21,6 +26,40 @@ const teamById = Object.fromEntries(TEAMS.map(t => [t.id, t]));
 // i.e. ~0.8x the car's ~1.1m body height, nudged up so the lobe reads.
 const SUN_GROUND_AZI = Math.atan2(-260, -160);
 const SUN_SHADOW_OFF = 1.15;
+const RENDER_LINEAR_FIELDS = [
+  'x', 'y', 'z', 'v', 'wheelSpin', 'steer', 'pitch', 'roll', 'rideBump',
+];
+
+export function clampRenderAlpha(alpha) {
+  if (typeof alpha !== 'number' || Number.isNaN(alpha)) return 0;
+  return Math.max(0, Math.min(1, alpha));
+}
+
+export function shortestAngleDelta(from, to) {
+  return Math.atan2(Math.sin(to - from), Math.cos(to - from));
+}
+
+export function interpolateRenderSnapshot(previous, current, alpha, out = {}) {
+  const t = clampRenderAlpha(alpha);
+  for (const field of RENDER_LINEAR_FIELDS) {
+    out[field] = previous[field] + (current[field] - previous[field]) * t;
+  }
+  out.heading = previous.heading + shortestAngleDelta(previous.heading, current.heading) * t;
+  return out;
+}
+
+function copyRenderSnapshot(source, target) {
+  for (const field of RENDER_LINEAR_FIELDS) target[field] = source[field];
+  target.heading = source.heading;
+  return target;
+}
+
+function makeRenderSnapshot() {
+  return {
+    x: 0, y: 0, z: 0, heading: 0, v: 0,
+    wheelSpin: 0, steer: 0, pitch: 0, roll: 0, rideBump: 0,
+  };
+}
 
 function radialShadowTex(stops) {
   const c = document.createElement('canvas');
@@ -96,7 +135,8 @@ export function makeContactShadow() {
 export class RaceSession {
   /**
    * opts: { scene, circuit, playerDriverId, laps, difficulty(0..2), assists,
-   *         mode: 'race'|'quali', gridOrder: [driverId]|null, onMessage(text,color) }
+   *         mode: 'race'|'quali', gridOrder: [driverId]|null, onMessage(text,color),
+   *         random: function|null, seed: any }
    */
   constructor(opts) {
     this.scene = opts.scene;
@@ -107,6 +147,8 @@ export class RaceSession {
     this.onMessage = opts.onMessage || (() => {});
     this.playerDriverId = opts.playerDriverId;
     this.trial = !!opts.trial;
+    this.random = opts.random || (() => Math.random());
+    this.seed = opts.seed;
 
     this.phase = 'grid';       // grid | lights | racing | finished
     this.phaseT = 0;
@@ -133,21 +175,23 @@ export class RaceSession {
 
     const c = this.circuit;
     this.entries = [];
+    this._renderDisposed = false;
 
     if (this.mode === 'quali') {
       this._buildQuali(opts);
+      this.resetRenderState();
       return;
     }
 
     // ---- grid order ----
     let order = opts.gridOrder;
     if (!order) {
-      order = [...DRIVERS]
-        .sort((a, b) => scoreOf(b) - scoreOf(a))
-        .map(d => d.id);
-    }
-    function scoreOf(d) {
-      return teamById[d.team].perf * (0.7 + 0.3 * d.pace) + (Math.random() - 0.5) * 0.012;
+      const scored = DRIVERS.map((driver) => ({
+        driver,
+        score: teamById[driver.team].perf * (0.7 + 0.3 * driver.pace) +
+          (this.random() - 0.5) * 0.012,
+      }));
+      order = scored.sort((a, b) => b.score - a.score).map(({ driver }) => driver.id);
     }
 
     // ---- build cars ----
@@ -159,6 +203,7 @@ export class RaceSession {
       const phys = new CarPhysics(c, {
         perf: team.perf, isPlayer,
         assists: isPlayer ? opts.assists : { tc: true, abs: true, autoGear: true },
+        random: this.random,
       });
       phys.fuelBurnPerMeter = 1 / (this.laps * c.length * 1.06);
       const slot = c.gridSlots[gi];
@@ -177,18 +222,18 @@ export class RaceSession {
       group.add(tag);
 
       // start compound + one-stop strategy
-      const startC = gi < 8 ? (Math.random() < 0.7 ? 'S' : 'M') : (Math.random() < 0.55 ? 'M' : Math.random() < 0.5 ? 'S' : 'H');
+      const startC = gi < 8 ? (this.random() < 0.7 ? 'S' : 'M') : (this.random() < 0.55 ? 'M' : this.random() < 0.5 ? 'S' : 'H');
       phys.setTyre(startC);
       if (CAR.setTyreCompound) CAR.setTyreCompound(carHandle, startC);
       let plannedPitLap = -1, plannedNext = null;
       if (this.laps >= 12) {
-        plannedPitLap = Math.max(3, Math.round(this.laps * (0.42 + Math.random() * 0.2)));
-        plannedNext = startC === 'S' ? (Math.random() < 0.6 ? 'M' : 'H') : startC === 'M' ? 'H' : 'M';
+        plannedPitLap = Math.max(3, Math.round(this.laps * (0.42 + this.random() * 0.2)));
+        plannedNext = startC === 'S' ? (this.random() < 0.6 ? 'M' : 'H') : startC === 'M' ? 'H' : 'M';
       }
 
       this.entries.push({
         driver, team, phys, isPlayer, carHandle,
-        ai: isPlayer ? null : new AIDriver(phys, c, driver, this.difficulty),
+        ai: isPlayer ? null : new AIDriver(phys, c, driver, this.difficulty, this.random),
         mesh: group, wheels, wheelRadius, tag,
         shadowLobe: blob.getObjectByName('sunShadowLobe'),
         lap: -1, lapStart: 0, lastLap: 0, bestLap: 0, lapTimes: [],
@@ -209,13 +254,16 @@ export class RaceSession {
       });
     });
     this.player = this.entries.find(e => e.isPlayer) || null;
+    this.resetRenderState();
   }
 
   _buildQuali(opts) {
     const c = this.circuit;
     const driver = DRIVERS.find(d => d.id === this.playerDriverId);
     const team = teamById[driver.team];
-    const phys = new CarPhysics(c, { perf: team.perf, isPlayer: true, assists: opts.assists });
+    const phys = new CarPhysics(c, {
+      perf: team.perf, isPlayer: true, assists: opts.assists, random: this.random,
+    });
     phys.fuelBurnPerMeter = 0; phys.fuel = 0.12;
     phys.setTyre('S');
     const startIdx = (c.N - Math.round(140 / c.ds)) % c.N;
@@ -259,7 +307,7 @@ export class RaceSession {
       const diffF = [0.925, 0.962, 1.0][this.difficulty] ?? 1;
       const skill = diffF * (0.94 + 0.06 * d.pace) * (0.955 + 0.05 * (t.perf - 0.9) / 0.1 * 0.9);
       const base = c.idealLap / (skill * 0.965);
-      return { driverId: d.id, time: base * (1 + Math.random() * 0.008) };
+      return { driverId: d.id, time: base * (1 + this.random() * 0.008) };
     });
   }
 
@@ -281,12 +329,14 @@ export class RaceSession {
 
   // ======== update ========
   update(dt, playerInput) {
+    if (this._renderDisposed) return;
+    this._beginRenderTick();
     dt = Math.min(dt, 1 / 25);
     const c = this.circuit;
     this.phaseT += dt;
 
     if (this.phase === 'grid') {
-      if (this.phaseT > 2.6) { this.phase = 'lights'; this.phaseT = 0; this.lightsOn = 0; this.lightsHold = 0.5 + Math.random(); }
+      if (this.phaseT > 2.6) { this.phase = 'lights'; this.phaseT = 0; this.lightsOn = 0; this.lightsHold = 0.5 + this.random(); }
     } else if (this.phase === 'lights') {
       const want = Math.min(5, Math.floor(this.phaseT / 0.9) + 1);
       if (want > this.lightsOn) { this.lightsOn = want; this._lightEvent = true; }
@@ -353,7 +403,7 @@ export class RaceSession {
       // mechanical retirement (AI only, race only)
       if (!e.isPlayer && this.mode === 'race' && this.phase === 'racing' && !e.finished) {
         // ~9% chance per car over the chosen race distance, frame-rate independent
-        if (Math.random() < this._dnfRate * dt) this._retire(e);
+        if (this.random() < this._dnfRate * dt) this._retire(e);
       }
       // stranded watchdog: a car off the racing surface and making no real
       // track progress must never hang the session — AI get recovered by the
@@ -384,10 +434,11 @@ export class RaceSession {
           const i = e.phys.sampleIdx;
           const sm = this.circuit.samples[i];
           e.phys.placeAt(sm.p.clone(), Math.atan2(sm.t.x, sm.t.z), i);
+          this.resetRenderState(e);
           this.onMessage('RECOVERED TO THE TRACK', 'yellow');
         }
       } else { e._stuckT = 0; e._stuckRef = null; }
-      this._syncMesh(e, dt);
+      this._advanceWheelSpin(e, dt);
     }
 
     if (this.mode === 'race') {
@@ -397,6 +448,12 @@ export class RaceSession {
       this._blueFlags(dt);
       this._engineerRadio(dt);
     } else this._updateQuali();
+
+    // Capture after collision separation and every teleport-capable subsystem.
+    // Applying the current endpoint preserves the legacy update()-drives-mesh
+    // contract until the outer render loop calls render(alpha) explicitly.
+    this._finishRenderTick();
+    this.render(1);
 
     // finish condition — hard cutoff guarantees the race always classifies
     if (this.mode === 'race' && this.phase === 'finished' && !this.results) {
@@ -562,7 +619,7 @@ export class RaceSession {
     // debounce to one roll per incident — otherwise a single graze is a certainty
     if (e._contactCool > 0) return;
     e._contactCool = 2;
-    if (Math.random() >= 0.25) return;
+    if (this.random() >= 0.25) return;
     e.wingDamage = 0.15;
     if (e.isPlayer) {
       this.onMessage('FRONT WING DAMAGE — BOX TO REPAIR', 'red');
@@ -716,7 +773,7 @@ export class RaceSession {
   _enterPit(e) {
     e.pitState = {
       phase: 'stopped',
-      timer: pitLaneLoss(this.circuit) + 2.2 + Math.random() * 2 + (Math.random() < 0.06 ? 4 : 0)
+      timer: pitLaneLoss(this.circuit) + 2.2 + this.random() * 2 + (this.random() < 0.06 ? 4 : 0)
              + (e.wingDamage > 0 ? 3 : 0),   // front wing change costs extra
       chosen: null,
       wing: e.wingDamage > 0,
@@ -752,6 +809,7 @@ export class RaceSession {
       e.wingDamage = 0;             // new nose fitted
       e.phys.dirtyAir = 0;
       this._resetSectors(e);
+      this.resetRenderState(e);
       if (CAR.setTyreCompound && e.carHandle) CAR.setTyreCompound(e.carHandle, chosen);
       if (e.isPlayer) {
         this._playerPitOpen = false;
@@ -781,8 +839,8 @@ export class RaceSession {
     // still enough of the race left to be worth neutralising
     const leadLap = this.entries.reduce((m, x) => Math.max(m, x.lap), 0);
     if (this.mode === 'race' && this.phase === 'racing' && !this.vsc.active &&
-        this.laps - leadLap > 2 && Math.random() < 0.4) {
-      this._startVSC(18 + Math.random() * 12);
+        this.laps - leadLap > 2 && this.random() < 0.4) {
+      this._startVSC(18 + this.random() * 12);
     }
   }
 
@@ -924,54 +982,137 @@ export class RaceSession {
     }
   }
 
-  _syncMesh(e, dt) {
+  _renderHeight(e) {
     const p = e.phys;
-    // render-only elevation: physics is planar, meshes ride the height profile
-    let ry = 0;
     const c = this.circuit;
-    if (c.heightAt) {
-      const sm = c.samples[p.sampleIdx];
-      const along = (p.pos.x - sm.p.x) * sm.t.x + (p.pos.z - sm.p.z) * sm.t.z;
-      ry = c.heightAt(p.sampleIdx + along / c.ds);
+    if (!c || !c.heightAt) return 0;
+    const sm = c.samples[p.sampleIdx];
+    if (!sm) return 0;
+    const along = (p.pos.x - sm.p.x) * sm.t.x + (p.pos.z - sm.p.z) * sm.t.z;
+    return c.heightAt(p.sampleIdx + along / c.ds);
+  }
+
+  _captureRenderState(e, target) {
+    const p = e.phys;
+    target.x = p.pos.x;
+    target.y = this._renderHeight(e);
+    target.z = p.pos.z;
+    target.heading = p.heading;
+    target.v = p.v || 0;
+    target.wheelSpin = e.wheelSpin || 0;
+    target.steer = p.steer || 0;
+    target.pitch = p.pitch || 0;
+    target.roll = p.roll || 0;
+    target.rideBump = p.rideBump || 0;
+    return target;
+  }
+
+  _ensureRenderState(e) {
+    if (e.renderPrev && e.renderCurr && e.renderPose) return;
+    e.renderPrev = makeRenderSnapshot();
+    e.renderCurr = makeRenderSnapshot();
+    e.renderPose = makeRenderSnapshot();
+    this._captureRenderState(e, e.renderCurr);
+    copyRenderSnapshot(e.renderCurr, e.renderPrev);
+    copyRenderSnapshot(e.renderCurr, e.renderPose);
+  }
+
+  _beginRenderTick() {
+    for (const e of this.entries) {
+      this._ensureRenderState(e);
+      copyRenderSnapshot(e.renderCurr, e.renderPrev);
     }
-    e.renderY = ry;
-    e.mesh.position.set(p.pos.x, ry, p.pos.z);
-    e.mesh.rotation.y = p.heading;
-    // keep the sun-cast shadow lobe pointing the same way in WORLD space no
-    // matter which way the car is facing (the sun does not turn with the car)
+  }
+
+  _finishRenderTick() {
+    for (const e of this.entries) {
+      this._ensureRenderState(e);
+      this._captureRenderState(e, e.renderCurr);
+    }
+  }
+
+  _advanceWheelSpin(e, dt) {
+    if (Number.isFinite(dt) && dt > 0 && e.wheelRadius > 0) {
+      e.wheelSpin += (e.phys.v / e.wheelRadius) * dt;
+    }
+  }
+
+  /** Collapse interpolation history to authoritative state after construction,
+   *  timing resets and teleports. Pass one entry for a local snap (pit/recovery). */
+  resetRenderState(entry = null) {
+    if (this._renderDisposed) return;
+    const entries = entry ? [entry] : this.entries;
+    for (const e of entries) {
+      this._ensureRenderState(e);
+      this._captureRenderState(e, e.renderCurr);
+      copyRenderSnapshot(e.renderCurr, e.renderPrev);
+      copyRenderSnapshot(e.renderCurr, e.renderPose);
+      this._applyRenderPose(e, e.renderPose);
+    }
+  }
+
+  /** Apply a render-only pose between the previous and current fixed ticks. */
+  render(alpha) {
+    if (this._renderDisposed) return;
+    for (const e of this.entries) {
+      this._ensureRenderState(e);
+      interpolateRenderSnapshot(e.renderPrev, e.renderCurr, alpha, e.renderPose);
+      this._applyRenderPose(e, e.renderPose);
+    }
+  }
+
+  _applyRenderPose(e, pose) {
+    if (!e.mesh) return;
+    e.renderY = pose.y;
+    e.mesh.position.set(pose.x, pose.y, pose.z);
+    e.mesh.rotation.y = pose.heading;
+
+    // Counter-rotate the local lobe so its direction remains fixed in world space.
     if (e.shadowLobe) {
-      const a = SUN_GROUND_AZI - p.heading;
+      const a = SUN_GROUND_AZI - pose.heading;
       e.shadowLobe.position.set(Math.sin(a) * SUN_SHADOW_OFF, 0.002,
         Math.cos(a) * SUN_SHADOW_OFF);
-      e.shadowLobe.rotation.z = -a;   // plane is already laid flat on x
+      e.shadowLobe.rotation.z = -a;
     }
-    // wheel spin & steer
-    e.wheelSpin += (p.v / e.wheelRadius) * dt;
+
     for (const k of ['fl', 'fr', 'rl', 'rr']) {
-      const w = e.wheels[k];
-      w.rotation.x = e.wheelSpin;
-      if (k === 'fl' || k === 'fr') w.rotation.y = p.steer * 0.32;
+      const w = e.wheels && e.wheels[k];
+      if (!w) continue;
+      w.rotation.x = pose.wheelSpin;
+      if (k === 'fl' || k === 'fr') w.rotation.y = pose.steer * 0.32;
     }
-    // nametag visibility lives in updateNametags() — a screen-space pass that
-    // needs the settled camera, so it runs after updateCamera() in main.js
-    // car attitude from physics (dive under braking, roll in corners, kerb bump)
+
     const body = e.carHandle && e.carHandle.body;
-    if (body && p.pitch !== undefined) {
-      body.rotation.x = p.pitch;
-      body.rotation.z = p.roll;
-      body.position.y = p.rideBump || 0;
+    if (body) {
+      body.rotation.x = pose.pitch;
+      body.rotation.z = pose.roll;
+      body.position.y = pose.rideBump;
     }
-    // race-state visual hooks (present after car model upgrade; guarded)
-    const ud = e.mesh.userData;
+
+    // Race-state visual hooks remain presentation-only. They read authoritative
+    // controls but never write physics or interpolation snapshots.
+    const p = e.phys;
+    const ud = e.mesh.userData || {};
     if (ud.brakeGlows) {
       const on = p.brake > 0.45 && p.v > 22;
       for (const b of ud.brakeGlows) b.visible = on;
     }
     if (ud.rainLight) {
-      // 2026 rain light blinks while the car is harvesting energy
       const harvesting = (p.brake > 0.1 || p.throttle < 0.25) && p.v > 12;
       ud.rainLight.visible = !harvesting || (Math.floor(performance.now() / 110) % 2 === 0);
     }
+  }
+
+  // Compatibility for tools/direct callers that still request an immediate
+  // authoritative mesh sync. Internal fixed ticks use snapshot capture instead.
+  _syncMesh(e, dt = 0) {
+    if (this._renderDisposed || !e) return;
+    this._ensureRenderState(e);
+    this._advanceWheelSpin(e, dt);
+    this._captureRenderState(e, e.renderCurr);
+    copyRenderSnapshot(e.renderCurr, e.renderPrev);
+    copyRenderSnapshot(e.renderCurr, e.renderPose);
+    this._applyRenderPose(e, e.renderPose);
   }
 
   _msgOnce(key, text, color) {
@@ -1000,18 +1141,21 @@ export class RaceSession {
   updateNametags(camera, vw, vh) {
     const phaseOk = this.phase === 'racing' || this.phase === 'finished';
     const on = this._tagsWanted && phaseOk && !!this.player;
-    const pp = on ? this.player.phys.pos : null;
+    const pp = on ? (this.player.renderPose || this.player.phys.pos) : null;
     const cands = [];
     for (const e of this.entries) {
       if (!e.tag) continue;
       if (!on || e.isPlayer) { e.tag.visible = false; continue; }
-      const dx = e.phys.pos.x - pp.x, dz = e.phys.pos.z - pp.z;
-      cands.push({ tag: e.tag, x: e.phys.pos.x, y: e.renderY || 0, z: e.phys.pos.z, d2: dx * dx + dz * dz });
+      const pose = e.renderPose || e.phys.pos;
+      const dx = pose.x - pp.x, dz = pose.z - pp.z;
+      cands.push({ tag: e.tag, x: pose.x, y: e.renderY || 0, z: pose.z, d2: dx * dx + dz * dz });
     }
     if (cands.length) layoutNametags(cands, camera, vw, vh);
   }
 
   dispose() {
+    if (this._renderDisposed) return;
+    this._renderDisposed = true;
     for (const e of this.entries) {
       this.scene.remove(e.mesh);
       e.mesh.traverse(o => {
@@ -1028,6 +1172,9 @@ export class RaceSession {
           m.dispose();
         });
       });
+      e.renderPrev = null;
+      e.renderCurr = null;
+      e.renderPose = null;
     }
   }
 }
@@ -1038,15 +1185,4 @@ function defaultNext(cur) { return cur === 'S' ? 'M' : cur === 'M' ? 'H' : 'M'; 
 
 function pitLaneLoss(circuit) {
   return 14 + circuit.length / 380;
-}
-
-export function fmtTime(t, hours = false) {
-  if (!t && t !== 0) return '—';
-  if (t >= 9000) return 'NO TIME';
-  const m = Math.floor(t / 60), s = t - m * 60;
-  if (hours && m >= 60) {
-    const h = Math.floor(m / 60);
-    return `${h}:${String(m % 60).padStart(2, '0')}:${s.toFixed(3).padStart(6, '0')}`;
-  }
-  return `${m}:${s.toFixed(3).padStart(6, '0')}`;
 }
