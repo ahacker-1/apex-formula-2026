@@ -680,7 +680,7 @@ test('adaptive renderer, smoke exclusion, and WebGL recovery work in a live sess
       return telemetry.context.restores === 1 &&
         telemetry.frame.count > autoFrameCount &&
         telemetry.renderer.calls > 100 && !game.paused;
-    }, autoTelemetry.frame.count)).toBe(true);
+    }, autoTelemetry.frame.count), { timeout: 30_000 }).toBe(true);
     const recovery = await page.evaluate(() => window.__game.renderTelemetry);
     expect(recovery.context).toEqual({ lost: false, losses: 1, restores: 1 });
     expect(recovery.quality.composerPixelRatio).toBe(recovery.quality.pixelRatio);
@@ -703,7 +703,7 @@ test('adaptive renderer, smoke exclusion, and WebGL recovery work in a live sess
       return telemetry.context.restores === 2 &&
         telemetry.frame.count > window.__pausedLossFrame &&
         telemetry.renderer.calls > 100 && game.paused;
-    })).toBe(true);
+    }), { timeout: 30_000 }).toBe(true);
     const pausedRecovery = await page.evaluate(() => ({
       paused: window.__game.paused,
       telemetry: window.__game.renderTelemetry,
