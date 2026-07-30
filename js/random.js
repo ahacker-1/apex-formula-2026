@@ -88,3 +88,11 @@ export function createRandom(seed) {
   });
   return random;
 }
+
+// Renderer noise must be independent from gameplay/session draw order and
+// identical whenever a post-processing pass is reconstructed.
+export const RENDERER_NOISE_SEED = 'apex-formula-renderer-noise-v1';
+
+export function createRendererNoiseRandom() {
+  return { random: createRandom(RENDERER_NOISE_SEED) };
+}

@@ -23,9 +23,11 @@ globalThis.document = {
 
 const THREE = await import('../lib/three.module.js');
 const { GTAOPass } = await import('../lib/postprocessing/GTAOPass.js');
+const { ScaledGTAOPass } = await import('../lib/postprocessing/ScaledGTAOPass.js');
 const {
   Effects, EFFECT_POOL_LIMITS, EFFECT_QUALITY_SCALES, EFFECT_QUALITY_DUST_LIMITS,
 } = await import('../js/effects.js');
+const { createRandom, createRendererNoiseRandom } = await import('../js/random.js');
 
 let checks = 0;
 const ok = (condition, message) => {
@@ -204,9 +206,33 @@ console.log(`[effects] equal 2s density high=${JSON.stringify(high.counts)} ` +
   `medium=${JSON.stringify(medium.counts)} low=${JSON.stringify(low.counts)} ` +
   `reduced=${JSON.stringify(reduced.counts)}`);
 
+const firstSeededPass = new GTAOPass(scene, camera, 8, 8, {
+  noiseRandom: createRendererNoiseRandom(),
+});
+const secondSeededPass = new GTAOPass(scene, camera, 8, 8, {
+  noiseRandom: createRendererNoiseRandom(),
+});
+const differentSeedPass = new GTAOPass(scene, camera, 8, 8, {
+  noiseRandom: { random: createRandom('different-renderer-noise') },
+});
+const scaledSeededPass = new ScaledGTAOPass(scene, camera, 8, 8, 0.5, {
+  noiseRandom: createRendererNoiseRandom(),
+});
+const noiseBytes = candidate => [...candidate.pdNoiseTexture.image.data];
+ok(JSON.stringify(noiseBytes(firstSeededPass)) === JSON.stringify(noiseBytes(secondSeededPass)),
+  'fresh renderer-noise sources must create identical GTAO denoise textures');
+ok(JSON.stringify(noiseBytes(firstSeededPass)) !== JSON.stringify(noiseBytes(differentSeedPass)),
+  'the GTAO noise option must consume the supplied random source');
+ok(JSON.stringify(noiseBytes(firstSeededPass)) === JSON.stringify(noiseBytes(scaledSeededPass)),
+  'ScaledGTAOPass must forward the deterministic renderer-noise source');
+
 effects.dispose();
 mirror.dispose();
 pass.dispose();
+firstSeededPass.dispose();
+secondSeededPass.dispose();
+differentSeedPass.dispose();
+scaledSeededPass.dispose();
 for (const object of [solid, excluded, hidden]) {
   object.geometry.dispose();
   object.material.dispose();

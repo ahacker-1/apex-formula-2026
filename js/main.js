@@ -96,7 +96,7 @@ import { Effects } from './effects.js';
 import { QualityController } from './quality.js';
 import { TimeTrialManager } from './timeTrial.js';
 import { FixedStepAccumulator } from './fixedStep.js';
-import { createRandom, deriveSeed, normalizeSeed } from './random.js';
+import { createRandom, createRendererNoiseRandom, deriveSeed, normalizeSeed } from './random.js';
 import { TRACKS } from './tracks.js';
 import { CALENDAR, DRIVERS } from './data.js';
 
@@ -891,7 +891,9 @@ class Game {
     // post-processing: AO grounds everything, bloom lifts lights, then output
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    this.gtao = new ScaledGTAOPass(this.scene, this.camera, innerWidth, innerHeight);
+    this.gtao = new ScaledGTAOPass(this.scene, this.camera, innerWidth, innerHeight, 0.5, {
+      noiseRandom: createRendererNoiseRandom(),
+    });
     this.gtao.output = ScaledGTAOPass.OUTPUT.Default;
     this.gtao.blendIntensity = 0.72; // 0.9 visibly darkened additive effects (sparks) in AO-heavy corners
     this.gtao.enabled = this.ui.settings.gtao !== false;
