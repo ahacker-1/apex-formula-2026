@@ -358,6 +358,42 @@ function ctex(canvas, opts = {}) {
   return t;
 }
 
+// Three r160's stock fog chunk mixes a material's output toward fogColor. That
+// is correct for opaque/alpha-blended surfaces, but an additive material then
+// adds the fog-coloured result to the framebuffer instead of disappearing into
+// the distance. Reuse Three's exact fog factor and attenuate both source colour
+// and alpha. With r160's non-premultiplied SRC_ALPHA, ONE additive blend this
+// intentionally yields a strong T^2 colour falloff, suppressing repeated layers.
+const ADDITIVE_FOG_EXTINCTION_CACHE_KEY = 'apex-additive-fog-extinction-r160-v1';
+const ADDITIVE_FOG_EXTINCTION_FRAGMENT = /* glsl */`
+#ifdef USE_FOG
+  #ifdef FOG_EXP2
+    float apexFogFactor = 1.0 - exp( - fogDensity * fogDensity * vFogDepth * vFogDepth );
+  #else
+    float apexFogFactor = smoothstep( fogNear, fogFar, vFogDepth );
+  #endif
+  float apexFogTransmittance = 1.0 - apexFogFactor;
+  gl_FragColor.rgb *= apexFogTransmittance;
+  gl_FragColor.a *= apexFogTransmittance;
+#endif`;
+
+function applyAdditiveFogExtinction(material) {
+  material.fog = true;
+  material.onBeforeCompile = (shader) => {
+    const fogInclude = '#include <fog_fragment>';
+    const fogIncludeCount = shader.fragmentShader.split(fogInclude).length - 1;
+    if (fogIncludeCount !== 1) {
+      throw new Error(`Additive fog extinction expected one fog_fragment include; found ${fogIncludeCount}`);
+    }
+    shader.fragmentShader = shader.fragmentShader.replace(
+      fogInclude,
+      ADDITIVE_FOG_EXTINCTION_FRAGMENT,
+    );
+  };
+  material.customProgramCacheKey = () => ADDITIVE_FOG_EXTINCTION_CACHE_KEY;
+  return material;
+}
+
 // Radial falloff drawn with concentric fills: createRadialGradient is not part of
 // the 2D subset the headless tools stub.
 function glowCanvas(size = 128) {
@@ -3621,7 +3657,7 @@ export function buildCircuit(trackId, def, scene) {
       lamps.name = 'floodlight-lamps';
       const m4 = new THREE.Matrix4();
       const glowTex = ctex(glowCanvas(128), { wrapS: THREE.ClampToEdgeWrapping, wrapT: THREE.ClampToEdgeWrapping });
-      const glowMat = new THREE.SpriteMaterial({
+      const glowMat = applyAdditiveFogExtinction(new THREE.SpriteMaterial({
         map: glowTex,
         color: 0xbfd4ff,
         blending: THREE.AdditiveBlending,
@@ -3635,7 +3671,7 @@ export function buildCircuit(trackId, def, scene) {
         // Fog attenuation prevents distant rows from accumulating into a stack
         // of equally bright white discs at the vanishing point.
         fog: true,
-      });
+      }));
       // ---- baked light pools on the asphalt -----------------------------------
       // One merged additive decal per tower, an ellipse on the road under the
       // fixture, so the floodlight visibly illuminates something.
@@ -3704,7 +3740,7 @@ export function buildCircuit(trackId, def, scene) {
         pg.setAttribute('uv', new THREE.Float32BufferAttribute(poolUV, 2));
         pg.setIndex(poolIdx);
         pg.computeVertexNormals();
-        const pool = new THREE.Mesh(pg, new THREE.MeshBasicMaterial({
+        const pool = new THREE.Mesh(pg, applyAdditiveFogExtinction(new THREE.MeshBasicMaterial({
           map: poolTex,
           color: 0x829ac4,
           blending: THREE.AdditiveBlending,
@@ -3718,7 +3754,7 @@ export function buildCircuit(trackId, def, scene) {
           polygonOffsetFactor: -5,
           polygonOffsetUnits: -5,
           fog: true,
-        }));
+        })));
         pool.name = 'floodlight-pools';
         pool.userData.pools = pools;
         pool.renderOrder = 2;

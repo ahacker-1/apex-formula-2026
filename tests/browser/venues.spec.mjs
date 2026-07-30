@@ -619,6 +619,96 @@ async function measureScreenshotDelta(page, first, second, changedPixelChannelTh
   return summarizeRgbDelta(samples.first, samples.second, changedPixelChannelThreshold, samples.sampleSize);
 }
 
+async function measureAdditiveFogExtinction(page) {
+  return page.evaluate(async () => {
+    const THREE = await import('/lib/three.module.js');
+    const game = window.__game;
+    let glowMaterial = null;
+    let poolMaterial = null;
+    game.circuit.group.traverse(object => {
+      if (!glowMaterial && object.name === 'floodlight-glow') glowMaterial = object.material;
+      if (!poolMaterial && object.name === 'floodlight-pools') poolMaterial = object.material;
+    });
+    if (!glowMaterial || !poolMaterial) throw new Error('Night floodlight materials not found');
+
+    const renderer = game.renderer;
+    const previousTarget = renderer.getRenderTarget();
+    const previousAutoClear = renderer.autoClear;
+    const previousClearColor = renderer.getClearColor(new THREE.Color()).getHex();
+    const previousClearAlpha = renderer.getClearAlpha();
+    const target = new THREE.WebGLRenderTarget(64, 64, { depthBuffer: true });
+    const camera = new THREE.OrthographicCamera(-2, 2, 2, -2, 0.1, 150);
+    camera.position.set(0, 0, 0);
+    camera.lookAt(0, 0, -1);
+    camera.updateMatrixWorld();
+
+    const readEnergy = (material, kind, depth) => {
+      const scene = new THREE.Scene();
+      // A non-black fog colour exposes Three's stock additive-fog failure: at
+      // fogFar it would still add this blue RGB with the source alpha.
+      scene.fog = new THREE.Fog(0x204060, 10, 100);
+      const object = kind === 'sprite'
+        ? new THREE.Sprite(material)
+        : new THREE.Mesh(new THREE.PlaneGeometry(3, 3), material);
+      object.position.set(0, 0, -depth);
+      if (kind === 'sprite') object.scale.set(3, 3, 1);
+      scene.add(object);
+
+      renderer.setRenderTarget(target);
+      renderer.autoClear = true;
+      renderer.setClearColor(0x000000, 1);
+      renderer.clear(true, true, true);
+      renderer.render(scene, camera);
+      const pixels = new Uint8Array(64 * 64 * 4);
+      renderer.readRenderTargetPixels(target, 0, 0, 64, 64, pixels);
+      let maxRgb = 0;
+      let rgbSum = 0;
+      for (let i = 0; i < pixels.length; i += 4) {
+        maxRgb = Math.max(maxRgb, pixels[i], pixels[i + 1], pixels[i + 2]);
+        rgbSum += pixels[i] + pixels[i + 1] + pixels[i + 2];
+      }
+      // Sprite geometry is a Three module singleton shared by the live game.
+      // Only the temporary plane belongs to this probe.
+      if (kind === 'mesh') object.geometry.dispose();
+      return { maxRgb, rgbSum };
+    };
+
+    const inspectCompiledShader = (material) => {
+      const gl = renderer.getContext();
+      const program = renderer.properties.get(material).currentProgram;
+      const source = program ? gl.getShaderSource(program.fragmentShader) : '';
+      return {
+        linked: !!program && gl.getProgramParameter(program.program, gl.LINK_STATUS),
+        usesFog: source.includes('#define USE_FOG'),
+        rgbExtinction: source.includes('gl_FragColor.rgb *= apexFogTransmittance;'),
+        alphaExtinction: source.includes('gl_FragColor.a *= apexFogTransmittance;'),
+        nativeFogMix: source.includes('mix( gl_FragColor.rgb, fogColor, fogFactor )'),
+      };
+    };
+
+    try {
+      const extinction = {
+        glow: {
+          near: readEnergy(glowMaterial, 'sprite', 20),
+          beyondFogFar: readEnergy(glowMaterial, 'sprite', 110),
+        },
+        pool: {
+          near: readEnergy(poolMaterial, 'mesh', 20),
+          beyondFogFar: readEnergy(poolMaterial, 'mesh', 110),
+        },
+      };
+      extinction.glow.shader = inspectCompiledShader(glowMaterial);
+      extinction.pool.shader = inspectCompiledShader(poolMaterial);
+      return extinction;
+    } finally {
+      renderer.setRenderTarget(previousTarget);
+      renderer.autoClear = previousAutoClear;
+      renderer.setClearColor(previousClearColor, previousClearAlpha);
+      target.dispose();
+    }
+  });
+}
+
 async function captureVenueRun(page, venue, runNumber, preFreezeTicks) {
   const errors = observeErrors(page);
   await configureFreshPage(page);
@@ -1181,6 +1271,28 @@ for (const venue of VENUES) {
     await persistVenueEvidence(venue, captures);
 
     if (venue.environment === 'night') {
+      const extinction = await measureAdditiveFogExtinction(page);
+      expect(extinction.glow.near.maxRgb, 'near floodlight glow emits visible energy').toBeGreaterThan(8);
+      expect(extinction.pool.near.maxRgb, 'near floodlight pool emits visible energy').toBeGreaterThan(8);
+      expect(extinction.glow.beyondFogFar, 'distant glow contributes zero additive fog colour').toEqual({
+        maxRgb: 0,
+        rgbSum: 0,
+      });
+      expect(extinction.pool.beyondFogFar, 'distant pool contributes zero additive fog colour').toEqual({
+        maxRgb: 0,
+        rgbSum: 0,
+      });
+      const expectedShader = {
+        linked: true,
+        usesFog: true,
+        rgbExtinction: true,
+        alphaExtinction: true,
+        nativeFogMix: false,
+      };
+      expect(extinction.glow.shader, 'real SpriteMaterial program uses additive extinction').toEqual(expectedShader);
+      expect(extinction.pool.shader, 'real MeshBasicMaterial program uses additive extinction').toEqual(expectedShader);
+      console.log(`[additive-fog-extinction] ${JSON.stringify(extinction)}`);
+
       const recovery = await page.evaluate(() => {
         const game = window.__game;
         game.renderer.toneMappingExposure = 0.01;

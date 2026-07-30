@@ -2751,6 +2751,17 @@ function run(trackId) {
       assert(m.opacity >= 0.3 && m.opacity <= 0.45 && m.fog === true,
         'glow sprites stay restrained and participate in distance fog',
         `[opacity=${m.opacity} fog=${m.fog}]`);
+      const glowShader = { fragmentShader: 'void main() {\n#include <fog_fragment>\n}' };
+      m.onBeforeCompile(glowShader);
+      assert(!glowShader.fragmentShader.includes('#include <fog_fragment>')
+        && glowShader.fragmentShader.includes('smoothstep( fogNear, fogFar, vFogDepth )')
+        && glowShader.fragmentShader.includes('gl_FragColor.rgb *= apexFogTransmittance;')
+        && glowShader.fragmentShader.includes('gl_FragColor.a *= apexFogTransmittance;'),
+      'glow shader replaces fog-colour mixing with zero-energy RGB and alpha extinction');
+      const glowCacheKey = m.customProgramCacheKey();
+      assert(glowCacheKey === m.customProgramCacheKey()
+        && glowCacheKey === 'apex-additive-fog-extinction-r160-v1',
+      'glow extinction shader has a stable custom program cache key', `[key=${glowCacheKey}]`);
       const glowWidths = glows.map(g => g.scale.x);
       assert(Math.max(...glowWidths) <= 5.5 && Math.min(...glowWidths) >= 4.5,
         'glow sprites stay fixture-sized instead of merging into floodlight halos',
@@ -2804,6 +2815,17 @@ function run(trackId) {
         assert(pm.opacity >= 0.18 && pm.opacity <= 0.25 && pm.fog === true,
           'light pools preserve asphalt contrast and fade into venue fog',
           `[opacity=${pm.opacity} fog=${pm.fog}]`);
+        const poolShader = { fragmentShader: 'void main() {\n#include <fog_fragment>\n}' };
+        pm.onBeforeCompile(poolShader);
+        assert(!poolShader.fragmentShader.includes('#include <fog_fragment>')
+          && poolShader.fragmentShader.includes('smoothstep( fogNear, fogFar, vFogDepth )')
+          && poolShader.fragmentShader.includes('gl_FragColor.rgb *= apexFogTransmittance;')
+          && poolShader.fragmentShader.includes('gl_FragColor.a *= apexFogTransmittance;'),
+        'light-pool shader replaces fog-colour mixing with zero-energy RGB and alpha extinction');
+        const poolCacheKey = pm.customProgramCacheKey();
+        assert(poolCacheKey === pm.customProgramCacheKey()
+          && poolCacheKey === 'apex-additive-fog-extinction-r160-v1',
+        'light-pool extinction shader has a stable custom program cache key', `[key=${poolCacheKey}]`);
         assert(pool.userData.pools === heads.count, 'one light pool per floodlight',
           `[pools=${pool.userData.pools} floodlights=${heads.count}]`);
         // the pool has to land ON the road, under the tower
