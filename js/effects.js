@@ -1,10 +1,35 @@
 // Runtime visual effects: titanium skid sparks (2026 skid blocks), tyre smoke,
-// and player skid marks. Pooled, allocation-free per frame.
+// off-track dust, gravel/rubber debris, and player skid marks. Every effect is
+// procedural and pooled; the hot update path does not grow scene/object counts.
 import * as THREE from 'three';
 
-const SPARK_POOL = 260;
-const SMOKE_POOL = 36;
-const SKID_SEGS = 700;
+export const EFFECT_POOL_LIMITS = Object.freeze({
+  sparks: 260,
+  smoke: 36,
+  dust: 48,
+  debris: 180,
+  skidSegments: 700,
+});
+
+const SPARK_POOL = EFFECT_POOL_LIMITS.sparks;
+const SMOKE_POOL = EFFECT_POOL_LIMITS.smoke;
+const DUST_POOL = EFFECT_POOL_LIMITS.dust;
+const DEBRIS_POOL = EFFECT_POOL_LIMITS.debris;
+const SKID_SEGS = EFFECT_POOL_LIMITS.skidSegments;
+
+function clamp01(n) { return Math.max(0, Math.min(1, n)); }
+
+function defaultMotionScale(options) {
+  if (Number.isFinite(options.motionScale)) return clamp01(options.motionScale);
+  const reduced = options.reducedMotion ??
+    (typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches);
+  if (reduced) return 0.28;
+  const memory = typeof navigator !== 'undefined' ? Number(navigator.deviceMemory) : 0;
+  const compact = typeof matchMedia === 'function' && matchMedia('(max-width: 700px)').matches;
+  // Match the adaptive renderer's conservative initial-tier heuristics without
+  // coupling Effects to main.js or the quality controller.
+  return compact || (Number.isFinite(memory) && memory > 0 && memory <= 4) ? 0.62 : 1;
+}
 
 function radialSprite(inner, outer, size = 64) {
   const c = document.createElement('canvas');
@@ -21,11 +46,13 @@ function radialSprite(inner, outer, size = 64) {
 }
 
 export class Effects {
-  constructor(scene, random = () => Math.random()) {
+  constructor(scene, random = () => Math.random(), options = {}) {
     this.scene = scene;
     this.random = random;
+    this.motionScale = defaultMotionScale(options);
     this._f = new THREE.Vector3();
     this._l = new THREE.Vector3();
+    this._entryState = new WeakMap();
 
     // ---- sparks (Points, additive) ----
     this.sparkData = [];
@@ -59,9 +86,56 @@ export class Effects {
       // flashing behind the car as smoke appears during wheelspin or braking.
       s.userData.gtaoExcluded = true;
       scene.add(s);
-      this.smoke.push({ sprite: s, life: 0, maxLife: 1 });
+      this.smoke.push({
+        sprite: s, vel: new THREE.Vector3(), life: 0, maxLife: 1,
+        startScale: 1, strength: 1,
+      });
     }
     this._smokeCursor = 0;
+
+    // ---- dust (sprite pool, separate material so smoke stays neutral) ----
+    this.dustTex = radialSprite('rgba(214,190,146,0.48)', 'rgba(126,103,72,0)');
+    this.dust = [];
+    for (let i = 0; i < DUST_POOL; i++) {
+      const m = new THREE.SpriteMaterial({
+        map: this.dustTex, color: 0xc6aa7d, transparent: true,
+        opacity: 0, depthWrite: false,
+      });
+      const s = new THREE.Sprite(m);
+      s.visible = false;
+      s.userData.gtaoExcluded = true;
+      scene.add(s);
+      this.dust.push({
+        sprite: s, vel: new THREE.Vector3(), life: 0, maxLife: 1,
+        startScale: 1, strength: 1,
+      });
+    }
+    this._dustCursor = 0;
+
+    // ---- gravel / rubber flecks (one Points draw, vertex-coloured) ----
+    const dg = new THREE.BufferGeometry();
+    const dpos = new Float32Array(DEBRIS_POOL * 3);
+    const dcol = new Float32Array(DEBRIS_POOL * 3);
+    dg.setAttribute('position', new THREE.BufferAttribute(dpos, 3));
+    dg.setAttribute('color', new THREE.BufferAttribute(dcol, 3));
+    this.debrisData = [];
+    for (let i = 0; i < DEBRIS_POOL; i++) {
+      dpos[i * 3 + 1] = -50;
+      this.debrisData.push({
+        vel: new THREE.Vector3(), life: 0, floor: 0, settled: false, bounces: 0,
+      });
+    }
+    this.debrisTex = radialSprite('rgba(255,255,255,1)', 'rgba(255,255,255,0)', 32);
+    this.debrisMat = new THREE.PointsMaterial({
+      size: 0.14, map: this.debrisTex, vertexColors: true,
+      transparent: true, opacity: 0.82, depthWrite: false, alphaTest: 0.06,
+      sizeAttenuation: true,
+    });
+    this.debris = new THREE.Points(dg, this.debrisMat);
+    this.debris.frustumCulled = false;
+    this.debris.userData.gtaoExcluded = true;
+    scene.add(this.debris);
+    this._debrisCursor = 0;
 
     // ---- skid marks (ribbon ring buffer, player rear wheels) ----
     const kg = new THREE.BufferGeometry();
@@ -84,7 +158,9 @@ export class Effects {
     this.skid.userData.gtaoExcluded = true;
     scene.add(this.skid);
     this._skidCursor = 0;
-    this._skidPrev = null; // {l0,l1,r0,r1} previous edge points
+    this._hasSkidPrev = false;
+    this._skidPrev = {};
+    this._skidCur = {};
     // park all skid verts underground
     for (let i = 0; i < kpos2.length; i += 3) kpos2[i + 1] = -50;
   }
@@ -105,14 +181,92 @@ export class Effects {
     );
   }
 
-  _emitSmoke(x, y, z) {
+  _emitSmoke(x, y, z, heading = 0, speed = 0, strength = 1) {
     const s = this.smoke[this._smokeCursor];
     this._smokeCursor = (this._smokeCursor + 1) % SMOKE_POOL;
     s.life = s.maxLife = 0.7 + this.random() * 0.5;
+    s.strength = clamp01(strength);
+    s.startScale = 0.65 + this.random() * 0.5;
     s.sprite.visible = true;
     s.sprite.position.set(x, y, z);
-    s.sprite.scale.setScalar(0.7 + this.random() * 0.5);
-    s.sprite.material.opacity = 0.4;
+    s.sprite.scale.setScalar(s.startScale);
+    s.sprite.material.opacity = 0.26 + s.strength * 0.16;
+    s.vel.set(
+      -Math.sin(heading) * Math.abs(speed) * 0.035 + (this.random() - 0.5) * 0.7,
+      0.38 + this.random() * 0.32,
+      -Math.cos(heading) * Math.abs(speed) * 0.035 + (this.random() - 0.5) * 0.7
+    );
+  }
+
+  _emitDust(x, y, z, heading, speed, strength = 1) {
+    const d = this.dust[this._dustCursor];
+    this._dustCursor = (this._dustCursor + 1) % DUST_POOL;
+    d.life = d.maxLife = 0.85 + this.random() * 0.65;
+    d.strength = clamp01(strength);
+    d.startScale = 0.9 + this.random() * 0.7;
+    d.sprite.visible = true;
+    d.sprite.position.set(x, y, z);
+    d.sprite.scale.setScalar(d.startScale);
+    d.sprite.material.opacity = 0.2 + d.strength * 0.18;
+    d.vel.set(
+      -Math.sin(heading) * Math.abs(speed) * 0.045 + (this.random() - 0.5) * 1.2,
+      0.14 + this.random() * 0.22,
+      -Math.cos(heading) * Math.abs(speed) * 0.045 + (this.random() - 0.5) * 1.2
+    );
+  }
+
+  _emitDebris(x, y, z, heading, speed, floor = 0, rubber = false) {
+    const i = this._debrisCursor;
+    this._debrisCursor = (i + 1) % DEBRIS_POOL;
+    const p = this.debris.geometry.attributes.position;
+    const c = this.debris.geometry.attributes.color;
+    p.array[i * 3] = x;
+    p.array[i * 3 + 1] = y;
+    p.array[i * 3 + 2] = z;
+    const d = this.debrisData[i];
+    d.floor = floor;
+    d.life = rubber ? 5 + this.random() * 5 : 1.5 + this.random() * 1.5;
+    d.settled = false;
+    d.bounces = 0;
+    const scatter = rubber ? 1.6 : 3.8;
+    d.vel.set(
+      -Math.sin(heading) * Math.abs(speed) * (rubber ? 0.025 : 0.07) + (this.random() - 0.5) * scatter,
+      (rubber ? 0.35 : 0.8) + this.random() * (rubber ? 0.65 : 1.8),
+      -Math.cos(heading) * Math.abs(speed) * (rubber ? 0.025 : 0.07) + (this.random() - 0.5) * scatter
+    );
+    const tone = this.random();
+    if (rubber) {
+      const v = 0.035 + tone * 0.035;
+      c.array[i * 3] = v;
+      c.array[i * 3 + 1] = v * 1.02;
+      c.array[i * 3 + 2] = v * 1.05;
+    } else {
+      c.array[i * 3] = 0.24 + tone * 0.16;
+      c.array[i * 3 + 1] = 0.18 + tone * 0.11;
+      c.array[i * 3 + 2] = 0.10 + tone * 0.07;
+    }
+    p.needsUpdate = true;
+    c.needsUpdate = true;
+  }
+
+  _stateFor(entry) {
+    let state = this._entryState.get(entry);
+    if (!state) {
+      state = { sparks: 0, smoke: 0, dust: 0, debris: 0, rubber: 0, wallCooldown: 0 };
+      this._entryState.set(entry, state);
+    }
+    return state;
+  }
+
+  _emissions(state, key, dt, rate, maxBurst = 2) {
+    if (rate <= 0 || dt <= 0 || this.motionScale <= 0) {
+      state[key] = 0;
+      return 0;
+    }
+    state[key] = Math.min(maxBurst + 0.99, state[key] + rate * dt * this.motionScale);
+    const count = Math.min(maxBurst, Math.floor(state[key]));
+    state[key] -= count;
+    return count;
   }
 
   _skidSegment(l, r, left, ry = 0) {
@@ -121,58 +275,112 @@ export class Effects {
     // frame's height tilts out of the road on gradients and reads as dark
     // flakes ("black sparks") behind the car.
     const y = ry + 0.055;
-    const cur = {
-      l0: [l.x - left.x * 0.14, l.z - left.z * 0.14],
-      l1: [l.x + left.x * 0.14, l.z + left.z * 0.14],
-      r0: [r.x - left.x * 0.14, r.z - left.z * 0.14],
-      r1: [r.x + left.x * 0.14, r.z + left.z * 0.14],
-      y,
-    };
-    if (this._skidPrev) {
+    const cur = this._skidCur;
+    cur.l0x = l.x - left.x * 0.14; cur.l0z = l.z - left.z * 0.14;
+    cur.l1x = l.x + left.x * 0.14; cur.l1z = l.z + left.z * 0.14;
+    cur.r0x = r.x - left.x * 0.14; cur.r0z = r.z - left.z * 0.14;
+    cur.r1x = r.x + left.x * 0.14; cur.r1z = r.z + left.z * 0.14;
+    cur.y = y;
+    if (this._hasSkidPrev) {
       const i = this._skidCursor;
       this._skidCursor = (i + 1) % SKID_SEGS;
       const a = this.skidGeo.attributes.position.array;
       const base = i * 24;
       const P = this._skidPrev;
-      const put = (o, xy, yy) => { a[base + o] = xy[0]; a[base + o + 1] = yy; a[base + o + 2] = xy[1]; };
-      put(0, P.l0, P.y); put(3, P.l1, P.y); put(6, cur.l0, y); put(9, cur.l1, y);
-      put(12, P.r0, P.y); put(15, P.r1, P.y); put(18, cur.r0, y); put(21, cur.r1, y);
+      a[base] = P.l0x; a[base + 1] = P.y; a[base + 2] = P.l0z;
+      a[base + 3] = P.l1x; a[base + 4] = P.y; a[base + 5] = P.l1z;
+      a[base + 6] = cur.l0x; a[base + 7] = y; a[base + 8] = cur.l0z;
+      a[base + 9] = cur.l1x; a[base + 10] = y; a[base + 11] = cur.l1z;
+      a[base + 12] = P.r0x; a[base + 13] = P.y; a[base + 14] = P.r0z;
+      a[base + 15] = P.r1x; a[base + 16] = P.y; a[base + 17] = P.r1z;
+      a[base + 18] = cur.r0x; a[base + 19] = y; a[base + 20] = cur.r0z;
+      a[base + 21] = cur.r1x; a[base + 22] = y; a[base + 23] = cur.r1z;
       this.skidGeo.attributes.position.needsUpdate = true;
     }
+    this._hasSkidPrev = true;
+    this._skidCur = this._skidPrev;
     this._skidPrev = cur;
   }
 
-  skidBreak() { this._skidPrev = null; }
+  skidBreak() { this._hasSkidPrev = false; }
 
   update(dt, entries) {
+    const frameDt = Number.isFinite(dt) ? Math.max(0, Math.min(0.1, dt)) : 0;
     // advance sparks
     const pa = this.sparks.geometry.attributes.position;
     for (let i = 0; i < SPARK_POOL; i++) {
       const d = this.sparkData[i];
       if (d.life <= 0) continue;
-      d.life -= dt;
-      d.vel.y -= 14 * dt;
-      pa.array[i * 3] += d.vel.x * dt;
-      pa.array[i * 3 + 1] += d.vel.y * dt;
-      pa.array[i * 3 + 2] += d.vel.z * dt;
+      d.life -= frameDt;
+      d.vel.y -= 14 * frameDt;
+      pa.array[i * 3] += d.vel.x * frameDt;
+      pa.array[i * 3 + 1] += d.vel.y * frameDt;
+      pa.array[i * 3 + 2] += d.vel.z * frameDt;
       if (d.life <= 0 || pa.array[i * 3 + 1] < (d.floor || 0) + 0.02) { pa.array[i * 3 + 1] = -50; d.life = 0; }
     }
     pa.needsUpdate = true;
     // advance smoke
     for (const s of this.smoke) {
       if (s.life <= 0) continue;
-      s.life -= dt;
+      s.life -= frameDt;
       const t = 1 - s.life / s.maxLife;
-      s.sprite.scale.setScalar(0.7 + t * 2.6);
-      s.sprite.position.y += dt * 0.9;
-      s.sprite.material.opacity = 0.38 * (1 - t);
+      s.sprite.scale.setScalar(s.startScale + t * (2.1 + s.strength * 0.7));
+      s.sprite.position.x += s.vel.x * frameDt;
+      s.sprite.position.y += s.vel.y * frameDt;
+      s.sprite.position.z += s.vel.z * frameDt;
+      s.sprite.material.opacity = (0.24 + s.strength * 0.16) * (1 - t) * (1 - t);
       if (s.life <= 0) s.sprite.visible = false;
     }
+    // dust hangs lower and spreads wider than tyre smoke
+    for (const d of this.dust) {
+      if (d.life <= 0) continue;
+      d.life -= frameDt;
+      const t = 1 - d.life / d.maxLife;
+      d.sprite.scale.setScalar(d.startScale + t * (3.1 + d.strength * 1.4));
+      d.sprite.position.x += d.vel.x * frameDt;
+      d.sprite.position.y += d.vel.y * frameDt;
+      d.sprite.position.z += d.vel.z * frameDt;
+      d.sprite.material.opacity = (0.18 + d.strength * 0.18) * (1 - t) * (1 - t);
+      if (d.life <= 0) d.sprite.visible = false;
+    }
+    // debris bounces once or twice, then tyre rubber remains briefly as marbles
+    const dp = this.debris.geometry.attributes.position;
+    for (let i = 0; i < DEBRIS_POOL; i++) {
+      const d = this.debrisData[i];
+      if (d.life <= 0) continue;
+      d.life -= frameDt;
+      if (!d.settled) {
+        d.vel.y -= 13 * frameDt;
+        dp.array[i * 3] += d.vel.x * frameDt;
+        dp.array[i * 3 + 1] += d.vel.y * frameDt;
+        dp.array[i * 3 + 2] += d.vel.z * frameDt;
+        const floor = d.floor + 0.035;
+        if (dp.array[i * 3 + 1] <= floor) {
+          dp.array[i * 3 + 1] = floor;
+          d.bounces++;
+          if (Math.abs(d.vel.y) > 0.9 && d.bounces < 2) {
+            d.vel.y *= -0.24;
+            d.vel.x *= 0.58;
+            d.vel.z *= 0.58;
+          } else {
+            d.settled = true;
+            d.vel.set(0, 0, 0);
+          }
+        }
+      }
+      if (d.life <= 0) {
+        d.life = 0;
+        dp.array[i * 3 + 1] = -50;
+      }
+    }
+    dp.needsUpdate = true;
 
     // emissions per car
     for (const e of entries) {
       const p = e.phys;
       if (p.disabled || e.dnf) continue;
+      const state = this._stateFor(e);
+      state.wallCooldown = Math.max(0, state.wallCooldown - frameDt);
       // render-only elevation offset (physics is planar)
       let ry = 0;
       const cc = p.circuit;
@@ -184,17 +392,65 @@ export class Effects {
       const f = this._f.set(Math.sin(p.heading), 0, Math.cos(p.heading));
       const left = this._l.set(f.z, 0, -f.x);
       const rx = p.pos.x - f.x * 1.6, rz = p.pos.z - f.z * 1.6;
+      const speed = Math.abs(p.v);
       // titanium skid sparks: kerb strikes + heavy braking at speed + bottoming on straights
-      const sparky = (p.onKerb && p.v > 32) || (p.brake > 0.75 && p.v > 52) ||
-        (p.aeroX && p.v > 88 && this.random() < 0.12);
-      if (sparky && this.random() < 0.75) {
+      const sparkRate = (p.onKerb && speed > 32 ? 10 : 0) +
+        (p.brake > 0.75 && speed > 52 ? 4 : 0) +
+        (p.aeroX && speed > 88 ? 1.4 : 0);
+      const sparkCount = this._emissions(state, 'sparks', frameDt, sparkRate);
+      for (let n = 0; n < sparkCount; n++) {
         const side = this.random() < 0.5 ? 1 : -1;
-        this._emitSpark(rx + left.x * 0.8 * side, ry + 0.06, rz + left.z * 0.8 * side, p.heading, p.v, ry);
+        this._emitSpark(rx + left.x * 0.8 * side, ry + 0.06,
+          rz + left.z * 0.8 * side, p.heading, speed, ry);
       }
       // tyre smoke on slip
-      if (p.slip && p.v > 14 && this.random() < 0.55) {
+      const smokeRate = p.slip && speed > 14 ? Math.min(14, 6 + speed * 0.09) : 0;
+      const smokeCount = this._emissions(state, 'smoke', frameDt, smokeRate);
+      for (let n = 0; n < smokeCount; n++) {
         const side = this.random() < 0.5 ? 1 : -1;
-        this._emitSmoke(rx + left.x * 0.85 * side, ry + 0.3, rz + left.z * 0.85 * side);
+        const strength = clamp01(0.45 + p.brake * 0.45 + Math.max(0, p.throttle - 0.7));
+        this._emitSmoke(rx + left.x * 0.85 * side, ry + 0.3,
+          rz + left.z * 0.85 * side, p.heading, speed, strength);
+      }
+      // off-track excursions build a low dust wake as the tyres dig in
+      const dustRate = p.offTrack && speed > 5
+        ? Math.min(15, 4 + speed * 0.1 + (p.offTrackSink || 0) * 5) : 0;
+      const dustCount = this._emissions(state, 'dust', frameDt, dustRate);
+      for (let n = 0; n < dustCount; n++) {
+        const side = this.random() < 0.5 ? 1 : -1;
+        this._emitDust(rx + left.x * 0.88 * side, ry + 0.18,
+          rz + left.z * 0.88 * side, p.heading, speed,
+          0.55 + (p.offTrackSink || 0) * 0.45);
+      }
+      const gravelRate = p.offTrack && speed > 7
+        ? Math.min(10, 2 + speed * 0.055 + (p.offTrackSink || 0) * 3) : 0;
+      const gravelCount = this._emissions(state, 'debris', frameDt, gravelRate);
+      for (let n = 0; n < gravelCount; n++) {
+        const side = this.random() < 0.5 ? 1 : -1;
+        this._emitDebris(rx + left.x * 0.86 * side, ry + 0.12,
+          rz + left.z * 0.86 * side, p.heading, speed, ry, false);
+      }
+      // A little rubber is shed under sustained on-track slip and settles as
+      // temporary marbles instead of flying like sparks.
+      const rubberRate = p.slip && !p.offTrack && speed > 24 ? 1.25 : 0;
+      const rubberCount = this._emissions(state, 'rubber', frameDt, rubberRate, 1);
+      for (let n = 0; n < rubberCount; n++) {
+        const side = this.random() < 0.5 ? 1 : -1;
+        this._emitDebris(rx + left.x * 0.86 * side, ry + 0.1,
+          rz + left.z * 0.86 * side, p.heading, speed, ry, true);
+      }
+      // Wall impacts get one restrained burst, guarded against the physics
+      // contact signal remaining high across adjacent render frames.
+      if (p.wallHit > 0.35 && state.wallCooldown <= 0) {
+        state.wallCooldown = 0.32;
+        const burst = 2 + Math.floor(p.wallHit * 4 * this.motionScale);
+        for (let n = 0; n < burst; n++) {
+          const side = p.lat < 0 ? -1 : 1;
+          this._emitSpark(p.pos.x + left.x * side * 0.9, ry + 0.35,
+            p.pos.z + left.z * side * 0.9, p.heading, speed * 0.5, ry);
+          this._emitDebris(p.pos.x + left.x * side * 0.9, ry + 0.25,
+            p.pos.z + left.z * side * 0.9, p.heading, speed * 0.35, ry, false);
+        }
       }
       // skid marks: player only
       if (e.isPlayer) {
@@ -210,12 +466,16 @@ export class Effects {
   }
 
   dispose() {
-    this.scene.remove(this.sparks, this.skid);
+    this.scene.remove(this.sparks, this.debris, this.skid);
     for (const s of this.smoke) this.scene.remove(s.sprite);
+    for (const d of this.dust) this.scene.remove(d.sprite);
     this.sparks.geometry.dispose();
     this.sparkMat.map.dispose(); this.sparkMat.dispose();
+    this.debris.geometry.dispose(); this.debrisTex.dispose(); this.debrisMat.dispose();
     this.skidGeo.dispose(); this.skidMat.dispose();
     this.smokeTex.dispose();
     for (const s of this.smoke) s.sprite.material.dispose();
+    this.dustTex.dispose();
+    for (const d of this.dust) d.sprite.material.dispose();
   }
 }

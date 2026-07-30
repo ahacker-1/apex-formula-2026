@@ -39,6 +39,22 @@ export function shortestAngleDelta(from, to) {
   return Math.atan2(Math.sin(to - from), Math.cos(to - from));
 }
 
+function finiteOrZero(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+// Presentation-only brake-disc response. Actual thermal state remains owned by
+// CarPhysics; keeping this pure also makes the visual curve deterministic and
+// independently testable. A faint heat-soak afterglow remains when the driver
+// releases the pedal instead of popping off on the next frame.
+export function brakeGlowIntensity(brakeTemp, brake, speed) {
+  const temp = Math.max(0, Math.min(1, (finiteOrZero(brakeTemp) - 300) / 700));
+  const load = Math.max(0, Math.min(1, (finiteOrZero(brake) - 0.08) / 0.82));
+  const airflow = Math.max(0, Math.min(1, (Math.abs(finiteOrZero(speed)) - 8) / 42));
+  return temp * (0.26 + load * 0.74) * (0.68 + airflow * 0.32);
+}
+
 export function interpolateRenderSnapshot(previous, current, alpha, out = {}) {
   const t = clampRenderAlpha(alpha);
   for (const field of RENDER_LINEAR_FIELDS) {
@@ -1094,8 +1110,16 @@ export class RaceSession {
     const p = e.phys;
     const ud = e.mesh.userData || {};
     if (ud.brakeGlows) {
-      const on = p.brake > 0.45 && p.v > 22;
-      for (const b of ud.brakeGlows) b.visible = on;
+      const glow = brakeGlowIntensity(p.brakeTemp, p.brake, p.v);
+      const visible = glow > 0.025;
+      for (const b of ud.brakeGlows) b.visible = visible;
+      const mat = ud.brakeGlows[0]?.material;
+      if (mat) {
+        mat.opacity = 0.16 + glow * 0.84;
+        // Discs transition from a deep ember to a restrained orange-yellow at
+        // peak load; bloom can enhance it on higher tiers, but is not required.
+        if (mat.color?.setRGB) mat.color.setRGB(1, 0.12 + glow * 0.42, 0.015);
+      }
     }
     if (ud.rainLight) {
       const harvesting = (p.brake > 0.1 || p.throttle < 0.25) && p.v > 12;

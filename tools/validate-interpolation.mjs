@@ -22,6 +22,7 @@ globalThis.localStorage = { getItem: () => null, setItem: noop, removeItem: noop
 
 const {
   RaceSession,
+  brakeGlowIntensity,
   clampRenderAlpha,
   interpolateRenderSnapshot,
   shortestAngleDelta,
@@ -86,6 +87,19 @@ check(interpolateRenderSnapshot(previous, current, -1, {}).x === previous.x,
   'snapshot interpolation clamps below zero');
 check(interpolateRenderSnapshot(previous, current, 3, {}).x === current.x,
   'snapshot interpolation clamps above one');
+
+console.log('\n[interpolation] thermal brake presentation');
+checkNear(brakeGlowIntensity(250, 1, 80), 0,
+  'cold discs remain visually dark even under hard braking');
+const hotLoaded = brakeGlowIntensity(1000, 1, 70);
+const hotReleased = brakeGlowIntensity(1000, 0, 70);
+check(hotLoaded > 0.95, 'hot discs reach a strong glow under braking', `glow=${hotLoaded}`);
+check(hotReleased > 0.2 && hotReleased < hotLoaded,
+  'heat-soaked discs retain a restrained afterglow off pedal', `glow=${hotReleased}`);
+check(brakeGlowIntensity(2000, 2, 200) <= 1,
+  'brake glow curve stays bounded for out-of-envelope inputs');
+check(Number.isFinite(brakeGlowIntensity(undefined, undefined, undefined)),
+  'brake glow curve remains finite for missing presentation inputs');
 
 function xyz() {
   return { x: 0, y: 0, z: 0, set(x, y, z) { this.x = x; this.y = y; this.z = z; } };
