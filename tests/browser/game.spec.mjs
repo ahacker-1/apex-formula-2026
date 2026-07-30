@@ -579,6 +579,10 @@ test('manual shifts, generated-seed restart, and rendering teardown preserve lif
 });
 
 test('adaptive renderer, smoke exclusion, and WebGL recovery work in a live session', async ({ page }) => {
+  // Two real WEBGL_lose_context recovery cycles rebuild every post-process and
+  // shadow program. Software-rendered CI can legitimately exceed the ordinary
+  // 45s browser-test ceiling while still making steady forward progress.
+  test.setTimeout(90_000);
   const errors = await boot(page);
   await chooseDriverAndTrack(page);
   await page.waitForFunction(() => window.__game?.renderTelemetry.frame.count > 0);
