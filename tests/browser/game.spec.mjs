@@ -560,15 +560,20 @@ test('manual shifts, generated-seed restart, and rendering teardown preserve lif
 
   const afterTeardown = await page.evaluate(() => {
     const game = window.__game;
+    const materialDisposals = { gtao: 0, blend: 0 };
+    game.gtao.gtaoMaterial.addEventListener('dispose', () => { materialDisposals.gtao++; });
+    game.gtao.blendMaterial.addEventListener('dispose', () => { materialDisposals.blend++; });
     game.teardownSession();
     return {
       quality: [game.quality.composer, game.quality.gtao, game.quality.bloom, game.quality.sun],
       game: [game.composer, game.gtao, game.bloom, game.fxaa, game.sun],
+      materialDisposals,
     };
   });
   expect(afterTeardown).toEqual({
     quality: [null, null, null, null],
     game: [null, null, null, null, null],
+    materialDisposals: { gtao: 1, blend: 1 },
   });
   expect(errors).toEqual([]);
 });
@@ -577,49 +582,78 @@ test('adaptive renderer, smoke exclusion, and WebGL recovery work in a live sess
   const errors = await boot(page);
   await chooseDriverAndTrack(page);
   await page.waitForFunction(() => window.__game?.renderTelemetry.frame.count > 0);
-  const state = await page.evaluate(() => {
+  const liveState = await page.evaluate(() => {
     const game = window.__game;
     const p = game.session.player;
     game.effects._emitSmoke(p.phys.pos.x, (p.renderY || 0) + 0.4, p.phys.pos.z);
     game.audio.passBy(-1, 0.8);
-    game.quality.setMode('low');
-    const lowTelemetry = game.renderTelemetry;
-    game.quality.setMode('high');
-    const highTelemetry = game.renderTelemetry;
-    game.quality.setMode('auto');
     return {
-      tier: game.quality.appliedTier,
-      mode: game.quality.mode,
-      ratio: game.renderer.getPixelRatio(),
-      lowTelemetry,
-      highTelemetry,
+      nativeAntialias: game.renderer.getContext().getContextAttributes()?.antialias,
       excluded: game.effects.smoke.every(item => item.sprite.userData.gtaoExcluded === true),
       proceduralPassBy: game.audio.ready && game.audio._lastPass > 0,
     };
   });
-  expect(['low', 'medium', 'high']).toContain(state.tier);
-  expect(state.mode).toBe('auto');
-  expect(state.ratio).toBeLessThanOrEqual(2);
-  expect(state.lowTelemetry.quality.composerPixelRatio).toBe(state.lowTelemetry.quality.pixelRatio);
-  expect(state.highTelemetry.quality.composerPixelRatio).toBe(state.highTelemetry.quality.pixelRatio);
-  expect(state.lowTelemetry.quality.pixelRatio).toBeLessThanOrEqual(state.highTelemetry.quality.pixelRatio);
-  expect(state.highTelemetry.frame.count).toBeGreaterThan(0);
-  expect(state.highTelemetry.frame.smoothedMs).toBeGreaterThan(0);
-  expect(state.highTelemetry.targets.composer).toEqual(state.highTelemetry.targets.drawingBuffer);
-  expect(state.highTelemetry.targets.gtao.width).toBeLessThan(state.highTelemetry.targets.composer.width);
-  expect(state.highTelemetry.targets.gtao.height).toBeLessThan(state.highTelemetry.targets.composer.height);
-  expect(state.highTelemetry.targets.gtao.scale).toBe(0.5);
-  expect(state.highTelemetry.passes.fxaa).toBe(true);
-  expect(state.highTelemetry.passes.fxaaResolution.x).toBeCloseTo(
-    1 / state.highTelemetry.targets.composer.width,
+  expect(liveState.nativeAntialias).toBe(false);
+  expect(liveState.excluded).toBe(true);
+  expect(liveState.proceduralPassBy).toBe(true);
+
+  const nextTelemetry = async (afterCount) => {
+    await page.waitForFunction(
+      count => window.__game.renderTelemetry.frame.count > count,
+      afterCount,
+    );
+    return page.evaluate(() => window.__game.renderTelemetry);
+  };
+  const beforeLow = await page.evaluate(() => {
+    window.__game.quality.setMode('low');
+    return window.__game.renderTelemetry.frame.count;
+  });
+  const lowTelemetry = await nextTelemetry(beforeLow);
+  const beforeHigh = await page.evaluate(() => {
+    window.__game.quality.setMode('high');
+    return window.__game.renderTelemetry.frame.count;
+  });
+  const highTelemetry = await nextTelemetry(beforeHigh);
+  const nextHighTelemetry = await nextTelemetry(highTelemetry.frame.count);
+  const beforeAuto = await page.evaluate(() => {
+    window.__game.quality.setMode('auto');
+    return window.__game.renderTelemetry.frame.count;
+  });
+  const autoTelemetry = await nextTelemetry(beforeAuto);
+
+  expect(lowTelemetry.quality.composerPixelRatio).toBe(lowTelemetry.quality.pixelRatio);
+  expect(highTelemetry.quality.composerPixelRatio).toBe(highTelemetry.quality.pixelRatio);
+  expect(lowTelemetry.quality.pixelRatio).toBeLessThanOrEqual(highTelemetry.quality.pixelRatio);
+  expect(highTelemetry.frame.count).toBeGreaterThan(lowTelemetry.frame.count);
+  expect(highTelemetry.frame.smoothedMs).toBeGreaterThan(0);
+  expect(highTelemetry.renderer.autoReset).toBe(false);
+  expect(lowTelemetry.renderer.calls).toBeGreaterThan(100);
+  expect(lowTelemetry.renderer.triangles).toBeGreaterThan(100_000);
+  expect(highTelemetry.renderer.calls).toBeGreaterThan(200);
+  expect(highTelemetry.renderer.triangles).toBeGreaterThan(200_000);
+  expect(highTelemetry.renderer.calls).toBeGreaterThan(lowTelemetry.renderer.calls * 1.5);
+  expect(highTelemetry.renderer.triangles).toBeGreaterThan(lowTelemetry.renderer.triangles * 1.5);
+  expect(nextHighTelemetry.renderer.calls).toBeGreaterThan(highTelemetry.renderer.calls * 0.75);
+  expect(nextHighTelemetry.renderer.calls).toBeLessThan(highTelemetry.renderer.calls * 1.25);
+  expect(nextHighTelemetry.renderer.triangles).toBeGreaterThan(highTelemetry.renderer.triangles * 0.75);
+  expect(nextHighTelemetry.renderer.triangles).toBeLessThan(highTelemetry.renderer.triangles * 1.25);
+  expect(highTelemetry.targets.composer).toEqual(highTelemetry.targets.drawingBuffer);
+  expect(highTelemetry.targets.gtao.width).toBeLessThan(highTelemetry.targets.composer.width);
+  expect(highTelemetry.targets.gtao.height).toBeLessThan(highTelemetry.targets.composer.height);
+  expect(highTelemetry.targets.gtao.scale).toBe(0.5);
+  expect(highTelemetry.passes.fxaa).toBe(true);
+  expect(highTelemetry.passes.fxaaResolution.x).toBeCloseTo(
+    1 / highTelemetry.targets.composer.width,
     12,
   );
-  expect(state.highTelemetry.passes.fxaaResolution.y).toBeCloseTo(
-    1 / state.highTelemetry.targets.composer.height,
+  expect(highTelemetry.passes.fxaaResolution.y).toBeCloseTo(
+    1 / highTelemetry.targets.composer.height,
     12,
   );
-  expect(state.excluded).toBe(true);
-  expect(state.proceduralPassBy).toBe(true);
+  expect(['low', 'medium', 'high']).toContain(autoTelemetry.quality.tier);
+  expect(autoTelemetry.quality.mode).toBe('auto');
+  expect(autoTelemetry.renderer.calls).toBeGreaterThan(100);
+  expect(autoTelemetry.renderer.triangles).toBeGreaterThan(100_000);
   await expect(page.locator('#app canvas')).toBeVisible();
 
   const canLose = await page.evaluate(() => {
@@ -630,12 +664,51 @@ test('adaptive renderer, smoke exclusion, and WebGL recovery work in a live sess
   });
   if (canLose) {
     await expect(page.locator('#graphics-recovery')).toContainText('GRAPHICS RESET DETECTED');
-    await expect.poll(() => page.evaluate(() => window.__game.renderTelemetry.context.lost)).toBe(true);
+    await expect.poll(() => page.evaluate(() => ({
+      lost: window.__game.renderTelemetry.context.lost,
+      paused: window.__game.paused,
+    }))).toEqual({ lost: true, paused: true });
     await page.evaluate(() => window.__testLoseContext.restoreContext());
     await expect(page.locator('#graphics-recovery')).toHaveCount(0);
+    await expect.poll(() => page.evaluate((autoFrameCount) => {
+      const game = window.__game;
+      const telemetry = game.renderTelemetry;
+      return telemetry.context.restores === 1 &&
+        telemetry.frame.count > autoFrameCount &&
+        telemetry.renderer.calls > 100 && !game.paused;
+    }, autoTelemetry.frame.count)).toBe(true);
     const recovery = await page.evaluate(() => window.__game.renderTelemetry);
     expect(recovery.context).toEqual({ lost: false, losses: 1, restores: 1 });
     expect(recovery.quality.composerPixelRatio).toBe(recovery.quality.pixelRatio);
+    expect(recovery.renderer.autoReset).toBe(false);
+    expect(recovery.renderer.calls).toBeGreaterThan(100);
+    expect(recovery.renderer.triangles).toBeGreaterThan(100_000);
+
+    await page.evaluate(() => {
+      const game = window.__game;
+      game.togglePause(true);
+      window.__pausedLossFrame = game.renderTelemetry.frame.count;
+      window.__testLoseContext.loseContext();
+    });
+    await expect(page.locator('#graphics-recovery')).toContainText('GRAPHICS RESET DETECTED');
+    await page.evaluate(() => window.__testLoseContext.restoreContext());
+    await expect(page.locator('#graphics-recovery')).toHaveCount(0);
+    await expect.poll(() => page.evaluate(() => {
+      const game = window.__game;
+      const telemetry = game.renderTelemetry;
+      return telemetry.context.restores === 2 &&
+        telemetry.frame.count > window.__pausedLossFrame &&
+        telemetry.renderer.calls > 100 && game.paused;
+    })).toBe(true);
+    const pausedRecovery = await page.evaluate(() => ({
+      paused: window.__game.paused,
+      telemetry: window.__game.renderTelemetry,
+    }));
+    expect(pausedRecovery.paused).toBe(true);
+    expect(pausedRecovery.telemetry.context).toEqual({ lost: false, losses: 2, restores: 2 });
+    expect(pausedRecovery.telemetry.renderer.autoReset).toBe(false);
+    expect(pausedRecovery.telemetry.renderer.calls).toBeGreaterThan(100);
+    expect(pausedRecovery.telemetry.renderer.triangles).toBeGreaterThan(100_000);
   }
   expect(errors).toEqual([]);
 });

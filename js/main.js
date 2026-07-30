@@ -109,7 +109,14 @@ const RETRY_SESSION_KEY = 'apexf1_retry_session_v1';
 class Game {
   constructor() {
     this.state = 'boot';
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    // The live scene always resolves through the composer and its final FXAA
+    // pass. Native MSAA would only allocate extra samples for the default
+    // framebuffer, which the composer does not render the scene into.
+    this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
+    // A logical game frame contains many renderer.render() calls across GTAO,
+    // bloom, output and FXAA. Reset once around the whole pipeline so info is a
+    // bounded per-frame aggregate instead of only describing the final pass.
+    this.renderer.info.autoReset = false;
     // Start conservatively; QualityController selects the persisted/automatic
     // tier immediately after UI settings are available.
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1.25));
@@ -162,9 +169,11 @@ class Game {
     this.onboardingActive = false;
     this._celestialObjects = [];
     this._frameTelemetry = { count: 0, lastMs: 0, smoothedMs: 0, maxMs: 0 };
+    this._renderTelemetry = { calls: 0, triangles: 0, points: 0, lines: 0 };
     this._graphicsContextLost = false;
     this._graphicsContextLosses = 0;
     this._graphicsContextRestores = 0;
+    this._wasPausedBeforeContextLoss = null;
 
     addEventListener('resize', () => {
       this.camera.aspect = innerWidth / innerHeight;
@@ -226,16 +235,24 @@ class Game {
       event.preventDefault();
       this._graphicsContextLost = true;
       this._graphicsContextLosses++;
-      this._wasPausedBeforeContextLoss = this.paused;
-      if ((this.state === 'race' || this.state === 'quali') && !this.paused) this.togglePause(true);
+      const driving = this.state === 'race' || this.state === 'quali';
+      this._wasPausedBeforeContextLoss = driving ? this.paused : null;
+      if (driving && !this.paused) this.togglePause(true);
       this.showGraphicsRecovery('GRAPHICS RESET DETECTED', 'Restoring the renderer…');
     });
     this.renderer.domElement.addEventListener('webglcontextrestored', () => {
       this._graphicsContextLost = false;
       this._graphicsContextRestores++;
+      // Three preserves this flag internally, but reassert the aggregate mode
+      // so recovery remains correct if renderer internals change.
+      this.renderer.info.autoReset = false;
       this.quality.apply(true);
       this.showGraphicsRecovery('', '');
       if (this.session) this.hud.message('GRAPHICS RESTORED');
+      const shouldResume = this._wasPausedBeforeContextLoss === false &&
+        (this.state === 'race' || this.state === 'quali') && documentIsActive();
+      this._wasPausedBeforeContextLoss = null;
+      if (shouldResume && this.paused) this.togglePause(false);
     });
 
     this.boot();
@@ -267,10 +284,10 @@ class Game {
     const composerTarget = this.composer?.renderTarget1;
     const gtaoTarget = this.gtao?.gtaoRenderTarget;
     const fxaaResolution = this.fxaa?.uniforms?.resolution?.value;
-    const render = this.renderer.info.render;
     return {
       frame: { ...this._frameTelemetry },
       quality: {
+        mode: this.quality.mode,
         tier: this.quality.appliedTier,
         pixelRatio: this.renderer.getPixelRatio(),
         composerPixelRatio: this.composer?._pixelRatio ?? null,
@@ -294,8 +311,8 @@ class Game {
         fxaaResolution: fxaaResolution ? { x: fxaaResolution.x, y: fxaaResolution.y } : null,
       },
       renderer: {
-        calls: render.calls,
-        triangles: render.triangles,
+        ...this._renderTelemetry,
+        autoReset: this.renderer.info.autoReset,
         textures: this.renderer.info.memory.textures,
         geometries: this.renderer.info.memory.geometries,
       },
@@ -1268,6 +1285,8 @@ class Game {
       // needs this frame's final camera — so this runs after updateCamera
       if (s.updateNametags) s.updateNametags(this.camera, innerWidth, innerHeight);
     }
+    const rendererInfo = this.renderer.info;
+    rendererInfo.reset();
     if (this.composer) this.composer.render();
     else this.renderer.render(this.scene, this.camera);
     const frameMs = rawDt * 1000;
@@ -1276,6 +1295,12 @@ class Game {
     telemetry.lastMs = frameMs;
     telemetry.smoothedMs += (frameMs - telemetry.smoothedMs) * (telemetry.count === 1 ? 1 : 0.05);
     telemetry.maxMs = Math.max(telemetry.maxMs, frameMs);
+    const render = rendererInfo.render;
+    const renderTelemetry = this._renderTelemetry;
+    renderTelemetry.calls = render.calls;
+    renderTelemetry.triangles = render.triangles;
+    renderTelemetry.points = render.points;
+    renderTelemetry.lines = render.lines;
   }
 }
 
