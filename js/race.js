@@ -151,7 +151,7 @@ export function makeContactShadow() {
 export class RaceSession {
   /**
    * opts: { scene, circuit, playerDriverId, laps, difficulty(0..2), assists,
-   *         mode: 'race'|'quali', gridOrder: [driverId]|null, onMessage(text,color),
+   *         mode: 'race'|'quali', gridOrder: [driverId]|null, onMessage(text,color,meta),
    *         random: function|null, seed: any }
    */
   constructor(opts) {
@@ -180,9 +180,15 @@ export class RaceSession {
     this._posTimer = 0;
 
     // ---- race direction ----
-    this.vsc = { active: false, timeLeft: 0 };   // virtual safety car
+    this.vsc = {
+      active: false,
+      timeLeft: 0,
+      cycle: 0,
+      deployEventKey: '',
+      greenEventKey: '',
+    };                                          // virtual safety car
     this.blueFlagFor = null;    // driverId being shown blue flags (player only)
-    this.radioQueue = [];       // {text, tone} — HUD consumes by shifting
+    this.radioQueue = [];       // {text, tone, eventKey?} — HUD consumes by shifting
     this._radioCool = 0;        // contextual engineer radio: max 1 per 12s
     this._vscEnding = false;
     this._vscViol = 0;          // player VSC over-speed time accumulator
@@ -334,10 +340,12 @@ export class RaceSession {
 
   /** Queue an engineer radio line. Contextual chatter is gated to 1 per 12s;
    *  mandated race-control calls pass force=true. */
-  _radio(text, tone = 'info', force = false) {
+  _radio(text, tone = 'info', force = false, meta = null) {
     if (!force && this._radioCool > 0) return false;
     this._radioCool = 12;
-    this.radioQueue.push({ text, tone });
+    const item = { text, tone };
+    if (meta && typeof meta.eventKey === 'string' && meta.eventKey) item.eventKey = meta.eventKey;
+    this.radioQueue.push(item);
     // the HUD drains this by shifting; cap it so a headless session can't grow
     while (this.radioQueue.length > 16) this.radioQueue.shift();
     return true;
@@ -505,6 +513,11 @@ export class RaceSession {
 
   /** Deploy the VSC for `secs`: the whole field is neutralised, no overtaking. */
   _startVSC(secs) {
+    if (!this.vsc.active) {
+      this.vsc.cycle++;
+      this.vsc.deployEventKey = `vsc:${this.vsc.cycle}:deploy`;
+      this.vsc.greenEventKey = `vsc:${this.vsc.cycle}:green`;
+    }
     this.vsc.active = true;
     this.vsc.timeLeft = Math.max(this.vsc.timeLeft, secs);
     this._vscEnding = false;
@@ -513,8 +526,9 @@ export class RaceSession {
     this._vscWarned = false;
     this._vscPenalised = false;
     for (const e of this.entries) if (e.ai) { e.ai.vscFactor = 0.6; e.ai.noOvertake = true; }
-    this.onMessage('VIRTUAL SAFETY CAR', 'yellow');
-    this._radio('Virtual safety car deployed — hold the delta.', 'warning', true);
+    const meta = { eventKey: this.vsc.deployEventKey };
+    this.onMessage('VIRTUAL SAFETY CAR', 'yellow', meta);
+    this._radio('Virtual safety car deployed — hold the delta.', 'warning', true, meta);
   }
 
   _updateVSC(dt) {
@@ -531,8 +545,9 @@ export class RaceSession {
       v.timeLeft = 0;
       this._vscEnding = false;
       for (const e of this.entries) if (e.ai) { e.ai.vscFactor = 1; e.ai.noOvertake = false; }
-      this.onMessage('GREEN FLAG — RACE RESUMES', 'green');
-      this._radio('Green flag — go, go, go.', 'info', true);
+      const meta = { eventKey: v.greenEventKey };
+      this.onMessage('GREEN FLAG — RACE RESUMES', 'green', meta);
+      this._radio('Green flag — go, go, go.', 'info', true, meta);
       return;
     }
     // the player is expected to slow to the delta; sustained over-speed is a penalty
@@ -753,8 +768,9 @@ export class RaceSession {
       this._completeSectors(e, lt);
       if (!e.bestLap || lt < e.bestLap) e.bestLap = lt;
       if (this.mode === 'race' && (!this.fastestLap || lt < this.fastestLap.time)) {
-        this.fastestLap = { driverId: e.driver.id, time: lt, name: e.driver.lastName };
-        this.onMessage(`FASTEST LAP — ${e.driver.code} ${fmtTime(lt)}`, 'purple');
+        const eventKey = `fastest:${e.driver.id}:${lt}`;
+        this.fastestLap = { driverId: e.driver.id, time: lt, name: e.driver.lastName, eventKey };
+        this.onMessage(`FASTEST LAP — ${e.driver.code} ${fmtTime(lt)}`, 'purple', { eventKey });
       }
     }
     if (this.mode !== 'race') return;

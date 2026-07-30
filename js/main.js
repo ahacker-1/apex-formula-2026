@@ -574,7 +574,7 @@ class Game {
         gridOrder: cfg.gridOrder || null,
         random: simulationRandom,
         seed: sessionSeed,
-        onMessage: (t, c) => { this.hud.message(t, c); },
+        onMessage: (t, c, meta) => { this.hud.message(t, c, meta); },
       });
       this.session.setNametags(this.ui.settings.nametags);
       this.hud.bindSession(this.session, this.circuit);

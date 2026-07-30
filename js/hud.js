@@ -190,7 +190,6 @@ export class HUD {
     this._radio = null;
     this._radioTextEl = null;
     this._pulse = 0;
-    this._vscCycle = 0;
     this._announcedEventKeys = new Set();
     this._announceSeq = 0;
   }
@@ -228,32 +227,10 @@ export class HUD {
   }
 
   $(id) { return this.root.querySelector('#' + id); }
-  _semanticEventKey(text) {
-    const value = String(text || '').trim().toUpperCase();
-    if (!value) return '';
-
-    // Race control fans these events out through message, banner and radio
-    // surfaces. Tie every wording variant to the underlying session event so
-    // screen readers hear the event once, even when the radio card is delayed.
-    if (value.includes('VIRTUAL SAFETY CAR') &&
-        (value === 'VIRTUAL SAFETY CAR' || value.includes('DEPLOY'))) {
-      const pendingCycle = this.session?.vsc?.active && !this._vscWasActive ? 1 : 0;
-      return `vsc:${Math.max(1, this._vscCycle + pendingCycle)}:deploy`;
-    }
-    if (value.includes('GREEN FLAG') || value.includes('RACE RESUMES')) {
-      return `vsc:${Math.max(1, this._vscCycle)}:green`;
-    }
-    if (value.includes('FASTEST LAP')) {
-      const fastest = this._fastestKey(this.session);
-      return fastest ? `fastest:${fastest}` : '';
-    }
-    return '';
-  }
-
   _announce(text, priority = 'polite', eventKey = '') {
     const value = String(text || '').trim();
     if (!value) return;
-    const stableKey = eventKey || this._semanticEventKey(value);
+    const stableKey = String(eventKey || '').trim();
     if (stableKey) {
       if (this._announcedEventKeys.has(stableKey)) return;
       this._announcedEventKeys.add(stableKey);
@@ -734,8 +711,7 @@ export class HUD {
     const banner = this.$('vscbanner');
     if (active) {
       if (!this._vscWasActive) {
-        this._vscCycle++;
-        this._announce('Virtual safety car deployed', 'assertive', `vsc:${this._vscCycle}:deploy`);
+        this._announce('Virtual safety car deployed', 'assertive', vsc.deployEventKey);
       }
       this._greenFlagT = 0;
       banner.classList.add('on');
@@ -749,7 +725,7 @@ export class HUD {
       banner.classList.add('on', 'green');
       this.$('vsc-text').textContent = 'GREEN FLAG';
       this.$('vsc-count').textContent = '';
-      this._announce('Green flag. Racing resumed', 'assertive', `vsc:${Math.max(1, this._vscCycle)}:green`);
+      this._announce('Green flag. Racing resumed', 'assertive', vsc && vsc.greenEventKey);
     } else if (this._greenFlagT > 0) {
       this._greenFlagT -= dt;
       if (this._greenFlagT <= 0) {
@@ -788,7 +764,7 @@ export class HUD {
         this._announce(
           `Fastest lap: ${name}${num(fl.time) != null ? ', ' + fmtTime(fl.time) : ''}`,
           'polite',
-          `fastest:${key}`,
+          fl.eventKey,
         );
         this._flBannerT = FL_BANNER_MS / 1000;
       }
@@ -826,7 +802,11 @@ export class HUD {
       card.appendChild(head);
       card.appendChild(body);
       card.className = 'on ' + tone;
-      this._announce('Race engineer: ' + text, tone === 'warning' ? 'assertive' : 'polite');
+      this._announce(
+        'Race engineer: ' + text,
+        tone === 'warning' ? 'assertive' : 'polite',
+        item && item.eventKey,
+      );
       this._radioTextEl = body;
       // type-on: whole message inside ~0.9s, floor of 26 chars/sec
       this._radio = { text, life: RADIO_LIFE, typed: 0, cps: Math.max(26, text.length / 0.9), shown: -1 };
@@ -904,14 +884,18 @@ export class HUD {
     }
   }
 
-  message(text, color) {
+  message(text, color, meta = null) {
     if (!text) return;
     const box = this.$('race-msg');
     const div = document.createElement('div');
     div.className = 'msg-pill' + (color === 'green' ? ' green' : color === 'yellow' || color === 'purple' ? ' yellow' : '');
     if (color === 'purple') div.style.borderLeftColor = 'var(--purple)';
     div.textContent = text;
-    this._announce(text, color === 'green' || color === 'purple' ? 'polite' : 'assertive');
+    this._announce(
+      text,
+      color === 'green' || color === 'purple' ? 'polite' : 'assertive',
+      meta && meta.eventKey,
+    );
     box.appendChild(div);
     while (box.children.length > 3) box.firstChild.remove();
     setTimeout(() => { div.style.opacity = '0'; div.style.transition = 'opacity 0.4s'; }, 3200);
