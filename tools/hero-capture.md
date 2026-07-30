@@ -1,11 +1,11 @@
 # Hero-capture rig (`tools/hero-capture.html`)
 
 Deterministic Monza hero-shot capture with self-verified framing contracts.
-Built on branch `r4/capture` because the round-3 hero certification kept failing
-on FRAMING, not content: hero-01 (grid) missed the pit building / grandstand /
-gantry, and hero-02 (action) framed neither the raised kerbs nor the gravel
-trap it was meant to showcase. This rig makes the framing a measured,
-re-runnable pass/fail instead of a hope.
+It originated during the round-4 framing review because the prior hero images
+kept failing on FRAMING, not content: hero-01 (grid) missed the pit building /
+grandstand / gantry, and hero-02 (action) framed neither the raised kerbs nor
+the gravel trap it was meant to showcase. This rig makes the framing a
+measured, re-runnable pass/fail instead of a hope.
 
 ## What it produces
 
@@ -22,7 +22,10 @@ Every shot also asserts `frame mean luminance > 25` so a black/broken frame can
 never "pass" vacuously, then re-renders its fixed scene and records
 `repeatStability`. All frames are 2560x1440 at DPR 1, rendered through the
 game's own pipeline (buildCircuit scenery, buildCarMesh cars with the sculpted
-GLB, main.js's exact HDRI/lighting/ACES/GTAO/bloom composer).
+GLB, and main.js's HDRI/lighting/ACES pipeline). The post-processing order and
+sizes mirror the adaptive renderer: RenderPass -> half-resolution
+ScaledGTAOPass (`blendIntensity=0.72`) -> UnrealBloomPass -> OutputPass ->
+FXAAPass, with composer DPR sizing and production day/night bloom settings.
 
 ## How to run
 
@@ -54,30 +57,43 @@ The completed browser object also exposes the same machine-readable summary as
 ## Venue evidence bundle
 
 The Playwright venue suite captures the shipping game at a fixed 1600x900 DPR 1
-desktop viewport, persisted high graphics, known seed, chase camera, and paused
-first live session frame. It preserves the day/dusk/night HDR, renderer-budget,
-console, and screenshot-health checks while emitting reviewable evidence:
+desktop viewport, persisted high graphics, known seed, canonical grid pose, and
+explicit 72-degree chase camera. Each fresh page may advance before the test
+sees it, so the harness resets every car to its circuit grid slot, collapses
+render interpolation, rebuilds the HUD, copies the camera position/look target,
+and renders that fixed state. It preserves the day/dusk/night HDR,
+renderer-budget, console, and screenshot-health checks while emitting
+reviewable evidence:
 
 ```sh
 cd <repo root>
-npm run build
 APEX_VISUAL_EVIDENCE_DIR=test-results/visual-evidence \
-  npx playwright test tests/browser/venues.spec.mjs --project=desktop-chromium
+APEX_VISUAL_EVIDENCE_PORT=38612 \
+  npx playwright test --config=tests/browser/visual-evidence.config.mjs
 ```
 
-`test-results/visual-evidence/` is already ignored and outside `dist/`, so it
-cannot enter a release artifact. It contains one primary PNG, one immediate
-repeat PNG, and one `<venue>-<environment>.metrics.json` for each of Melbourne
-day, Bahrain dusk, and Singapore night, plus `manifest.json`. The manifest
-(`apex-formula.visual-evidence/v1`) records the fixed capture contract, HDR
-loaded, frame/camera data, renderer counters, image-health metrics, repeat
-metrics, and SHA-256 digests of both PNGs.
+The port is optional; without it the config derives a per-process high port.
+The evidence config always builds the current checkout before serving, uses
+`reuseExistingServer: false`, disables retries, and records the served origin.
+It therefore cannot silently attach to a stale server from another worktree.
 
-Repeat comparisons are 160x90 image samples. A capture passes when mean
-absolute RGB difference is at most `1.5` and fewer than `2%` of samples differ
-by more than two RGB levels. Those are intentionally hardware-tolerant checks,
-not baseline-image equality; the exact PNG digest may differ across GPU/driver
-stacks while the composition and renderer ceilings remain enforced.
+`test-results/visual-evidence/` is already ignored and outside `dist/`, so it
+cannot enter a release artifact. A unique `runs/<run-id>/` directory contains
+three primary/repeat PNG pairs and one aggregate metrics JSON for each of
+Melbourne day, Bahrain dusk, and Singapore night. The atomically finalized root
+`manifest.json` (`apex-formula.visual-evidence/v1`) records the fixed contract,
+served origin, expected venues, completeness/pass state, HDR, camera and grid
+fingerprints, renderer/composer/GTAO/FXAA metrics, image-health metrics,
+cross-run comparisons, and SHA-256 digests. Missing, duplicate, unexpected, or
+failed records make the manifest fail closed.
+
+Every venue opens three fresh pages/sessions. Camera and canonical-grid metrics
+must match exactly. Screenshot comparisons use 160x90 samples: mean absolute
+RGB difference must be at most `1.5`, and fewer than `2%` of samples may exceed
+the noise threshold. Immediate same-page repeats use a two-level threshold;
+fresh WebGL contexts use an eight-level threshold to absorb renderer/driver
+rounding without accepting composition movement. PNG hash equality is recorded
+but not required across GPU/driver stacks.
 
 ## How the contracts are measured (no blind pixels)
 
@@ -97,13 +113,14 @@ stacks while the composition and renderer ceilings remain enforced.
 
 The circuit build is seeded per track id, the cars and cameras are fixed poses
 (no gameplay loop, no time-dependent state, no `Math.random` in the rig), so
-reruns produce the same framing. Both the hero rig and venue suite make an
-immediate repeat capture and enforce mean absolute RGB difference <= `1.5` and
-changed-pixel ratio <= `2%` (sampled; a changed pixel differs by more than two
-RGB levels). GPU rasterisation differences can move individual pixel counts by
-a fraction of a percent; every framing threshold carries a wide margin over the
-measured values (see `metrics` in the JSON — e.g. kerb 16.4% vs the 3% floor,
-gravel 19.5% vs 3%, grandstand 30.1% vs 25%).
+reruns produce the same framing. The hero rig enforces its immediate repeat at
+mean absolute RGB difference <= `1.5` and changed-pixel ratio <= `2%` using a
+two-level pixel threshold. Venue evidence additionally proves the fixed camera
+and grid fingerprints across three fresh sessions and applies the documented
+eight-level cross-context threshold. GPU rasterisation differences can move
+individual pixel counts by a fraction of a percent; every framing threshold
+carries a wide margin over the measured values (see `metrics` in the JSON —
+e.g. kerb 16.4% vs the 3% floor, gravel 19.5% vs 3%, grandstand 30.1% vs 25%).
 
 ## Tuning cameras
 

@@ -19,7 +19,7 @@
 <div id="log"></div>
 <script type="module">
 // =============================================================================
-// DETERMINISTIC HERO-CAPTURE RIG (r4/capture).
+// DETERMINISTIC HERO-CAPTURE RIG.
 //
 // Boots the real game modules (buildCircuit + buildCarMesh + main.js's exact
 // lighting/composer), arranges Monza with a 22-car grid for shot 1 and a single
@@ -40,8 +40,9 @@ import * as THREE from 'three';
 import { EffectComposer } from '../lib/postprocessing/EffectComposer.js';
 import { RenderPass } from '../lib/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from '../lib/postprocessing/UnrealBloomPass.js';
-import { GTAOPass } from '../lib/postprocessing/GTAOPass.js';
+import { ScaledGTAOPass } from '../lib/postprocessing/ScaledGTAOPass.js';
 import { OutputPass } from '../lib/postprocessing/OutputPass.js';
+import { FXAAPass } from '../lib/postprocessing/FXAAPass.js';
 import { RGBELoader } from '../lib/loaders/RGBELoader.js';
 import { buildCircuit } from '../js/trackBuilder.js';
 import * as TEX from '../js/textures.js';
@@ -59,7 +60,7 @@ const RIG_SCHEMA = 'apex-formula.hero-capture/v1';
 const CAPTURE_CONTRACT = Object.freeze({
   resolution: `${W}x${H}`,
   devicePixelRatio: 1,
-  renderer: 'WebGLRenderer + ACES + GTAO + bloom + OutputPass',
+  renderer: 'WebGLRenderer + ACES + half-resolution ScaledGTAO + bloom + OutputPass + FXAA',
   scene: 'seeded Monza circuit, fixed cars, fixed cameras, no gameplay loop',
   repeatTolerance: { sampleStride: 211, meanAbsoluteDifferenceMax: 1.5, changedPixelRatioMax: 0.02 },
 });
@@ -124,9 +125,9 @@ async function preload() {
 // --------------------------------------- main.js setupEnvironment, replicated ---
 // Identical to tools/foliage-harness.html's replica of js/main.js: procedural
 // gradient dome as the visible day backdrop, HDRI as IBL environment, hemi+sun
-// pair, ACES + exposure 1.05, composer = Render -> GTAO(0.72) -> Bloom -> Output
-// with bloom ENABLED at main.js's day strength. This is the pipeline the game
-// ships, so the hero frames are the game's own look.
+// pair, ACES + exposure 1.05, composer = Render -> half-resolution
+// ScaledGTAO(0.72) -> Bloom -> Output -> FXAA, with composer DPR sizing. This
+// mirrors main.js + QualityController at fixed DPR 1/high quality.
 function buildScene(trackId) {
   const scene = new THREE.Scene();
   const circuit = buildCircuit(trackId, TRACKS[trackId], scene);
@@ -190,16 +191,19 @@ function buildScene(trackId) {
   const camera = new THREE.PerspectiveCamera(45, W / H, 0.3, 6500);
   const composer = new EffectComposer(renderer);
   composer.addPass(new RenderPass(scene, camera));
-  const gtao = new GTAOPass(scene, camera, W, H);
-  gtao.output = GTAOPass.OUTPUT.Default;
+  const gtao = new ScaledGTAOPass(scene, camera, W, H, 0.5);
+  gtao.output = ScaledGTAOPass.OUTPUT.Default;
   gtao.blendIntensity = 0.72;                              // main.js
   composer.addPass(gtao);
   const bloom = new UnrealBloomPass(new THREE.Vector2(W, H),
-    th.night ? 0.5 : 0.18, 0.55, th.night ? 0.6 : 0.86);   // main.js
+    th.night ? 0.34 : 0.18, 0.55, th.night ? 0.72 : 0.86); // main.js
   composer.addPass(bloom);
   composer.addPass(new OutputPass());
+  const fxaa = new FXAAPass();
+  composer.addPass(fxaa);
+  composer.setPixelRatio(renderer.getPixelRatio());
   composer.setSize(W, H);
-  return { scene, circuit, camera, composer, sky, sun, theme: th, gtao, bloom };
+  return { scene, circuit, camera, composer, sky, sun, theme: th, gtao, bloom, fxaa };
 }
 
 // main.js keeps the shadow frustum centred on the player; the rig keeps it
@@ -933,14 +937,26 @@ async function main() {
   // ---- machine-readable contract summary ----------------------------------
   const summary = {
     schema: RIG_SCHEMA,
-    rig: 'tools/hero-capture.html', branch: 'r4/capture',
+    rig: 'tools/hero-capture.html',
     captureContract: CAPTURE_CONTRACT,
     resolution: `${W}x${H}`,
     renderer: {
       pixelRatio: renderer.getPixelRatio(),
+      composerPixelRatio: S.composer._pixelRatio,
       toneMapping: 'ACESFilmicToneMapping',
       toneMappingExposure: renderer.toneMappingExposure,
       shadows: 'PCFSoftShadowMap',
+      passOrder: ['RenderPass', 'ScaledGTAOPass', 'UnrealBloomPass', 'OutputPass', 'FXAAPass'],
+      composerTarget: { width: S.composer.renderTarget1.width, height: S.composer.renderTarget1.height },
+      gtaoTarget: {
+        width: S.gtao.gtaoRenderTarget.width,
+        height: S.gtao.gtaoRenderTarget.height,
+        scale: S.gtao.resolutionScale,
+      },
+      fxaaResolution: {
+        x: S.fxaa.uniforms.resolution.value.x,
+        y: S.fxaa.uniforms.resolution.value.y,
+      },
     },
     track: 'monza',
     pass: results.pass,
