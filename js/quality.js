@@ -7,6 +7,7 @@ export const QUALITY_PRESETS = {
   low: {
     pixelRatio: 0.9,
     gtao: false,
+    gtaoScale: 0.5,
     bloom: false,
     shadows: false,
     shadowMap: 512,
@@ -14,6 +15,7 @@ export const QUALITY_PRESETS = {
   medium: {
     pixelRatio: 1.25,
     gtao: true,
+    gtaoScale: 0.5,
     bloom: true,
     shadows: true,
     shadowMap: 1024,
@@ -21,6 +23,7 @@ export const QUALITY_PRESETS = {
   high: {
     pixelRatio: 2,
     gtao: true,
+    gtaoScale: 0.5,
     bloom: true,
     shadows: true,
     shadowMap: 2048,
@@ -57,6 +60,10 @@ export class QualityController {
     this._slowWindows = 0;
     this._fastWindows = 0;
     this._cooldown = 0;
+    this._composerSynced = null;
+    this._appliedPixelRatio = null;
+    this._appliedWidth = null;
+    this._appliedHeight = null;
   }
 
   get tier() { return this.mode === 'auto' ? this.autoTier : this.mode; }
@@ -66,6 +73,7 @@ export class QualityController {
     this.gtao = gtao;
     this.bloom = bloom;
     this.sun = sun;
+    this._composerSynced = null;
     this.apply(true);
   }
 
@@ -122,10 +130,19 @@ export class QualityController {
     if (!changed && !force) return;
 
     const dpr = typeof devicePixelRatio === 'number' ? devicePixelRatio : 1;
-    this.renderer.setPixelRatio(Math.min(dpr, p.pixelRatio));
+    const pixelRatio = Math.min(dpr, p.pixelRatio);
+    const pixelRatioChanged = pixelRatio !== this._appliedPixelRatio;
+    const sizeChanged = this.width !== this._appliedWidth || this.height !== this._appliedHeight;
+    this.renderer.setPixelRatio(pixelRatio);
     this.renderer.shadowMap.enabled = p.shadows;
     this.renderer.setSize(this.width, this.height);
-    if (this.composer) this.composer.setSize(this.width, this.height);
+    if (this.gtao?.setResolutionScale) this.gtao.setResolutionScale(p.gtaoScale);
+    if (this.composer) {
+      const composerChanged = this.composer !== this._composerSynced;
+      if (composerChanged || pixelRatioChanged) this.composer.setPixelRatio(pixelRatio);
+      else if (sizeChanged || force) this.composer.setSize(this.width, this.height);
+      this._composerSynced = this.composer;
+    }
     if (this.gtao) this.gtao.enabled = p.gtao;
     if (this.bloom) this.bloom.enabled = p.bloom;
     if (this.sun) {
@@ -139,6 +156,9 @@ export class QualityController {
     }
 
     this.appliedTier = tier;
+    this._appliedPixelRatio = pixelRatio;
+    this._appliedWidth = this.width;
+    this._appliedHeight = this.height;
     if (changed && typeof this.onTierChange === 'function') {
       this.onTierChange(tier, this.mode === 'auto');
     }

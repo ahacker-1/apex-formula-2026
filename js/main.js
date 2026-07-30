@@ -3,8 +3,9 @@ import * as THREE from 'three';
 import { EffectComposer } from '../lib/postprocessing/EffectComposer.js';
 import { RenderPass } from '../lib/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from '../lib/postprocessing/UnrealBloomPass.js';
-import { GTAOPass } from '../lib/postprocessing/GTAOPass.js';
+import { ScaledGTAOPass } from '../lib/postprocessing/ScaledGTAOPass.js';
 import { OutputPass } from '../lib/postprocessing/OutputPass.js';
+import { FXAAPass } from '../lib/postprocessing/FXAAPass.js';
 import { RGBELoader } from '../lib/loaders/RGBELoader.js';
 
 // Photographic HDRI skies (CC0, PolyHaven). Load only the selected session's
@@ -160,6 +161,10 @@ class Game {
     this._sessionBuildTimer = null;
     this.onboardingActive = false;
     this._celestialObjects = [];
+    this._frameTelemetry = { count: 0, lastMs: 0, smoothedMs: 0, maxMs: 0 };
+    this._graphicsContextLost = false;
+    this._graphicsContextLosses = 0;
+    this._graphicsContextRestores = 0;
 
     addEventListener('resize', () => {
       this.camera.aspect = innerWidth / innerHeight;
@@ -219,13 +224,16 @@ class Game {
     });
     this.renderer.domElement.addEventListener('webglcontextlost', (event) => {
       event.preventDefault();
+      this._graphicsContextLost = true;
+      this._graphicsContextLosses++;
       this._wasPausedBeforeContextLoss = this.paused;
       if ((this.state === 'race' || this.state === 'quali') && !this.paused) this.togglePause(true);
       this.showGraphicsRecovery('GRAPHICS RESET DETECTED', 'Restoring the renderer…');
     });
     this.renderer.domElement.addEventListener('webglcontextrestored', () => {
+      this._graphicsContextLost = false;
+      this._graphicsContextRestores++;
       this.quality.apply(true);
-      if (this.composer) this.composer.setSize(innerWidth, innerHeight);
       this.showGraphicsRecovery('', '');
       if (this.session) this.hud.message('GRAPHICS RESTORED');
     });
@@ -253,6 +261,50 @@ class Game {
       document.body.appendChild(el);
     }
     el.innerHTML = `<strong style="font-size:clamp(18px,3vw,34px)">${title}</strong><span style="margin-top:12px;color:#aeb4bd;font-size:12px">${detail}</span>`;
+  }
+
+  get renderTelemetry() {
+    const composerTarget = this.composer?.renderTarget1;
+    const gtaoTarget = this.gtao?.gtaoRenderTarget;
+    const fxaaResolution = this.fxaa?.uniforms?.resolution?.value;
+    const render = this.renderer.info.render;
+    return {
+      frame: { ...this._frameTelemetry },
+      quality: {
+        tier: this.quality.appliedTier,
+        pixelRatio: this.renderer.getPixelRatio(),
+        composerPixelRatio: this.composer?._pixelRatio ?? null,
+      },
+      targets: {
+        drawingBuffer: {
+          width: this.renderer.domElement.width,
+          height: this.renderer.domElement.height,
+        },
+        composer: composerTarget ? { width: composerTarget.width, height: composerTarget.height } : null,
+        gtao: gtaoTarget ? {
+          width: gtaoTarget.width,
+          height: gtaoTarget.height,
+          scale: this.gtao.resolutionScale,
+        } : null,
+      },
+      passes: {
+        gtao: !!this.gtao?.enabled,
+        bloom: !!this.bloom?.enabled,
+        fxaa: !!this.fxaa?.enabled,
+        fxaaResolution: fxaaResolution ? { x: fxaaResolution.x, y: fxaaResolution.y } : null,
+      },
+      renderer: {
+        calls: render.calls,
+        triangles: render.triangles,
+        textures: this.renderer.info.memory.textures,
+        geometries: this.renderer.info.memory.geometries,
+      },
+      context: {
+        lost: this._graphicsContextLost,
+        losses: this._graphicsContextLosses,
+        restores: this._graphicsContextRestores,
+      },
+    };
   }
 
   // ---------- boot ----------
@@ -625,7 +677,7 @@ class Game {
     if (this.composer) {
       for (const pass of this.composer.passes) pass.dispose && pass.dispose();
       this.composer.dispose();
-      this.composer = null; this.bloom = null; this.gtao = null;
+      this.composer = null; this.bloom = null; this.gtao = null; this.fxaa = null;
     }
     this.hemi = null;
     this.scene = null;
@@ -804,8 +856,8 @@ class Game {
     // post-processing: AO grounds everything, bloom lifts lights, then output
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    this.gtao = new GTAOPass(this.scene, this.camera, innerWidth, innerHeight);
-    this.gtao.output = GTAOPass.OUTPUT.Default;
+    this.gtao = new ScaledGTAOPass(this.scene, this.camera, innerWidth, innerHeight);
+    this.gtao.output = ScaledGTAOPass.OUTPUT.Default;
     this.gtao.blendIntensity = 0.72; // 0.9 visibly darkened additive effects (sparks) in AO-heavy corners
     this.gtao.enabled = this.ui.settings.gtao !== false;
     this.composer.addPass(this.gtao);
@@ -820,6 +872,8 @@ class Game {
     );
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
+    this.fxaa = new FXAAPass();
+    this.composer.addPass(this.fxaa);
     this.quality.bind({ composer: this.composer, gtao: this.gtao, bloom: this.bloom, sun: this.sun });
   }
 
@@ -1216,6 +1270,12 @@ class Game {
     }
     if (this.composer) this.composer.render();
     else this.renderer.render(this.scene, this.camera);
+    const frameMs = rawDt * 1000;
+    const telemetry = this._frameTelemetry;
+    telemetry.count++;
+    telemetry.lastMs = frameMs;
+    telemetry.smoothedMs += (frameMs - telemetry.smoothedMs) * (telemetry.count === 1 ? 1 : 0.05);
+    telemetry.maxMs = Math.max(telemetry.maxMs, frameMs);
   }
 }
 

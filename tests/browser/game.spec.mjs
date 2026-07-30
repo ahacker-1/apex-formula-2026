@@ -563,12 +563,12 @@ test('manual shifts, generated-seed restart, and rendering teardown preserve lif
     game.teardownSession();
     return {
       quality: [game.quality.composer, game.quality.gtao, game.quality.bloom, game.quality.sun],
-      game: [game.composer, game.gtao, game.bloom, game.sun],
+      game: [game.composer, game.gtao, game.bloom, game.fxaa, game.sun],
     };
   });
   expect(afterTeardown).toEqual({
     quality: [null, null, null, null],
-    game: [null, null, null, null],
+    game: [null, null, null, null, null],
   });
   expect(errors).toEqual([]);
 });
@@ -576,15 +576,23 @@ test('manual shifts, generated-seed restart, and rendering teardown preserve lif
 test('adaptive renderer, smoke exclusion, and WebGL recovery work in a live session', async ({ page }) => {
   const errors = await boot(page);
   await chooseDriverAndTrack(page);
+  await page.waitForFunction(() => window.__game?.renderTelemetry.frame.count > 0);
   const state = await page.evaluate(() => {
     const game = window.__game;
     const p = game.session.player;
     game.effects._emitSmoke(p.phys.pos.x, (p.renderY || 0) + 0.4, p.phys.pos.z);
     game.audio.passBy(-1, 0.8);
+    game.quality.setMode('low');
+    const lowTelemetry = game.renderTelemetry;
+    game.quality.setMode('high');
+    const highTelemetry = game.renderTelemetry;
+    game.quality.setMode('auto');
     return {
       tier: game.quality.appliedTier,
       mode: game.quality.mode,
       ratio: game.renderer.getPixelRatio(),
+      lowTelemetry,
+      highTelemetry,
       excluded: game.effects.smoke.every(item => item.sprite.userData.gtaoExcluded === true),
       proceduralPassBy: game.audio.ready && game.audio._lastPass > 0,
     };
@@ -592,6 +600,24 @@ test('adaptive renderer, smoke exclusion, and WebGL recovery work in a live sess
   expect(['low', 'medium', 'high']).toContain(state.tier);
   expect(state.mode).toBe('auto');
   expect(state.ratio).toBeLessThanOrEqual(2);
+  expect(state.lowTelemetry.quality.composerPixelRatio).toBe(state.lowTelemetry.quality.pixelRatio);
+  expect(state.highTelemetry.quality.composerPixelRatio).toBe(state.highTelemetry.quality.pixelRatio);
+  expect(state.lowTelemetry.quality.pixelRatio).toBeLessThanOrEqual(state.highTelemetry.quality.pixelRatio);
+  expect(state.highTelemetry.frame.count).toBeGreaterThan(0);
+  expect(state.highTelemetry.frame.smoothedMs).toBeGreaterThan(0);
+  expect(state.highTelemetry.targets.composer).toEqual(state.highTelemetry.targets.drawingBuffer);
+  expect(state.highTelemetry.targets.gtao.width).toBeLessThan(state.highTelemetry.targets.composer.width);
+  expect(state.highTelemetry.targets.gtao.height).toBeLessThan(state.highTelemetry.targets.composer.height);
+  expect(state.highTelemetry.targets.gtao.scale).toBe(0.5);
+  expect(state.highTelemetry.passes.fxaa).toBe(true);
+  expect(state.highTelemetry.passes.fxaaResolution.x).toBeCloseTo(
+    1 / state.highTelemetry.targets.composer.width,
+    12,
+  );
+  expect(state.highTelemetry.passes.fxaaResolution.y).toBeCloseTo(
+    1 / state.highTelemetry.targets.composer.height,
+    12,
+  );
   expect(state.excluded).toBe(true);
   expect(state.proceduralPassBy).toBe(true);
   await expect(page.locator('#app canvas')).toBeVisible();
@@ -604,8 +630,12 @@ test('adaptive renderer, smoke exclusion, and WebGL recovery work in a live sess
   });
   if (canLose) {
     await expect(page.locator('#graphics-recovery')).toContainText('GRAPHICS RESET DETECTED');
+    await expect.poll(() => page.evaluate(() => window.__game.renderTelemetry.context.lost)).toBe(true);
     await page.evaluate(() => window.__testLoseContext.restoreContext());
     await expect(page.locator('#graphics-recovery')).toHaveCount(0);
+    const recovery = await page.evaluate(() => window.__game.renderTelemetry);
+    expect(recovery.context).toEqual({ lost: false, losses: 1, restores: 1 });
+    expect(recovery.quality.composerPixelRatio).toBe(recovery.quality.pixelRatio);
   }
   expect(errors).toEqual([]);
 });
