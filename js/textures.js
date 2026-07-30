@@ -861,8 +861,14 @@ export function skyDome(top, bottom, opts = {}) {
   const w = 1024, h = 512;
   const c = cnv(w, h), g = c.getContext('2d');
   const grad = g.createLinearGradient(0, 0, 0, h);
+  // A full sphere puts the visible horizon at v=0.5. Day/dusk callers bring the
+  // authored horizon colour to that equator; night keeps the legacy full-height
+  // ramp because its procedural dome is only a transient HDR fallback.
+  const horizonStop = Math.max(0.5, Math.min(1, opts.horizonStop ?? 1));
   grad.addColorStop(0, top);
-  grad.addColorStop(1, bottom);
+  if (horizonStop < 1) grad.addColorStop(0.3, top);
+  grad.addColorStop(horizonStop, bottom);
+  if (horizonStop < 1) grad.addColorStop(1, bottom);
   g.fillStyle = grad; g.fillRect(0, 0, w, h);
   if (!opts.clouds) return c;
 
@@ -926,14 +932,14 @@ export function skyDome(top, bottom, opts = {}) {
       const pry = ry * (0.55 + 0.75 * Math.max(0.1, t));
       const prx = pry * (2.2 + rnd() * 2.4);
       const py = clampBand(cy + (rnd() - 0.5) * ry * 1.1 - pry * 0.2, pry);
-      puff(px, py, prx, pry, 0.10 + 0.10 * Math.max(0.1, t));
+      puff(px, py, prx, pry, 0.16 + 0.14 * Math.max(0.1, t));
     }
   }
   // a few long thin wisps between the banks
   for (let i = 0; i < 5; i++) {
     const ry = h * (0.006 + rnd() * 0.007);
     const y = clampBand(h * (0.10 + rnd() * 0.37), ry);
-    puff(rnd() * w, y, w * (0.05 + rnd() * 0.05), ry, 0.07 + rnd() * 0.05);
+    puff(rnd() * w, y, w * (0.05 + rnd() * 0.05), ry, 0.10 + rnd() * 0.07);
   }
   return c;
 }

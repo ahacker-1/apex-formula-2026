@@ -751,6 +751,11 @@ async function captureVenueRun(page, venue, runNumber, preFreezeTicks) {
       skyVisible: game.sky?.visible === true,
       themeIsNight: game.circuit.theme.night === true,
       themeSunIntensity: game.circuit.theme.sunI,
+      activeEnvironmentKey: game._environmentKey,
+      sunIntensity: game.sun.intensity,
+      hemiIntensity: game.hemi.intensity,
+      hemiGround: `#${game.hemi.groundColor.getHexString()}`,
+      environmentIntensity: game.scene.environmentIntensity,
       toneMappingExposure: game.renderer.toneMappingExposure,
       bloomStrength: game.bloom.strength,
       bloomRadius: game.bloom.radius,
@@ -775,22 +780,45 @@ async function captureVenueRun(page, venue, runNumber, preFreezeTicks) {
 
   if (venue.environment === 'night') {
     expect(state.themeIsNight).toBe(true);
+    expect(state.activeEnvironmentKey).toBe('night');
     expect(state.backgroundIsEnvironment, 'night uses the photographic HDR as the visible sky').toBe(true);
     expect(state.skyVisible, 'night hides the procedural sky dome').toBe(false);
     expect(state.toneMappingExposure, 'night uses a dedicated restrained exposure').toBeCloseTo(0.92, 6);
+    expect(state.environmentIntensity, 'night retains its restrained HDR fill').toBeCloseTo(0.55, 6);
+    expect(state.sunIntensity, 'night direct intensity is unchanged').toBeCloseTo(1.15, 6);
+    expect(state.hemiIntensity, 'night hemisphere intensity is unchanged').toBeCloseTo(0.55, 6);
+    expect(state.hemiGround, 'night hemisphere ground colour is unchanged').toBe('#2a2d33');
     expect(state.bloomStrength, 'night bloom strength stays restrained').toBeCloseTo(0.22, 6);
     expect(state.bloomRadius, 'night bloom stays tight around fixture cores').toBeCloseTo(0.36, 6);
     expect(state.bloomThreshold, 'night bloom excludes road paint and bodywork').toBeCloseTo(0.92, 6);
+  } else if (venue.environment === 'dusk') {
+    expect(state.themeIsNight).toBe(false);
+    expect(state.activeEnvironmentKey).toBe('dusk');
+    expect(state.backgroundIsNull, 'dusk leaves the HDR lighting-only').toBe(true);
+    expect(state.skyVisible, 'dusk keeps the procedural sky visible').toBe(true);
+    expect(state.toneMappingExposure, 'dusk has its own exposure gate').toBeCloseTo(1.05, 6);
+    expect(state.environmentIntensity, 'dusk receives additional IBL fill').toBeCloseTo(1.05, 6);
+    expect(state.themeSunIntensity, 'the authored dusk theme remains identifiable').toBeCloseTo(1.9, 6);
+    expect(state.sunIntensity, 'dusk warm direct light is restrained').toBeCloseTo(1.55, 6);
+    expect(state.hemiIntensity, 'dusk receives additional hemisphere fill').toBeCloseTo(0.74, 6);
+    expect(state.hemiGround, 'dusk ground bounce is neutral, not warm brown').toBe('#59606b');
+    expect(state.bloomStrength, 'dusk keeps restrained daytime bloom strength').toBeCloseTo(0.18, 6);
+    expect(state.bloomRadius, 'dusk keeps the daytime bloom radius').toBeCloseTo(0.55, 6);
+    expect(state.bloomThreshold, 'dusk keeps the daytime bloom threshold').toBeCloseTo(0.86, 6);
   } else {
     expect(state.themeIsNight).toBe(false);
-    expect(state.backgroundIsNull, `${venue.environment} leaves the HDR lighting-only`).toBe(true);
-    expect(state.skyVisible, `${venue.environment} keeps the procedural sky visible`).toBe(true);
-    expect(state.toneMappingExposure, `${venue.environment} keeps the established exposure`).toBeCloseTo(1.05, 6);
-    expect(state.bloomStrength, `${venue.environment} keeps the established bloom strength`).toBeCloseTo(0.18, 6);
-    expect(state.bloomRadius, `${venue.environment} keeps the established bloom radius`).toBeCloseTo(0.55, 6);
-    expect(state.bloomThreshold, `${venue.environment} keeps the established bloom threshold`).toBeCloseTo(0.86, 6);
-    if (venue.environment === 'dusk') expect(state.themeSunIntensity).toBeLessThan(2.2);
-    else expect(state.themeSunIntensity).toBeGreaterThanOrEqual(2.2);
+    expect(state.activeEnvironmentKey).toBe('day');
+    expect(state.backgroundIsNull, 'day leaves the HDR lighting-only').toBe(true);
+    expect(state.skyVisible, 'day keeps the procedural sky visible').toBe(true);
+    expect(state.toneMappingExposure, 'day holds highlight headroom').toBeCloseTo(0.94, 6);
+    expect(state.environmentIntensity, 'day retains the established HDR fill').toBeCloseTo(0.9, 6);
+    expect(state.themeSunIntensity, 'classic direct light is capped').toBeCloseTo(2.25, 6);
+    expect(state.sunIntensity, 'day uses the capped classic direct intensity').toBeCloseTo(2.25, 6);
+    expect(state.hemiIntensity, 'day preserves classic hemisphere fill').toBeCloseTo(0.85, 6);
+    expect(state.hemiGround, 'day preserves classic ground bounce colour').toBe('#3f7d3a');
+    expect(state.bloomStrength, 'day keeps the established bloom strength').toBeCloseTo(0.18, 6);
+    expect(state.bloomRadius, 'day keeps the established bloom radius').toBeCloseTo(0.55, 6);
+    expect(state.bloomThreshold, 'day keeps the established bloom threshold').toBeCloseTo(0.86, 6);
   }
 
   await expect(page.locator('#app canvas')).toBeVisible();
@@ -1296,20 +1324,24 @@ for (const venue of VENUES) {
       expect(extinction.pool.shader, 'real MeshBasicMaterial program uses additive extinction').toEqual(expectedShader);
       console.log(`[additive-fog-extinction] ${JSON.stringify(extinction)}`);
 
-      const recovery = await page.evaluate(() => {
-        const game = window.__game;
-        game.renderer.toneMappingExposure = 0.01;
-        game.renderer.domElement.dispatchEvent(new Event('webglcontextrestored'));
-        const restoredExposure = game.renderer.toneMappingExposure;
-        game.teardownSession();
-        return {
-          restoredExposure,
-          teardownExposure: game.renderer.toneMappingExposure,
-        };
-      });
-      expect(recovery.restoredExposure, 'WebGL recovery reapplies the active night exposure').toBeCloseTo(0.92, 6);
-      expect(recovery.teardownExposure, 'night exposure cannot leak into the menu or next venue').toBeCloseTo(1.05, 6);
     }
+
+    const recovery = await page.evaluate(() => {
+      const game = window.__game;
+      game.renderer.toneMappingExposure = 0.01;
+      game.renderer.domElement.dispatchEvent(new Event('webglcontextrestored'));
+      const restoredExposure = game.renderer.toneMappingExposure;
+      game.teardownSession();
+      return {
+        restoredExposure,
+        teardownExposure: game.renderer.toneMappingExposure,
+      };
+    });
+    const expectedExposure = { day: 0.94, dusk: 1.05, night: 0.92 }[venue.environment];
+    expect(recovery.restoredExposure,
+      `WebGL recovery reapplies the active ${venue.environment} exposure`).toBeCloseTo(expectedExposure, 6);
+    expect(recovery.teardownExposure,
+      `${venue.environment} exposure cannot leak into the menu or next venue`).toBeCloseTo(0.94, 6);
 
     console.log(`[venue-evidence] ${JSON.stringify({
       venue: venue.trackId,

@@ -106,7 +106,7 @@ function initRenderer() {
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;      // main.js
-  renderer.toneMappingExposure = 1.05;                     // main.js
+  renderer.toneMappingExposure = 0.94;                     // main.js day look
   document.getElementById('app').appendChild(renderer.domElement);
 
   readCanvas = document.createElement('canvas');
@@ -185,13 +185,21 @@ async function preload() {
 // --------------------------------------- main.js setupEnvironment, replicated ---
 // Identical to tools/foliage-harness.html's replica of js/main.js: procedural
 // gradient dome as the visible day backdrop, HDRI as IBL environment, hemi+sun
-// pair, ACES + exposure 1.05, composer = Render -> half-resolution
+// pair, environment-specific ACES grade, composer = Render -> half-resolution
 // ScaledGTAO(0.72) -> Bloom -> Output -> FXAA, with composer DPR sizing. This
 // mirrors main.js + QualityController at fixed DPR 1/high quality.
 function buildScene(trackId) {
   const scene = new THREE.Scene();
   const circuit = buildCircuit(trackId, TRACKS[trackId], scene);
   const th = circuit.theme;
+  const environmentKey = th.night ? 'night' : th.sunI < 2.2 ? 'dusk' : 'day';
+  const renderLook = environmentKey === 'dusk'
+    ? { exposure: 1.05, environmentIntensity: 1.05, hemiIntensity: 0.74,
+      hemiGround: 0x59606b, sunIntensity: 1.55 }
+    : environmentKey === 'night'
+      ? { exposure: 0.92, environmentIntensity: 0.55 }
+      : { exposure: 0.94, environmentIntensity: 0.9 };
+  renderer.toneMappingExposure = renderLook.exposure;
   scene.fog = new THREE.Fog(th.fog, 300, 1600);
 
   // Sky MUST come from TEX.skyDome, exactly as main.js builds it. This rig used
@@ -203,15 +211,19 @@ function buildScene(trackId) {
   const skyTex = new THREE.CanvasTexture(TEX.skyDome(
     '#' + new THREE.Color(th.skyTop).getHexString(),
     '#' + new THREE.Color(th.skyBot).getHexString(),
-    { clouds: !th.night, dusk: th.sunI < 2.2 }));
+    { clouds: !th.night, dusk: environmentKey === 'dusk', horizonStop: th.night ? 1 : 0.52 }));
   const sky = new THREE.Mesh(
     new THREE.SphereGeometry(2600, 24, 12),
     new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, fog: false }));
   sky.name = 'sky-dome';
   scene.add(sky);
 
-  scene.add(new THREE.HemisphereLight(th.skyTop, th.ground, th.hemi));
-  const sun = new THREE.DirectionalLight(th.sun, th.sunI);
+  scene.add(new THREE.HemisphereLight(
+    th.skyTop,
+    renderLook.hemiGround ?? th.ground,
+    renderLook.hemiIntensity ?? th.hemi,
+  ));
+  const sun = new THREE.DirectionalLight(th.sun, renderLook.sunIntensity ?? th.sunI);
   sun.position.set(260, 380, 160);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
@@ -223,11 +235,10 @@ function buildScene(trackId) {
   scene.add(sun, sun.target);
   if (th.night) scene.add(new THREE.AmbientLight(0x8899cc, 0.5));
 
-  const environmentKey = th.night ? 'night' : th.sunI < 2.2 ? 'dusk' : 'day';
   const hdr = HDRI[environmentKey];
   if (!hdr) throw new Error(`Required HDRI was not preloaded: ${environmentKey}`);
   scene.environment = hdr;
-  scene.environmentIntensity = th.night ? 0.55 : 0.9;
+  scene.environmentIntensity = renderLook.environmentIntensity;
   if (th.night) {
     scene.background = hdr;
     scene.backgroundIntensity = 0.7;
@@ -715,9 +726,10 @@ const SHOTS = {
   'r4-hero-02': {
     note: 'action at Lesmo 1: raised kerb + gravel trap, car mid-corner',
     anchor: [500, -1120],                     // world XZ of Lesmo 1 (Monza layout)
-    camAfterMid: 20, camLatOut: 1.1, camH: 1.5,
-    lookBeforeMid: 16, lookLat: 0.6, lookH: 0.0, fov: 44,
+    camAfterMid: 12, camLatOut: 1.1, camH: 1.5,
+    lookBeforeMid: 16, lookLat: 0.6, lookH: 0.0, fov: 42,
     carAtMid: -2, steer: -0.30, yaw: -0.06,
+    baselineCarPx: 22303,
   },
   'r4-hero-03': {
     note: 'grandstand pass: crowd wall behind the car',
@@ -734,7 +746,9 @@ const SHOTS = {
   'r4-hero-05': {
     note: 'wide beauty: main straight, tree walls, hoardings, TV screen',
     camBack: 205, camLat: 4.6, camH: 4.4,
+    carAhead: 30,
     lookBack: 60, lookLat: 0, lookH: 2.0, fov: 50,
+    baselineCarPx: 5048,
   },
 };
 results.params = SHOTS;
@@ -877,8 +891,11 @@ async function shot02(S) {
 
   const carMask = renderVisibleMask(S, isCarPart);
   metric(rec, 'carPx', carMask.n);
-  expect(rec, carMask.n >= 8000, 'the car is a real subject in the frame',
-    `[car pixels=${carMask.n}, need >= 8000]`);
+  const carAreaScale = carMask.n / P.baselineCarPx;
+  metric(rec, 'carAreaScale', +carAreaScale.toFixed(2));
+  expect(rec, carAreaScale >= 2 && carAreaScale <= 3,
+    'the featured car occupies 2-3x its prior screen area',
+    `[car pixels=${carMask.n}, baseline=${P.baselineCarPx}, scale=${carAreaScale.toFixed(2)}x]`);
   if (rec.pass) await persistShot('r4-hero-02', im);
   return rec;
 }
@@ -1006,7 +1023,7 @@ async function shot05(S) {
 
   const c = S.circuit;
   const camI = -mIdx(S, P.camBack);
-  poseActionCar(S, camI + mIdx(S, 40), { lat: -1.0 });
+  poseActionCar(S, camI + mIdx(S, P.carAhead), { lat: -1.0 });
   const camPos = arcPoint(S, camI, P.camLat, P.camH);
   const look = arcPoint(S, -mIdx(S, P.lookBack), P.lookLat, P.lookH);
   placeCam(S, camPos, look, P.fov);
@@ -1038,6 +1055,13 @@ async function shot05(S) {
   const tm = renderVisibleMask(S, o => isDescendant(o, tv));
   metric(rec, 'tvScreenPx', tm.n);
   expect(rec, tm.n >= 700, 'the TV screen is in frame', `[pixels=${tm.n}, need >= 700]`);
+  const carMask = renderVisibleMask(S, isCarPart);
+  metric(rec, 'carPx', carMask.n);
+  const carAreaScale = carMask.n / P.baselineCarPx;
+  metric(rec, 'carAreaScale', +carAreaScale.toFixed(2));
+  expect(rec, carAreaScale >= 2 && carAreaScale <= 3,
+    'the featured car occupies 2-3x its prior screen area',
+    `[car pixels=${carMask.n}, baseline=${P.baselineCarPx}, scale=${carAreaScale.toFixed(2)}x]`);
   if (rec.pass) await persistShot('r4-hero-05', im);
   return rec;
 }

@@ -102,8 +102,22 @@ import { CALENDAR, DRIVERS } from './data.js';
 
 const RETRY_SESSION_KEY = 'apexf1_retry_session_v1';
 const RENDER_LOOK = Object.freeze({
-  day: Object.freeze({ exposure: 1.05, bloomStrength: 0.18, bloomRadius: 0.55, bloomThreshold: 0.86 }),
-  night: Object.freeze({ exposure: 0.92, bloomStrength: 0.22, bloomRadius: 0.36, bloomThreshold: 0.92 }),
+  day: Object.freeze({
+    exposure: 0.94,
+    bloomStrength: 0.18, bloomRadius: 0.55, bloomThreshold: 0.86,
+    environmentIntensity: 0.9, fallbackEnvironmentIntensity: 0.85,
+  }),
+  dusk: Object.freeze({
+    exposure: 1.05,
+    bloomStrength: 0.18, bloomRadius: 0.55, bloomThreshold: 0.86,
+    environmentIntensity: 1.05, fallbackEnvironmentIntensity: 1.0,
+    hemiIntensity: 0.74, hemiGround: 0x59606b, sunIntensity: 1.55,
+  }),
+  night: Object.freeze({
+    exposure: 0.92,
+    bloomStrength: 0.22, bloomRadius: 0.36, bloomThreshold: 0.92,
+    environmentIntensity: 0.55, fallbackEnvironmentIntensity: 0.5,
+  }),
 });
 
 class Game {
@@ -249,9 +263,7 @@ class Game {
       // and the active venue look so recovery remains correct if renderer
       // internals change.
       this.renderer.info.autoReset = false;
-      this.renderer.toneMappingExposure = this.circuit?.theme.night
-        ? RENDER_LOOK.night.exposure
-        : RENDER_LOOK.day.exposure;
+      this.renderer.toneMappingExposure = RENDER_LOOK[this._environmentKey || 'day'].exposure;
       this.quality.apply(true);
       this.showGraphicsRecovery('', '');
       if (this.session) this.hud.message('GRAPHICS RESTORED');
@@ -708,6 +720,7 @@ class Game {
     // Do not let a completed night session tint the menu or the next venue while
     // its scene is being assembled. setupEnvironment() reapplies the selected
     // venue's look once the new circuit exists.
+    this._environmentKey = null;
     this.renderer.toneMappingExposure = RENDER_LOOK.day.exposure;
     this.hud.hide();
     this.audio.stopEngine();
@@ -723,10 +736,11 @@ class Game {
   setupEnvironment(effectsRandom = () => Math.random(), environmentKey) {
     this._celestialObjects = [];
     const th = this.circuit.theme;
-    const renderLook = th.night ? RENDER_LOOK.night : RENDER_LOOK.day;
-    // The photographic night HDR and dozens of track fixtures already supply
-    // strong highlights. A dedicated night exposure keeps asphalt, cars and
-    // buildings separated instead of lifting the entire frame toward white.
+    const renderLook = RENDER_LOOK[environmentKey] || RENDER_LOOK.day;
+    this._environmentKey = environmentKey;
+    // Day, dusk and night are independently graded. Day holds highlight
+    // headroom; dusk trades warm sun/ground lift for neutral sky/IBL fill; night
+    // preserves the established restrained fixture response.
     this.renderer.toneMappingExposure = renderLook.exposure;
     this.scene.fog = new THREE.Fog(th.fog, 300, 1600);
     // sky dome: gradient + soft clouds BAKED into the texture (day/dusk).
@@ -735,7 +749,7 @@ class Game {
     const skyTex = new THREE.CanvasTexture(TEX.skyDome(
       '#' + new THREE.Color(th.skyTop).getHexString(),
       '#' + new THREE.Color(th.skyBot).getHexString(),
-      { clouds: !th.night, dusk: th.sunI < 2.2 }
+      { clouds: !th.night, dusk: environmentKey === 'dusk', horizonStop: th.night ? 1 : 0.52 }
     ));
     const sky = new THREE.Mesh(
       new THREE.SphereGeometry(2600, 24, 12),
@@ -743,10 +757,14 @@ class Game {
     );
     this.scene.add(sky);
     this.sky = sky;
-    const hemi = new THREE.HemisphereLight(th.skyTop, th.ground, th.hemi);
+    const hemi = new THREE.HemisphereLight(
+      th.skyTop,
+      renderLook.hemiGround ?? th.ground,
+      renderLook.hemiIntensity ?? th.hemi,
+    );
     this.scene.add(hemi);
     this.hemi = hemi;
-    const sun = new THREE.DirectionalLight(th.sun, th.sunI);
+    const sun = new THREE.DirectionalLight(th.sun, renderLook.sunIntensity ?? th.sunI);
     sun.position.set(260, 380, 160);
     sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048);
@@ -851,7 +869,7 @@ class Game {
     const applyHDRI = (hdr) => {
       if (this.scene !== sceneForEnvironment || !hdr) return;
       sceneForEnvironment.environment = hdr;
-      sceneForEnvironment.environmentIntensity = th.night ? 0.55 : 0.9;
+      sceneForEnvironment.environmentIntensity = renderLook.environmentIntensity;
       if (th.night) {
         sceneForEnvironment.background = hdr;
         sceneForEnvironment.backgroundIntensity = 0.7;
@@ -879,7 +897,7 @@ class Game {
       envScene.add(groundDisc);
       this._envRT = pmrem.fromScene(envScene, 0.04);
       this.scene.environment = this._envRT.texture;
-      this.scene.environmentIntensity = th.night ? 0.5 : 0.85;
+      this.scene.environmentIntensity = renderLook.fallbackEnvironmentIntensity;
       this._envIsHDRI = false;
       pmrem.dispose();
       groundDisc.geometry.dispose();

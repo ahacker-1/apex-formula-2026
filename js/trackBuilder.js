@@ -7,16 +7,16 @@ import { createSurfaceMaps } from './photoTex.js';
 const UP = new THREE.Vector3(0, 1, 0);
 
 const STREET = new Set(['monaco', 'baku', 'singapore', 'jeddah', 'lasvegas', 'miami', 'montreal', 'madrid']);
-// CAREFUL: main.js picks which photographic HDRI to load from `sunI`
-//   HDRI[th.night ? 'night' : th.sunI < 2.2 ? 'dusk' : 'day']
-// so a daylight theme's sunI must stay >= 2.2 or it silently gets the dusk sky.
-// The daylight suns were pulled back from 2.9/2.6 to 2.45/2.25 for highlight
+// CAREFUL: the deterministic visual harness classifies non-night themes by
+// `sunI < 2.2`, so a daylight theme must stay >= 2.2 to exercise the day HDR.
+// The daylight suns were pulled back from 2.9/2.6 to 2.25 for highlight
 // headroom: at 2.9, every pixel of the white edge line measured over 232 in the
-// visual harness and blew out the kerb junction (a round-2 minor).
+// visual harness and blew out the kerb junction (a round-2 minor). The classic
+// theme now shares that 2.25 ceiling so park circuits retain grass/paint detail.
 const THEMES = {
   desert:  { skyTop: 0x2e4f8f, skyBot: 0xd9b98a, ground: 0xb59a6a, sun: 0xffe0b0, sunI: 2.25, hemi: 0.75, fog: 0xcbb08a, night: false },
   night:   { skyTop: 0x05070f, skyBot: 0x1a2038, ground: 0x2a2d33, sun: 0xbfd4ff, sunI: 1.15, hemi: 0.55, fog: 0x0c1020, night: true },
-  classic: { skyTop: 0x3577d4, skyBot: 0xbfd9f2, ground: 0x3f7d3a, sun: 0xfff2d8, sunI: 2.45, hemi: 0.85, fog: 0xc4d7ea, night: false },
+  classic: { skyTop: 0x3577d4, skyBot: 0xbfd9f2, ground: 0x3f7d3a, sun: 0xfff2d8, sunI: 2.25, hemi: 0.85, fog: 0xc4d7ea, night: false },
   dusk:    { skyTop: 0x25336e, skyBot: 0xe89a5f, ground: 0x8a7a58, sun: 0xffb070, sunI: 1.9, hemi: 0.6, fog: 0xc79a74, night: false },
   city:    { skyTop: 0x2f6cc4, skyBot: 0xb9d2ea, ground: 0x565b60, sun: 0xfff0d0, sunI: 2.25, hemi: 0.8, fog: 0xb6c8da, night: false },
 };

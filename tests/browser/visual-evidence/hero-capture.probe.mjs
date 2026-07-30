@@ -89,6 +89,9 @@ async function runRig(page, query = '') {
       assetGate: rig.assetGate,
       persistence: rig.persistence,
       shots: rig.shots.map(shot => ({ name: shot.name, pass: shot.pass })),
+      carAreaScales: Object.fromEntries(rig.shots
+        .filter(shot => shot.name === 'r4-hero-02' || shot.name === 'r4-hero-05')
+        .map(shot => [shot.name, shot.metrics.carAreaScale])),
       manifest: rig.manifest,
     };
   });
@@ -389,6 +392,10 @@ test('the happy path passes every hero contract and verifies five PNGs before th
   });
   expect(rig.assetGate.requiredPhotos).toHaveLength(10);
   expect(rig.shots).toEqual(SHOT_NAMES.map(name => ({ name, pass: true })));
+  expect(rig.carAreaScales['r4-hero-02']).toBeGreaterThanOrEqual(2);
+  expect(rig.carAreaScales['r4-hero-02']).toBeLessThanOrEqual(3);
+  expect(rig.carAreaScales['r4-hero-05']).toBeGreaterThanOrEqual(2);
+  expect(rig.carAreaScales['r4-hero-05']).toBeLessThanOrEqual(3);
 
   const persistedShotNames = SHOT_NAMES.map(name => persistedName(rig.runId, name));
   const expectedWrites = [FINAL_COMMIT_NAME, ...persistedShotNames, FINAL_COMMIT_NAME];

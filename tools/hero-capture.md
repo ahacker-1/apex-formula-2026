@@ -12,10 +12,10 @@ measured, re-runnable pass/fail instead of a hope.
 | file (in `tools/shots/`) | shot | framing contract (pixel-verified per run) |
 | --- | --- | --- |
 | `<run-id>-r4-hero-01.png` | low 3/4 view down the 22-car grid | >= 18 of 22 cars visible (occlusion-aware, >= 100 px each); pit building occupies the left/right frame edge (>= 12k px in the 25% edge band AND bbox touches the edge); gantry crosses the upper frame (span >= 25% W, centroid above 50% H); grandstand visible (>= 10k px) |
-| `<run-id>-r4-hero-02.png` | car mid-corner at Lesmo 1 | kerb >= 3% of frame AND gravel trap >= 3% of frame; kerb pixels show both red and white paint populations; car at \|curv\| > 1/210; car >= 8k px |
+| `<run-id>-r4-hero-02.png` | car mid-corner at Lesmo 1 | kerb >= 3% of frame AND gravel trap >= 3% of frame; kerb pixels show both red and white paint populations; car at \|curv\| > 1/210; featured car area is 2-3x the measured 22,303 px baseline |
 | `<run-id>-r4-hero-03.png` | grandstand pass | grandstand + crowd >= 25% of frame; car >= 8k px; stand backs >= 60% of the car's columns (stand is BEHIND the car) |
 | `<run-id>-r4-hero-04.png` | low nose shot toward the gantry | camera <= 1.1 m above the road; car >= 3% of frame; gantry >= 1.2k px with centroid in the upper 60% |
-| `<run-id>-r4-hero-05.png` | wide beauty on the main straight | camera on a real straight (\|curv\| < 1/900); tree walls >= 6%; hoardings >= 0.8%; TV screen >= 700 px |
+| `<run-id>-r4-hero-05.png` | wide beauty on the main straight | camera on a real straight (\|curv\| < 1/900); tree walls >= 6%; hoardings >= 0.8%; TV screen >= 700 px; featured car area is 2-3x the measured 5,048 px baseline |
 | `r4-hero-contracts.png` | machine-readable summary | **JSON body** (the `/shot` sink appends `.png` to everything): schema, fixed capture contract, renderer/DPR settings, overall `pass`, per-shot `camera`/`metrics`/`asserts`, and a `failed[]` list of every missed assertion — this is the loud failure |
 
 Every shot also asserts `frame mean luminance > 25` so a black/broken frame can
