@@ -7,15 +7,11 @@ import { ScaledGTAOPass } from '../lib/postprocessing/ScaledGTAOPass.js';
 import { OutputPass } from '../lib/postprocessing/OutputPass.js';
 import { FXAAPass } from '../lib/postprocessing/FXAAPass.js';
 import { RGBELoader } from '../lib/loaders/RGBELoader.js';
+import { CAMERA_FRAMING, resolveChaseCamera } from './cameraFraming.js';
 
 // Photographic HDRI skies (CC0, PolyHaven). Load only the selected session's
 // theme; fetching all three at boot used 19.8 MB before the player chose a race.
 const HDRI = { day: null, dusk: null, night: null, promises: {} };
-const CAMERA_PROFILES = {
-  tight: { back: 6.5, pull: 0.014, height: 2.2, rise: 0.005, look: 8, fov: 67, fovSpeed: 0.055 },
-  broadcast: { back: 7.2, pull: 0.022, height: 2.45, rise: 0.006, look: 10, fov: 69, fovSpeed: 0.07 },
-  cinematic: { back: 8.2, pull: 0.032, height: 2.8, rise: 0.008, look: 13, fov: 71, fovSpeed: 0.085 },
-};
 const photoManifest = {
   asphalt: 'textures/asphalt.png', grass: 'textures/grass.png',
   gravel: 'textures/gravel.png', crowd: 'textures/crowd.png',
@@ -1086,9 +1082,31 @@ class Game {
     const pos = pose ? this._camPlayerPos.set(pose.x, 0, pose.z) : p.pos;
     const heading = pose?.heading ?? p.heading;
     const ry = pose?.y ?? this._roadY(p);
+    const speed = pose?.v ?? p.v;
     const f = this._camForward.set(Math.sin(heading), 0, Math.cos(heading));
-    this._camPos.copy(pos).addScaledVector(f, -8.5).setY(ry + 3.25);
-    this._camLook.copy(pos).setY(ry);
+    if (this.camMode === 0) {
+      const framing = resolveChaseCamera(this.ui.settings.cameraProfile, speed, p.boosting);
+      const aheadSample = this.circuit.samples[(p.sampleIdx + Math.round(framing.look / this.circuit.ds)) % this.circuit.N];
+      const aim = this._camAhead.set(aheadSample.t.x, 0, aheadSample.t.z);
+      this._camPos.copy(pos).addScaledVector(f, -framing.back).setY(ry + framing.height);
+      this._camLook.copy(pos)
+        .addScaledVector(f, framing.look * CAMERA_FRAMING.headingAimWeight)
+        .addScaledVector(aim, framing.look * CAMERA_FRAMING.aheadAimWeight)
+        .setY(this._roadY(p, framing.look) + CAMERA_FRAMING.lookHeightM);
+      this._cameraFovTarget = framing.fov;
+    } else if (this.camMode === 1) {
+      this._camPos.copy(pos).addScaledVector(f, -0.75).setY(ry + 1.62);
+      this._camLook.copy(pos).addScaledVector(f, 14).setY(this._roadY(p, 14) + 1.05);
+      this._cameraFovTarget = 72 + speed * 0.045 + (p.boosting ? 2 : 0);
+    } else {
+      this._camPos.copy(pos).addScaledVector(f, 2.3).setY(ry + 0.6);
+      this._camLook.copy(pos).addScaledVector(f, 18).setY(this._roadY(p, 18) + 0.5);
+      this._cameraFovTarget = 75 + speed * 0.035 + (p.boosting ? 2 : 0);
+    }
+    this.camera.position.copy(this._camPos);
+    this.camera.lookAt(this._camLook);
+    this.camera.fov = this._cameraFovTarget;
+    this.camera.updateProjectionMatrix();
   }
 
   updateCamera(dt) {
@@ -1109,19 +1127,18 @@ class Game {
       targetPos.copy(this._camPos);
       targetLook.copy(this._camLook);
     } else if (this.camMode === 0) {
-      const profile = CAMERA_PROFILES[this.ui.settings.cameraProfile] || CAMERA_PROFILES.broadcast;
-      const back = profile.back + speed * profile.pull;
-      const aheadSample = this.circuit.samples[(p.sampleIdx + Math.round(profile.look / this.circuit.ds)) % this.circuit.N];
+      const framing = resolveChaseCamera(this.ui.settings.cameraProfile, speed, p.boosting);
+      const aheadSample = this.circuit.samples[(p.sampleIdx + Math.round(framing.look / this.circuit.ds)) % this.circuit.N];
       const aim = this._camAhead.set(aheadSample.t.x, 0, aheadSample.t.z);
-      targetPos.copy(pos).addScaledVector(f, -back).setY(ry + profile.height + speed * profile.rise);
+      targetPos.copy(pos).addScaledVector(f, -framing.back).setY(ry + framing.height);
       // Blend current heading with the circuit tangent ahead. The camera sees
       // into a hairpin before the chassis finishes rotating, which removes the
       // late snap/pan that made tight turns feel disconnected from steering.
       targetLook.copy(pos)
-        .addScaledVector(f, profile.look * 0.35)
-        .addScaledVector(aim, profile.look * 0.65)
-        .setY(this._roadY(p, profile.look) + 0.85);
-      this._cameraFovTarget = profile.fov + speed * profile.fovSpeed + (p.boosting ? 3 : 0);
+        .addScaledVector(f, framing.look * CAMERA_FRAMING.headingAimWeight)
+        .addScaledVector(aim, framing.look * CAMERA_FRAMING.aheadAimWeight)
+        .setY(this._roadY(p, framing.look) + CAMERA_FRAMING.lookHeightM);
+      this._cameraFovTarget = framing.fov;
     } else if (this.camMode === 1) {
       // T-cam (onboard broadcast)
       targetPos.copy(pos).addScaledVector(f, -0.75).setY(ry + 1.62);
