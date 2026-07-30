@@ -1174,11 +1174,72 @@ export function buildCircuit(trackId, def, scene) {
   }
   groundMat.vertexColors = true;
   const groundMass = (VENUE_DEPTH[trackId] || VENUE_DEPTH_DEFAULT).mass;
-  const macroOctaves = [
-    { wavelength: 140, weight: 0.62, seed: 17 },
+  // Only a very-low-frequency field belongs in vertex colours. The old 140m,
+  // 46m and 16m fields were evaluated on vertices spaced from 12m to 220m, so
+  // Gouraud interpolation exposed the radial mesh as a regular tonal grid. The
+  // two detail octaves now run per fragment from world position; 560m is four
+  // times the former longest wavelength and remains safe on the coarse outfield.
+  const vertexMacroOctaves = [
+    { wavelength: 560, weight: 0.62, seed: 17 },
+  ];
+  const fragmentMacroOctaves = [
     { wavelength: 46, weight: 0.27, seed: 43 },
     { wavelength: 16, weight: 0.11, seed: 89 },
   ];
+  const macroOctaves = [...vertexMacroOctaves, ...fragmentMacroOctaves];
+  const GROUND_MACRO_AMPLITUDE = 0.26;
+  groundMat.onBeforeCompile = (shader) => {
+    const common = '#include <common>';
+    const begin = '#include <begin_vertex>';
+    const mapFragment = '#include <map_fragment>';
+    if (!shader.vertexShader.includes(common) || !shader.vertexShader.includes(begin)
+      || !shader.fragmentShader.includes(common) || !shader.fragmentShader.includes(mapFragment)) {
+      throw new Error('Ground macro shader chunks changed; refusing an unpinned shader patch');
+    }
+    shader.vertexShader = shader.vertexShader
+      .replace(common, `${common}\nvarying vec2 vApexGroundWorldXZ;`)
+      .replace(begin, `${begin}\n  vApexGroundWorldXZ = (modelMatrix * vec4(transformed, 1.0)).xz;`);
+    shader.fragmentShader = shader.fragmentShader
+      .replace(common, `${common}
+varying vec2 vApexGroundWorldXZ;
+uniform sampler2D apexWoodlandMap;
+uniform vec4 apexWoodlandBounds;
+float apexGroundHash(vec2 cell, float seed) {
+  return fract(sin(dot(cell, vec2(127.1, 311.7)) + seed * 74.7) * 43758.5453123);
+}
+float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
+  vec2 grid = worldXZ / wavelength;
+  vec2 cell = floor(grid);
+  vec2 f = fract(grid);
+  f = f * f * (3.0 - 2.0 * f);
+  float a = apexGroundHash(cell, seed);
+  float b = apexGroundHash(cell + vec2(1.0, 0.0), seed);
+  float c = apexGroundHash(cell + vec2(0.0, 1.0), seed);
+  float d = apexGroundHash(cell + vec2(1.0, 1.0), seed);
+  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}`)
+      .replace(mapFragment, `${mapFragment}
+  float apexGroundMacro =
+      (apexGroundNoise(vApexGroundWorldXZ, 46.0, 43.0) - 0.5) * 0.27
+    + (apexGroundNoise(vApexGroundWorldXZ, 16.0, 89.0) - 0.5) * 0.11;
+  diffuseColor.rgb *= 1.0 + apexGroundMacro * ${GROUND_MACRO_AMPLITUDE.toFixed(2)};
+  vec2 apexWoodlandUV = (vApexGroundWorldXZ - apexWoodlandBounds.xy) * apexWoodlandBounds.zw;
+  float apexWoodland = texture2D(apexWoodlandMap, apexWoodlandUV).r;
+  float apexWoodlandDark = 1.0 - 0.24 * apexWoodland;
+  diffuseColor.rgb *= apexWoodlandDark * vec3(
+    1.0 + 0.035 * apexWoodland,
+    1.0 - 0.025 * apexWoodland,
+    1.0 + 0.050 * apexWoodland);`);
+    shader.uniforms.apexWoodlandMap = { value: groundMat.userData.woodlandTexture };
+    shader.uniforms.apexWoodlandBounds = { value: groundMat.userData.woodlandBounds };
+  };
+  groundMat.customProgramCacheKey = () => 'apex-ground-world-macro-v1-560-46-16';
+  groundMat.userData.macroShader = {
+    stage: 'fragment', coordinate: 'world-xz', amplitude: GROUND_MACRO_AMPLITUDE,
+    octaves: fragmentMacroOctaves.map(({ wavelength, weight }) => ({ wavelength, weight })),
+  };
+  groundMat.userData.woodlandTexture = null;
+  groundMat.userData.woodlandBounds = new THREE.Vector4(0, 0, 1, 1);
   const outerGroundTone = {
     park: [1.055, 1.005, 0.885],
     woodland: [0.965, 0.945, 0.845],
@@ -1222,10 +1283,10 @@ export function buildCircuit(trackId, def, scene) {
   };
   const groundMacroColour = (x, z) => {
     let noise = 0;
-    for (const octave of macroOctaves) {
+    for (const octave of vertexMacroOctaves) {
       noise += (valueNoise(x, z, octave.wavelength, octave.seed) - 0.5) * octave.weight;
     }
-    const noiseMul = 1 + noise * 0.26;       // bounded at roughly +/-13 percent
+    const noiseMul = 1 + noise * GROUND_MACRO_AMPLITUDE;
     const distance = groundTrackDistance(x, z);
     const verge = 1 - smoothBand(18, 42, distance);
     const outer = smoothBand(105, 175, distance);
@@ -1328,16 +1389,23 @@ export function buildCircuit(trackId, def, scene) {
     ground.userData.step = step;
     ground.userData.vertices = nv;
     ground.userData.macroOctaves = macroOctaves.map(({ wavelength, weight }) => ({ wavelength, weight }));
+    ground.userData.vertexMacroOctaves = vertexMacroOctaves.map(({ wavelength, weight }) => ({ wavelength, weight }));
+    ground.userData.fragmentMacroOctaves = fragmentMacroOctaves.map(({ wavelength, weight }) => ({ wavelength, weight }));
     ground.userData.zoneBands = { verge: [0, 30], outfield: [30, 140], outer: [140, groundR], mass: groundMass };
     ground.userData.noiseAmplitude = 0.13;
-    ground.userData.woodlandLayer = { cellM: 48, radiusM: 66, maxDarkening: 0.24, placements: 0 };
+    ground.userData.woodlandLayer = {
+      cellM: 48, radiusM: 66, maxDarkening: 0.24, placements: 0,
+      stage: 'fragment', textureSize: 256,
+    };
     groundMesh = ground;
     group.add(ground);
   }
 
-  // Tree placements do not exist until section 8b. Apply their broad density
-  // field to the already-built ground colours once, leaving the individual
-  // dapple to the two-draw-call decal pass at the end of the build.
+  // Tree placements do not exist until section 8b. Build their broad density
+  // field into a linearly-filtered world-space texture once, leaving the
+  // individual dapple to the two-draw-call decal pass at the end of the build.
+  // This used to multiply vertex colours and was the final source of mesh-cell
+  // edges after the macro octaves moved to the fragment shader.
   const applyWoodlandGround = (placements) => {
     if (!groundMesh || !placements.length) return;
     const CELL = 48, RADIUS = 66, SIGMA = 27;
@@ -1349,13 +1417,15 @@ export function buildCircuit(trackId, def, scene) {
       if (!bucket) treeCells.set(k, bucket = []);
       bucket.push(tree);
     }
-    const position = groundMesh.geometry.attributes.position;
-    const colour = groundMesh.geometry.attributes.color;
-    const values = colour.array;
+    const SIZE = groundMesh.userData.woodlandLayer.textureSize;
+    const data = new Uint8Array(SIZE * SIZE * 4);
+    const diameter = groundMesh.userData.radius * 2;
+    const minX = groundMesh.position.x - groundMesh.userData.radius;
+    const minZ = groundMesh.position.z - groundMesh.userData.radius;
     const reach = Math.ceil(RADIUS / CELL);
-    for (let i = 0; i < position.count; i++) {
-      const x = groundMesh.position.x + position.getX(i);
-      const z = groundMesh.position.z + position.getZ(i);
+    for (let py = 0; py < SIZE; py++) for (let px = 0; px < SIZE; px++) {
+      const x = minX + (px + 0.5) * diameter / SIZE;
+      const z = minZ + (py + 0.5) * diameter / SIZE;
       const cx = Math.floor(x / CELL), cz = Math.floor(z / CELL);
       let density = 0;
       for (let ix = cx - reach; ix <= cx + reach; ix++) {
@@ -1373,16 +1443,17 @@ export function buildCircuit(trackId, def, scene) {
         }
       }
       const woodland = smoothBand(0.75, 4.5, density);
-      if (woodland <= 0) continue;
-      const dark = 1 - 0.24 * woodland;
-      const o = i * 3;
-      // Red/blue retain slightly more energy than green: the floor becomes less
-      // saturated as well as darker instead of reading as emerald lawn in shade.
-      values[o] *= dark * (1 + 0.035 * woodland);
-      values[o + 1] *= dark * (1 - 0.025 * woodland);
-      values[o + 2] *= dark * (1 + 0.050 * woodland);
+      const o = (py * SIZE + px) * 4;
+      data[o] = data[o + 1] = data[o + 2] = Math.round(woodland * 255);
+      data[o + 3] = 255;
     }
-    colour.needsUpdate = true;
+    const texture = new THREE.DataTexture(data, SIZE, SIZE, THREE.RGBAFormat, THREE.UnsignedByteType);
+    texture.minFilter = texture.magFilter = THREE.LinearFilter;
+    texture.wrapS = texture.wrapT = THREE.ClampToEdgeWrapping;
+    texture.generateMipmaps = false;
+    texture.needsUpdate = true;
+    groundMesh.material.userData.woodlandTexture = texture;
+    groundMesh.material.userData.woodlandBounds.set(minX, minZ, 1 / diameter, 1 / diameter);
     groundMesh.userData.woodlandLayer.placements = placements.length;
   };
 
@@ -3389,17 +3460,17 @@ export function buildCircuit(trackId, def, scene) {
     }
 
     // ---- 8b. billboard vegetation ----------------------------------------
-    // The old cone-and-cylinder trees are gone. Every tree is now a three-plane
-    // alpha-cut star: the crossed upright pair plus a tapered canopy plane that
-    // preserves a crown silhouette from elevated and directly-overhead cameras.
+    // The old cone-and-cylinder trees are gone. Trees use two crossed alpha-cut
+    // upright cards. A third horizontal cap was tried in c1fb4df and again with
+    // dedicated circular overhead art, but the real 27m TV camera still exposed
+    // it as a separate lid; a clean two-plane fallback is less objectionable.
     // They carry a real canvas canopy sprite, instanced per species AND per baked hue
     // variant so a treeline is never a repeat of one silhouette.
     {
       const veg = VEG[trackId] || { mix: [['broadleaf', 1]], wall: FOREST.has(trackId) ? 0.8 : 0 };
       const sparse = veg.sparse || 1;
 
-      // Two crossed vertical quads plus a near-horizontal canopy quad, origin at
-      // the base so the instance scale is a height.
+      // Two crossed vertical quads, origin at the base so instance scale is height.
       //
       // Each plane is emitted TWICE, with opposite winding, and every normal is
       // authored straight up. Round 2 reported "a giant smooth untextured green
@@ -3422,19 +3493,12 @@ export function buildCircuit(trackId, def, scene) {
       const xGeo = (() => {
         const g = new THREE.BufferGeometry();
         const p = [], uv = [], nrm = [], idx = [];
-        const TOP_HALF = 0.34; // inscribed inside the old 0.5 canopy radius
-        for (let plane = 0; plane < 3; plane++) {
+        for (let plane = 0; plane < 2; plane++) {
           for (let facing = 0; facing < 2; facing++) {
             const b = (plane * 2 + facing) * 4;
             if (plane === 0) p.push(-0.5, 0, 0, 0.5, 0, 0, 0.5, 1, 0, -0.5, 1, 0);
-            else if (plane === 1) p.push(0, 0, -0.5, 0, 0, 0.5, 0, 1, 0.5, 0, 1, -0.5);
-            else p.push(-TOP_HALF, 0.70, -TOP_HALF, TOP_HALF, 0.73, -TOP_HALF,
-              TOP_HALF, 0.75, TOP_HALF, -TOP_HALF, 0.72, TOP_HALF);
-            // The canopy plane samples the sprite's broad middle band. Full U
-            // retains the ragged left/right alpha silhouette; the reduced V band
-            // avoids stretching the trunk/base or the sparse crown tip into a lid.
-            if (plane < 2) uv.push(0, 0, 1, 0, 1, 1, 0, 1);
-            else uv.push(0, 0.28, 1, 0.28, 1, 0.68, 0, 0.68);
+            else p.push(0, 0, -0.5, 0, 0, 0.5, 0, 1, 0.5, 0, 1, -0.5);
+            uv.push(0, 0, 1, 0, 1, 1, 0, 1);
             for (let q = 0; q < 4; q++) nrm.push(0, 1, 0);
             if (facing === 0) idx.push(b, b + 1, b + 2, b, b + 2, b + 3);
             else idx.push(b, b + 2, b + 1, b, b + 3, b + 2);
@@ -3764,12 +3828,19 @@ export function buildCircuit(trackId, def, scene) {
         mesh.userData.nearCount = b.items.filter(t => t.layer === 'near').length;
         mesh.userData.trunkEligibleCount = b.items.filter(t => t.layer === 'near' && t.sp !== 'scrub').length;
         mesh.userData.cullGroup = 'vegetation-card-trunk';
+        // In the two-plane fallback the aerial collapse is a horizontal line, so
+        // width carries most of the reduction. Preserve nearly all height to keep
+        // the driver's-eye treeline depth and the authored species proportions.
+        mesh.userData.farDrawScale = { width: 0.78, height: 0.94 };
         keepOutOfAO(mesh);
         b.items.forEach((t, k) => {
           // same field the ground disc is built from, so a trunk never floats
           posv.set(t.px, terrainAt(t.px, t.pz) - 0.05, t.pz);
           q.setFromAxisAngle(yAxis, t.rot);
-          scl.set(t.h * aspect * t.widthScale, t.h, t.h * aspect * t.widthScale);
+          const drawWidth = t.layer === 'far' ? mesh.userData.farDrawScale.width : 1;
+          const drawHeight = t.layer === 'far' ? mesh.userData.farDrawScale.height : 1;
+          scl.set(t.h * aspect * t.widthScale * drawWidth, t.h * drawHeight,
+            t.h * aspect * t.widthScale * drawWidth);
           m4.compose(posv, q, scl);
           mesh.setMatrixAt(k, m4);
           // per-instance tint: a treeline of identical greens reads as wallpaper
@@ -3856,7 +3927,7 @@ export function buildCircuit(trackId, def, scene) {
         const shrubMap = ctex(draw(TEX.treeCanopy, [shrubSpecies, shrubVariant, 256], 'rgba(48,92,46,0.9)'), {
           wrapS: THREE.ClampToEdgeWrapping, wrapT: THREE.ClampToEdgeWrapping, aniso: 4,
         });
-        // Use the same alpha-cut three-plane foliage treatment as the trees. The
+        // Use the same alpha-cut crossed-card foliage treatment as the trees. The
         // old smooth-shaded icosahedra had no map and read as plastic pool floats;
         // these retain the existing per-instance scale, yaw and tint variation but
         // present a ragged leaf silhouette from both road and elevated cameras.
@@ -4479,6 +4550,8 @@ export function buildCircuit(trackId, def, scene) {
         for (const value of Object.values(material)) {
           if (value?.isTexture && !value.userData?.shared) textures.add(value);
         }
+        const woodlandTexture = material.userData?.woodlandTexture;
+        if (woodlandTexture?.isTexture && !woodlandTexture.userData?.shared) textures.add(woodlandTexture);
       }
       for (const texture of textures) texture.dispose();
       for (const material of materials) material.dispose();

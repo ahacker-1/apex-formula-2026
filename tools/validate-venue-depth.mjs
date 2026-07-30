@@ -332,14 +332,16 @@ for (const trackId of Object.keys(TRACKS)) {
   const baseTriangles = triangles - identityTriangles;
   assert(baseBatches >= 7 && baseBatches <= 10,
     `${trackId}: base scenery stays within 7-10 batches`, `[${baseBatches}]`);
-  // Formerly 5,700-12,500: the untextured detail-1 icosahedron shrubs cost 80
-  // triangles each. Their alpha-cut foliage stars cost 12, while the deliberately
-  // richer far-mass run rises from 8 to 20; live all-venue totals are now lower.
-  assert(baseTriangles >= 3400 && baseTriangles <= 6000,
+  // f8cb011 used 5,700-12,500: the untextured detail-1 icosahedron shrubs cost
+  // 80 triangles each. c1fb4df moved this to 3,400-6,000 when alpha-cut shrubs
+  // dropped to 12 triangles while the richer far-mass run rose from 8 to 20.
+  // The approved no-cap fallback shares the exact 8-triangle tree X with each
+  // shrub, removing a further 4 * 25..104 = 100..416 triangles per venue.
+  assert(baseTriangles >= 3000 && baseTriangles <= 5600,
     `${trackId}: base scenery triangle cost stays within the foliage-card band`, `[${Math.round(baseTriangles)}]`);
-  assert(batches <= 13 && triangles <= 6240,
+  assert(batches <= 13 && triangles <= 5840,
     `${trackId}: total scenery including identity stays within bounded render cost`,
-    `[batches=${batches}/13 triangles=${Math.round(triangles)}/6240]`);
+    `[batches=${batches}/13 triangles=${Math.round(triangles)}/5840]`);
 
   first.dispose();
   second.dispose();

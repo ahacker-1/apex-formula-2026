@@ -58,6 +58,10 @@ const EXPECTED_MEAN = 97.74;
 const PRE_FIX_HIGH_FREQUENCY_RMS = 25.24709320322419;
 const PRE_FIX_WRAP_SEAM_MAD = 0;
 const MIN_COLOUR_LUMA_STDDEV = 0.018;
+// Measured after moving the 46m/16m macro octaves and the woodland density out
+// of vertex colours: worst 0.07760 (Suzuka), down from 0.24717. The remaining
+// delta is the deliberately broad track-distance/biome transition.
+const MAX_ADJACENT_VERTEX_LUMA_DELTA = 0.08;
 const CANOPY_ALPHA_CEILING = 0.55;
 
 let checks = 0, failures = 0;
@@ -109,6 +113,23 @@ function colourStats(attribute) {
   return { bad, stddev: Math.sqrt(Math.max(0, sum2 / attribute.count - mean * mean)) };
 }
 
+function adjacentColourStats(mesh) {
+  const colour = mesh.geometry.attributes.color;
+  const index = mesh.geometry.index;
+  let max = 0, sum = 0, samples = 0;
+  const luma = i => 0.2126 * colour.getX(i) + 0.7152 * colour.getY(i) + 0.0722 * colour.getZ(i);
+  for (let i = 0; i < index.count; i += 3) {
+    const tri = [index.getX(i), index.getX(i + 1), index.getX(i + 2)];
+    for (let edge = 0; edge < 3; edge++) {
+      const delta = Math.abs(luma(tri[edge]) - luma(tri[(edge + 1) % 3]));
+      max = Math.max(max, delta);
+      sum += delta;
+      samples++;
+    }
+  }
+  return { max, mean: sum / Math.max(1, samples), samples };
+}
+
 function canopyBlobs(mesh) {
   const position = mesh.geometry.attributes.position;
   const colour = mesh.geometry.attributes.color;
@@ -154,6 +175,7 @@ function canopyAlphaBound(blobs) {
 }
 
 let minStddev = { value: Infinity, track: '' };
+let worstAdjacent = { value: 0, track: '', mean: 0 };
 let maxCanopyAlpha = { value: 0, track: '', blobs: 0 };
 for (const trackId of Object.keys(TRACKS)) {
   const first = buildCircuit(trackId, TRACKS[trackId], new THREE.Scene());
@@ -180,12 +202,38 @@ for (const trackId of Object.keys(TRACKS)) {
         `${trackId}: ground macro variation exceeds the luma standard-deviation floor`,
         `[${stats.stddev.toFixed(5)} >= ${MIN_COLOUR_LUMA_STDDEV.toFixed(3)}]`);
       if (stats.stddev < minStddev.value) minStddev = { value: stats.stddev, track: trackId };
+      const adjacent = adjacentColourStats(ground);
+      assert(adjacent.max <= MAX_ADJACENT_VERTEX_LUMA_DELTA,
+        `${trackId}: adjacent ground-vertex luma cannot encode visible high-frequency cells`,
+        `[max=${adjacent.max.toFixed(5)} mean=${adjacent.mean.toFixed(5)} ceiling=${MAX_ADJACENT_VERTEX_LUMA_DELTA.toFixed(3)}]`);
+      if (adjacent.max > worstAdjacent.value) {
+        worstAdjacent = { value: adjacent.max, track: trackId, mean: adjacent.mean };
+      }
     }
     const meta = ground.userData;
     assert(Array.isArray(meta.macroOctaves) && meta.macroOctaves.length === 3
+      && meta.vertexMacroOctaves?.length === 1 && meta.vertexMacroOctaves[0].wavelength >= 560
+      && meta.fragmentMacroOctaves?.length === 2
       && meta.zoneBands?.mass && meta.noiseAmplitude >= 0.10 && meta.noiseAmplitude <= 0.14
       && meta.woodlandLayer?.placements >= 0,
-    `${trackId}: ground publishes macro octave, zoning, noise, and woodland metadata`);
+    `${trackId}: ground publishes split vertex/fragment macro, zoning, noise, and woodland metadata`);
+    const shaderMeta = ground.material.userData.macroShader;
+    const shader = { uniforms: {}, vertexShader: '#include <common>\n#include <begin_vertex>', fragmentShader: '#include <common>\n#include <map_fragment>' };
+    ground.material.onBeforeCompile(shader);
+    const totalWeight = meta.macroOctaves.reduce((sum, octave) => sum + octave.weight, 0);
+    assert(shaderMeta?.stage === 'fragment' && shaderMeta.coordinate === 'world-xz'
+      && shaderMeta.octaves?.length === 2 && Math.abs(totalWeight - 1) < 1e-9
+      && shader.vertexShader.includes('vApexGroundWorldXZ')
+      && shader.fragmentShader.includes('apexGroundNoise(vApexGroundWorldXZ, 46.0')
+      && shader.fragmentShader.includes('apexGroundNoise(vApexGroundWorldXZ, 16.0')
+      && shader.fragmentShader.includes('texture2D(apexWoodlandMap, apexWoodlandUV)'),
+    `${trackId}: mid/high macro variation is evaluated per fragment from world position`);
+    const woodland = ground.material.userData.woodlandTexture;
+    const otherWoodland = otherGround.material.userData.woodlandTexture;
+    assert(woodland?.isDataTexture && woodland.image.width === meta.woodlandLayer.textureSize
+      && woodland.minFilter === THREE.LinearFilter && woodland.magFilter === THREE.LinearFilter
+      && Buffer.from(woodland.image.data).equals(Buffer.from(otherWoodland?.image?.data || [])),
+    `${trackId}: woodland density is a deterministic linearly-filtered fragment texture`);
   }
 
   const canopy = named(first, 'ground-shade-canopy');
@@ -208,5 +256,6 @@ for (const trackId of Object.keys(TRACKS)) {
 console.log(`GROUND SURFACE: ${checks - failures}/${checks} checks passed across ${Object.keys(TRACKS).length} circuits`);
 console.log(`grass: ${grassBytes.length.toLocaleString('en-US')} bytes; mean ${grass.meanLuma.toFixed(4)}; dominant ${grass.dominantColumn.amplitude.toFixed(4)} @ ${grass.dominantColumn.cycles} cycles/tile; column p-p ${grass.columnPeakToPeak.toFixed(4)}; HF RMS ${grass.highFrequencyRms.toFixed(4)}; seam ${grass.wrapSeamMad.toFixed(4)}`);
 console.log(`ground colour luma stddev: minimum ${minStddev.value.toFixed(5)} (${minStddev.track}), floor ${MIN_COLOUR_LUMA_STDDEV.toFixed(3)}`);
+console.log(`adjacent ground-vertex luma delta: worst ${worstAdjacent.value.toFixed(5)} (${worstAdjacent.track}; mean ${worstAdjacent.mean.toFixed(5)}), ceiling ${MAX_ADJACENT_VERTEX_LUMA_DELTA.toFixed(3)}`);
 console.log(`canopy summed-alpha upper bound: ${maxCanopyAlpha.value.toFixed(4)} (${maxCanopyAlpha.track}, ${maxCanopyAlpha.blobs} blobs), ceiling ${CANOPY_ALPHA_CEILING}`);
 process.exit(failures ? 1 : 0);

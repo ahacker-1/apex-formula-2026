@@ -1982,7 +1982,7 @@ function run(trackId) {
     assert(treeMeshes.length > 0, 'billboard vegetation present', `[species/variant meshes=${treeMeshes.length}]`);
     const speciesSeen = new Set(), variantsPerSpecies = new Map();
     let treeTotal = 0, nearest3 = Infinity, furthest = 0, minH = Infinity, maxH = 0;
-    let badMat = 0, badCardGeometry = 0, noTopSilhouette = 0;
+    let badMat = 0, badCardGeometry = 0, overheadPlate = 0, badFarFallback = 0;
     let intruders = 0, worstIntruder = Infinity, noTint = 0, badNormals = 0;
     let overTall = 0, worstRatio = 0;
     const perSpecies = new Map();
@@ -1999,9 +1999,13 @@ function run(trackId) {
       // canvas billboard, and it must be Standard so scene.environment reaches it.
       if (!(mat.side === THREE.FrontSide && mat.alphaTest >= 0.3 && mat.alphaTest <= 0.5
         && mat.map && mat.map.isCanvasTexture && mat.isMeshStandardMaterial)) badMat++;
-      // The old two-plane X was 8 triangles / 16 vertices. The deliberate budget
-      // increase adds one canopy plane, also wound both ways, for exactly 12 / 24;
-      // that extra plane is what survives a directly-overhead camera.
+      const farScale = tm.userData.farDrawScale;
+      if (Math.abs(farScale?.width - 0.78) > 1e-9
+        || Math.abs(farScale?.height - 0.94) > 1e-9) badFarFallback++;
+      // c1fb4df deliberately raised the old two-plane X from 8 triangles / 16
+      // vertices to 12 / 24. Real aerial and 27m TV renders showed that any
+      // horizontal cap still read as a separate lid, even with dedicated round
+      // art, so the approved fallback restores the exact old geometry budget.
       // The round-2 "giant smooth green spire" was the lit plane of a crossed
       // billboard seen almost edge-on, standing inside the near-black unlit plane
       // of the SAME tree, because computeVertexNormals() gave the two planes normals
@@ -2009,11 +2013,10 @@ function run(trackId) {
       // winding is what lets the material be FrontSide so DoubleSide can never flip
       // that normal downward on the far half of a card.
       const tris = tm.geometry.index ? tm.geometry.index.count / 3 : 0;
-      if (tris !== 12 || tm.geometry.attributes.position.count !== 24) badCardGeometry++;
+      if (tris !== 8 || tm.geometry.attributes.position.count !== 16) badCardGeometry++;
       {
-        // Sum triangle areas after XZ projection, then divide out the duplicated
-        // opposite winding. Vertical cards contribute zero; this can only pass if
-        // a real canopy surface covers a useful fraction of radius=0.5.
+        // A future horizontal plane must not silently reintroduce the exact visual
+        // regression. Pure vertical cards have zero triangle area in XZ projection.
         const pos = tm.geometry.attributes.position, ix = tm.geometry.index;
         let doubledArea = 0;
         for (let i = 0; i < ix.count; i += 3) {
@@ -2023,9 +2026,7 @@ function run(trackId) {
           const cx = pos.getX(ic), cz = pos.getZ(ic);
           doubledArea += Math.abs((bx - ax) * (cz - az) - (bz - az) * (cx - ax)) * 0.5;
         }
-        const projectedArea = doubledArea / 2;
-        const canopyDiscArea = Math.PI * 0.5 * 0.5;
-        if (projectedArea < canopyDiscArea * 0.45) noTopSilhouette++;
+        if (doubledArea > 1e-8) overheadPlate++;
       }
       {
         const nrm = tm.geometry.attributes.normal;
@@ -2053,12 +2054,15 @@ function run(trackId) {
     }
     assert(badMat === 0, 'every treeline is a front-side alpha-tested canvas billboard on Standard',
       `[bad materials=${badMat}/${treeMeshes.length}]`);
+    assert(badFarFallback === 0,
+      'every treeline publishes the exact 0.78x0.94 far-layer draw-scale fallback',
+      `[wrong far fallback=${badFarFallback}/${treeMeshes.length}]`);
     assert(badCardGeometry === 0,
-      'every tree is a three-plane star wound both ways (12 tris, 24 verts; formerly 8/16)',
+      'every tree is a two-plane X wound both ways (8 tris, 16 verts; c1fb4df cap was 12/24)',
       `[wrong geometry=${badCardGeometry}/${treeMeshes.length}]`);
-    assert(noTopSilhouette === 0,
-      'every tree card projects at least 45% of its canopy-disc area in XZ from directly above',
-      `[meshes without enough overhead silhouette=${noTopSilhouette}/${treeMeshes.length}]`);
+    assert(overheadPlate === 0,
+      'tree cards contain no horizontal projected plate after the visual fallback',
+      `[meshes with overhead triangle area=${overheadPlate}/${treeMeshes.length}]`);
     assert(badNormals === 0,
       'every foliage normal points straight up, so both planes of a card shade identically',
       `[meshes with a non-up normal=${badNormals}/${treeMeshes.length}]`);
@@ -3433,6 +3437,7 @@ async function runCanopyArt() {
         `[green-dominant opaque px=${solidGreen}]`);
       assert(tones.size >= 3, `${label}: >=3 distinct green tones (dappled, not flat)`,
         `[distinct quantised greens=${tones.size}]`);
+
       fingerprints.add(`${solidGreen}:${toneSum}`);
     }
     assert(fingerprints.size === variants, `${sp}: every variant is a genuinely different sprite`,
