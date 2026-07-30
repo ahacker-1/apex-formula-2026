@@ -192,12 +192,12 @@ const FAR_SHADOW = () => G('farShadow16', () =>
   new THREE.CircleGeometry(1, 16).rotateX(-HALF_PI));
 const FAR_BRAKE_DISC = () => G('farBrakeDisc8', () => new THREE.CircleGeometry(0.20, 8));
 const FAR_BRAKES = () => G('farBrakes', () => mergeGeos([
-  // Sit 6 mm outside the rear tyre's outer cap (centre +/-0.85, half-width
+  // Sit 4 mm outside the rear tyre's outer cap (centre +/-0.85, half-width
   // 0.19). CircleGeometry faces +Z, so +/-Y rotation points each normal away
   // from the centreline; FrontSide then renders the exposed face, not the face
   // buried inside the wheel cylinder.
-  { geo: FAR_BRAKE_DISC(), m: TRS(-1.046, 0.35, -1.60, 1, 1, 1, 0, -HALF_PI, 0) },
-  { geo: FAR_BRAKE_DISC(), m: TRS(1.046, 0.35, -1.60, 1, 1, 1, 0, HALF_PI, 0) },
+  { geo: FAR_BRAKE_DISC(), m: TRS(-1.044, 0.35, -1.60, 1, 1, 1, 0, -HALF_PI, 0) },
+  { geo: FAR_BRAKE_DISC(), m: TRS(1.044, 0.35, -1.60, 1, 1, 1, 0, HALF_PI, 0) },
 ]));
 
 function extrude(shape, depth, seg = 8) {

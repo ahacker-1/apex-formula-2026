@@ -78,8 +78,13 @@ const proxyOwner = CAR.buildPrimitiveCarMesh(team, DRIVERS.find((driver) => driv
 const proxy = CAR.attachDistantCarProxy(proxyOwner);
 const steady = visibleMeshStats(proxy.root);
 const braking = visibleMeshStats(proxy.root, true);
+proxy.brakeGlows[0].geometry.computeBoundingBox();
+const brakeBounds = proxy.brakeGlows[0].geometry.boundingBox;
+const brakeWidth = brakeBounds.max.x - brakeBounds.min.x;
 check(proxyOwner.fullDetailRoots.every((root) => root.visible) && !proxy.root.visible,
   'explicit AI attachment begins at full fidelity');
+check(brakeWidth <= 2.09,
+  'far brake mesh stays inside the established 2.09m car envelope', `width=${brakeWidth.toFixed(3)}m`);
 check(steady.draws === CAR.DISTANT_CAR_BUDGET.steadyDrawCalls,
   'steady proxy hits the seven-call target', `draws=${steady.draws}`);
 check(braking.draws === CAR.DISTANT_CAR_BUDGET.brakingDrawCalls,
