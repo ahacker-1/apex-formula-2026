@@ -113,6 +113,9 @@ function canopyBlobs(mesh) {
   const position = mesh.geometry.attributes.position;
   const colour = mesh.geometry.attributes.color;
   if (!position || !colour || position.count % 4 !== 0 || colour.count !== position.count) return [];
+  // The quad is deliberately oversized while its generated alpha dies at this
+  // fraction of the half-extent. Measure visible support, not transparent moat.
+  const alphaSupport = mesh.userData.shadePolicy?.alphaSupportHalfExtent ?? 1;
   const blobs = [];
   for (let base = 0; base < position.count; base += 4) {
     let x = 0, z = 0, minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
@@ -125,7 +128,7 @@ function canopyBlobs(mesh) {
     }
     blobs.push({
       x: x / 4, z: z / 4, alpha: alpha / 4,
-      support: Math.max((maxX - minX) / 2, (maxZ - minZ) / 2),
+      support: Math.max((maxX - minX) / 2, (maxZ - minZ) / 2) * alphaSupport,
     });
   }
   return blobs;

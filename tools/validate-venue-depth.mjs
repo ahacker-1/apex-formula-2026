@@ -281,6 +281,12 @@ for (const trackId of Object.keys(TRACKS)) {
       assert(material.fog !== false, `${trackId}/${mesh.name}: far mass participates in atmospheric fog`);
       assert(emission >= 0.15 && emission <= emitCap + 1e-6,
         `${trackId}/${mesh.name}: far mass emission is bloom-safe`, `[${emission.toFixed(3)}/${emitCap}]`);
+      const ys = new Set();
+      const p = mesh.geometry.attributes.position;
+      for (let q = 0; q < p.count; q++) if (p.getY(q) > 0.5) ys.add(p.getY(q).toFixed(3));
+      assert(primitiveTriangles === 20 && p.count === 40 && ys.size >= 4,
+        `${trackId}/${mesh.name}: five overlapping panels carry a ragged multi-height top`,
+        `[tris=${primitiveTriangles} verts=${p.count} distinct tops=${ys.size}]`);
       const liveCount = mesh.count;
       const normalMaterial = new THREE.MeshNormalMaterial();
       mesh.onBeforeRender(null, null, null, mesh.geometry, normalMaterial);
@@ -326,11 +332,14 @@ for (const trackId of Object.keys(TRACKS)) {
   const baseTriangles = triangles - identityTriangles;
   assert(baseBatches >= 7 && baseBatches <= 10,
     `${trackId}: base scenery stays within 7-10 batches`, `[${baseBatches}]`);
-  assert(baseTriangles >= 5700 && baseTriangles <= 12500,
-    `${trackId}: base scenery triangle cost stays within baseline band`, `[${Math.round(baseTriangles)}]`);
-  assert(batches <= 13 && triangles <= 12760,
+  // Formerly 5,700-12,500: the untextured detail-1 icosahedron shrubs cost 80
+  // triangles each. Their alpha-cut foliage stars cost 12, while the deliberately
+  // richer far-mass run rises from 8 to 20; live all-venue totals are now lower.
+  assert(baseTriangles >= 3400 && baseTriangles <= 6000,
+    `${trackId}: base scenery triangle cost stays within the foliage-card band`, `[${Math.round(baseTriangles)}]`);
+  assert(batches <= 13 && triangles <= 6240,
     `${trackId}: total scenery including identity stays within bounded render cost`,
-    `[batches=${batches}/13 triangles=${Math.round(triangles)}/12760]`);
+    `[batches=${batches}/13 triangles=${Math.round(triangles)}/6240]`);
 
   first.dispose();
   second.dispose();

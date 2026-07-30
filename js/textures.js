@@ -1206,19 +1206,22 @@ let lobeTop = 0;
 function foliageLobe(g, x, y, rx, ry, rot, pal, up) {
   const reach = Math.max(rx, ry);
   if (y - reach < lobeTop) y = lobeTop + reach;
-  const body = mixRGB(pal.deep, pal.mid, 0.26 + up * 0.6);
+  // Preserve the old sun-facing endpoint while pulling the lower/shaded lobes
+  // toward `deep`. The former compressed range was the milky look at distance:
+  // an unlit skirt and a lit crown landed too close together before lighting.
+  const body = mixRGB(pal.deep, pal.mid, 0.12 + up * 0.74);
   for (let i = 5; i >= 1; i--) {
     const t = 0.36 + 0.64 * (i / 5);
     g.fillStyle = rgba(body, 0.275);
     ellipse(g, x, y, rx * t, ry * t, rot); g.fill();
   }
-  const lit = mixRGB(pal.mid, pal.lit, 0.35 + up * 0.6);
+  const lit = mixRGB(pal.mid, pal.lit, 0.25 + up * 0.70);
   for (let i = 3; i >= 1; i--) {
     const t = 0.32 + 0.68 * (i / 3);
     g.fillStyle = rgba(lit, 0.09 + up * 0.21);
     ellipse(g, x - rx * 0.26, y - ry * 0.34, rx * 0.56 * t, ry * 0.5 * t, rot); g.fill();
   }
-  g.fillStyle = rgba(pal.deep, 0.12 + (1 - up) * 0.13);
+  g.fillStyle = rgba(pal.deep, 0.18 + (1 - up) * 0.22);
   ellipse(g, x + rx * 0.22, y + ry * 0.36, rx * 0.6, ry * 0.42, rot); g.fill();
 }
 
@@ -1381,10 +1384,10 @@ function drawPalm(g, w, h, pal, rand) {
     const tipY = crownY + Math.sin(a) * len * 0.85 + len * 0.36;   // gravity droop
     const midX = (crownX + tipX) * 0.5, midY = (crownY + tipY) * 0.5 - len * 0.26;
     const up = Math.max(0, Math.min(1, 0.35 - Math.sin(a) * 0.8));
-    const body = mixRGB(pal.deep, pal.mid, 0.3 + up * 0.6);
+    const body = mixRGB(pal.deep, pal.mid, 0.16 + up * 0.74);
     const spineW = w * 0.055;
     for (let pass = 0; pass < 2; pass++) {
-      g.fillStyle = pass ? rgba(mixRGB(pal.mid, pal.lit, 0.3 + up * 0.5), 0.55) : rgba(body, 0.92);
+      g.fillStyle = pass ? rgba(mixRGB(pal.mid, pal.lit, 0.22 + up * 0.58), 0.55) : rgba(body, 0.92);
       const k = pass ? 0.5 : 1;
       g.beginPath();
       g.moveTo(crownX, crownY);
@@ -1464,14 +1467,14 @@ export function treeCanopy(species = 'broadleaf', variant = 0, size = 256) {
     const HUE_BASE = { broadleaf: 0, poplar: 11, pine: -7, palm: 4, scrub: -5 };
     const vv = (((variant | 0) % TREE_VARIANTS[sp]) + TREE_VARIANTS[sp]) % TREE_VARIANTS[sp];
     const hue = (HUE_BASE[sp] || 0) + (vv - (TREE_VARIANTS[sp] - 1) / 2) * 11;
-    const bri = (sp === 'poplar' ? 0.94 : 1.01) + vv * 0.045;
-    // contrast below 1 lifts the deep shadow pixels of the source photograph.
-    // Those pixels are the ones the visual harness measures as the darkest foliage
-    // in a daylight frame, and the acceptance bar is rgb(40,55,40): a canopy photo
-    // shot against the sky has near-black interior leaves that no amount of scene
-    // light can raise, because they are dark ALBEDO rather than dark shading.
+    const bri = (sp === 'poplar' ? 0.90 : 0.94) + vv * 0.02;
+    // The previous contrast(0.72) deliberately lifted the source shadows, but it
+    // also compressed every crown into the same milky middle value at broadcast
+    // distance. Contrast now expands the photographed light/dark separation while
+    // brightness stays at or below 1, so the change adds a shaded side without
+    // raising exposure.
     const _p = photo(PHOTO_KEY[sp], w, h,
-      `hue-rotate(${hue}deg) brightness(${bri.toFixed(3)}) contrast(0.72) saturate(1.12)`, vv);
+      `hue-rotate(${hue}deg) brightness(${bri.toFixed(3)}) contrast(1.12) saturate(1.12)`, vv);
     // The cutout's part-transparent edge texels still carry the sky the tree was
     // photographed against, and alphaTest renders them at full opacity.
     if (_p) return decontaminateMatte(_p);
@@ -1571,6 +1574,24 @@ export function vegetationMass(kind = 'woodland', variant = 0, w = 512, h = 128)
     g.fill();
   }
   c._vegetationMass = { kind: style, variant: variant | 0, rows: 3 };
+  return c;
+}
+
+// Soft canopy-shadow stamp. Its visible support ends at half of the texture's
+// half-extent (radius=size/4), leaving a full transparent moat before the quad
+// boundary. trackBuilder oversizes the quad by the reciprocal factor so the
+// world-space shadow radius is unchanged while no camera can reveal a straight
+// texture edge or corner.
+export function canopyShadeDecal(size = 128) {
+  const s = Math.max(32, Math.round(size));
+  const c = cnv(s, s), g = c.getContext('2d');
+  const mid = s / 2;
+  const grad = g.createRadialGradient(mid, mid, s * 0.045, mid, mid, s * 0.25);
+  grad.addColorStop(0, 'rgba(0,0,0,1)');
+  grad.addColorStop(0.45, 'rgba(0,0,0,0.72)');
+  grad.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, s, s);
   return c;
 }
 

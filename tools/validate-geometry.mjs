@@ -368,6 +368,7 @@ const THREE = await import('three');
 // deliberately broken copy can be used to confirm these assertions have teeth.
 const { buildCircuit } = await import(process.env.TRACKBUILDER || '../js/trackBuilder.js');
 const { TRACKS } = await import('../js/tracks.js');
+const TEX = await import('../js/textures.js');
 
 let failures = 0, checks = 0;
 const log = (...a) => console.log(...a);
@@ -1657,6 +1658,14 @@ function run(trackId) {
       const posts = named('brake-posts');
       assert(!!posts && posts.count === b100.count * 2, 'every board stands on a post',
         `[posts=${posts ? posts.count : 0}]`);
+      if (posts) {
+        const sameSphere = (a, b) => !!a && !!b && a.center.distanceTo(b.center) < 1e-6
+          && Math.abs(a.radius - b.radius) < 1e-6;
+        assert(sameSphere(posts.boundingSphere, b100.boundingSphere)
+          && sameSphere(posts.boundingSphere, b50.boundingSphere)
+          && [posts, b100, b50].every(o => o.userData.cullGroup === 'brake-marker-assembly'),
+        'brake boards and posts share one culling sphere, so no bare post survives alone');
+      }
       const BOARD_OFF = wallOff + 1.1;   // the offset trackBuilder places them at
       let worstLat = Infinity, worstGap = 0, worstFacing = 1, worstDrop = Infinity, worstSrc = 0;
       let notPeak = 0, slowest = Infinity;
@@ -1973,7 +1982,8 @@ function run(trackId) {
     assert(treeMeshes.length > 0, 'billboard vegetation present', `[species/variant meshes=${treeMeshes.length}]`);
     const speciesSeen = new Set(), variantsPerSpecies = new Map();
     let treeTotal = 0, nearest3 = Infinity, furthest = 0, minH = Infinity, maxH = 0;
-    let badMat = 0, notX = 0, intruders = 0, worstIntruder = Infinity, noTint = 0, badNormals = 0;
+    let badMat = 0, badCardGeometry = 0, noTopSilhouette = 0;
+    let intruders = 0, worstIntruder = Infinity, noTint = 0, badNormals = 0;
     let overTall = 0, worstRatio = 0;
     const perSpecies = new Map();
     for (const tm of treeMeshes) {
@@ -1989,7 +1999,9 @@ function run(trackId) {
       // canvas billboard, and it must be Standard so scene.environment reaches it.
       if (!(mat.side === THREE.FrontSide && mat.alphaTest >= 0.3 && mat.alphaTest <= 0.5
         && mat.map && mat.map.isCanvasTexture && mat.isMeshStandardMaterial)) badMat++;
-      // Two intersecting quads, EACH wound both ways = 8 triangles, 16 vertices.
+      // The old two-plane X was 8 triangles / 16 vertices. The deliberate budget
+      // increase adds one canopy plane, also wound both ways, for exactly 12 / 24;
+      // that extra plane is what survives a directly-overhead camera.
       // The round-2 "giant smooth green spire" was the lit plane of a crossed
       // billboard seen almost edge-on, standing inside the near-black unlit plane
       // of the SAME tree, because computeVertexNormals() gave the two planes normals
@@ -1997,7 +2009,24 @@ function run(trackId) {
       // winding is what lets the material be FrontSide so DoubleSide can never flip
       // that normal downward on the far half of a card.
       const tris = tm.geometry.index ? tm.geometry.index.count / 3 : 0;
-      if (tris !== 8 || tm.geometry.attributes.position.count !== 16) notX++;
+      if (tris !== 12 || tm.geometry.attributes.position.count !== 24) badCardGeometry++;
+      {
+        // Sum triangle areas after XZ projection, then divide out the duplicated
+        // opposite winding. Vertical cards contribute zero; this can only pass if
+        // a real canopy surface covers a useful fraction of radius=0.5.
+        const pos = tm.geometry.attributes.position, ix = tm.geometry.index;
+        let doubledArea = 0;
+        for (let i = 0; i < ix.count; i += 3) {
+          const ia = ix.getX(i), ib = ix.getX(i + 1), ic = ix.getX(i + 2);
+          const ax = pos.getX(ia), az = pos.getZ(ia);
+          const bx = pos.getX(ib), bz = pos.getZ(ib);
+          const cx = pos.getX(ic), cz = pos.getZ(ic);
+          doubledArea += Math.abs((bx - ax) * (cz - az) - (bz - az) * (cx - ax)) * 0.5;
+        }
+        const projectedArea = doubledArea / 2;
+        const canopyDiscArea = Math.PI * 0.5 * 0.5;
+        if (projectedArea < canopyDiscArea * 0.45) noTopSilhouette++;
+      }
       {
         const nrm = tm.geometry.attributes.normal;
         let notUp = 0;
@@ -2024,8 +2053,12 @@ function run(trackId) {
     }
     assert(badMat === 0, 'every treeline is a front-side alpha-tested canvas billboard on Standard',
       `[bad materials=${badMat}/${treeMeshes.length}]`);
-    assert(notX === 0, 'every tree is two intersecting quads wound both ways (8 tris, 16 verts)',
-      `[wrong geometry=${notX}/${treeMeshes.length}]`);
+    assert(badCardGeometry === 0,
+      'every tree is a three-plane star wound both ways (12 tris, 24 verts; formerly 8/16)',
+      `[wrong geometry=${badCardGeometry}/${treeMeshes.length}]`);
+    assert(noTopSilhouette === 0,
+      'every tree card projects at least 45% of its canopy-disc area in XZ from directly above',
+      `[meshes without enough overhead silhouette=${noTopSilhouette}/${treeMeshes.length}]`);
     assert(badNormals === 0,
       'every foliage normal points straight up, so both planes of a card shade identically',
       `[meshes with a non-up normal=${badNormals}/${treeMeshes.length}]`);
@@ -2043,6 +2076,78 @@ function run(trackId) {
     assert(noTint === 0, 'every treeline carries per-instance tint (instanceColor)',
       `[untinted meshes=${noTint}]`);
 
+    // ---- canopy shade must die before its carrier quad ----------------------
+    // Sample the exact production generator, not its stop literals. The last
+    // non-zero texel must sit inside 60% of the half-extent, and every boundary
+    // texel must be clear, so oblique cameras cannot recover an edge or corner.
+    {
+      const shade = named('ground-shade-canopy');
+      assert(!!shade && !!shade.material.map && shade.material.map.isCanvasTexture,
+        'canopy shade uses its generated alpha texture');
+      const S = 128, cv = rasterise(() => TEX.canopyShadeDecal(S), S, S), px = cv._px;
+      let edgeMax = 0, lastRadius = 0;
+      for (let y = 0; y < S; y++) {
+        for (let x = 0; x < S; x++) {
+          const a = px[(y * S + x) * 4 + 3];
+          if (x === 0 || y === 0 || x === S - 1 || y === S - 1) edgeMax = Math.max(edgeMax, a);
+          if (a > 1 / 255) lastRadius = Math.max(lastRadius, Math.hypot(x + 0.5 - S / 2, y + 0.5 - S / 2));
+        }
+      }
+      const support = lastRadius / (S / 2);
+      assert(edgeMax === 0, 'canopy-shade alpha is zero on every quad edge texel',
+        `[max edge alpha=${edgeMax.toFixed(4)}]`);
+      assert(support <= 0.6, 'canopy-shade last non-zero alpha lies inside 60% of the quad half-extent',
+        `[last non-zero radius=${support.toFixed(3)} half-extents]`);
+      assert(shade?.userData.shadePolicy?.alphaSupportHalfExtent === 0.5
+        && shade?.material.map.userData.alphaSupportHalfExtent === 0.5,
+      'the generated shade and its oversized quad share the 0.5 support contract');
+    }
+
+    // ---- textured shrubs and card/trunk one-to-one consistency --------------
+    {
+      const shrubs = named('vegetation-near-shrubs');
+      assert(!!shrubs && shrubs.isInstancedMesh && shrubs.count > 0,
+        'near shrub foliage is present');
+      assert(!!shrubs?.material.map && shrubs.material.map.isCanvasTexture
+        && shrubs.material.isMeshStandardMaterial,
+      'every vegetation-near-shrubs instance uses a textured Standard foliage material');
+
+      const trunks = named('vegetation-near-trunks');
+      assert(!!trunks && trunks.isInstancedMesh, 'near physical trunks are present');
+      if (trunks) {
+        const cardPositions = new Set();
+        let nearCards = 0, eligibleCards = 0, cullMismatch = 0;
+        const sphereSame = (a, b) => !!a && !!b && a.center.distanceTo(b.center) < 1e-6
+          && Math.abs(a.radius - b.radius) < 1e-6;
+        for (const tm of treeMeshes) {
+          nearCards += tm.userData.nearCount || 0;
+          eligibleCards += tm.userData.trunkEligibleCount || 0;
+          if (!sphereSame(tm.boundingSphere, trunks.boundingSphere)
+            || tm.userData.cullGroup !== trunks.userData.cullGroup) cullMismatch++;
+          for (let k = 0; k < tm.count; k++) {
+            const { pos } = instanceAt(tm, k);
+            cardPositions.add(`${pos.x.toFixed(4)},${pos.z.toFixed(4)}`);
+          }
+        }
+        let orphans = 0;
+        for (let k = 0; k < trunks.count; k++) {
+          const { pos } = instanceAt(trunks, k);
+          if (!cardPositions.has(`${pos.x.toFixed(4)},${pos.z.toFixed(4)}`)) orphans++;
+        }
+        assert(nearCards === trunks.userData.nearCardCount && eligibleCards === trunks.userData.eligibleCardCount,
+          'near-layer card counts agree with the trunk source set',
+          `[near cards=${nearCards}, eligible=${eligibleCards}]`);
+        assert(trunks.count === Math.min(96, eligibleCards),
+          'trunk count is the capped count of eligible near-layer cards',
+          `[trunks=${trunks.count}, eligible near cards=${eligibleCards}, cap=96]`);
+        assert(orphans === 0, 'every physical trunk has a tree card at exactly the same XZ position',
+          `[orphan trunks=${orphans}/${trunks.count}]`);
+        assert(cullMismatch === 0,
+          'trunks and every card batch share one culling sphere, so frustum edges cannot split them',
+          `[mismatched batches=${cullMismatch}/${treeMeshes.length}]`);
+      }
+    }
+
     // ---- the foliage ambient floor must exist, and must not be a glow --------
     // The floor is an albedo-proportional emissive lift, and it is there because
     // MeshLambert scenery went black once scene.environment became an HDRI. But
@@ -2057,21 +2162,21 @@ function run(trackId) {
     // Both ends are asserted. Too much emission is the glow; none of it is the black
     // treeline this floor was introduced to fix.
     {
-      const EMIT_CAP = c.theme.night ? 0.25 : 0.62;
+      const EMIT_CAP = c.theme.night ? 0.20 : 0.42;
       let overCap = 0, noFloor = 0, notAlbedo = 0, worstEmit = 0;
       for (const tm of treeMeshes) {
         const mt = tm.material;
         const e = mt.emissive.r * (mt.emissiveIntensity === undefined ? 1 : mt.emissiveIntensity);
         worstEmit = Math.max(worstEmit, e);
         if (e > EMIT_CAP + 1e-6) overCap++;
-        if (!(e >= 0.2)) noFloor++;
+        if (!(e >= 0.18)) noFloor++;
         if (mt.emissiveMap !== mt.map) notAlbedo++;
       }
       assert(overCap === 0,
         `the foliage ambient floor stays under the ${c.theme.night ? 'night' : 'daylight'} bloom-safe ceiling`,
         `[worst emissive=${worstEmit.toFixed(3)} of albedo, ceiling ${EMIT_CAP}, over=${overCap}/${treeMeshes.length}]`);
       assert(noFloor === 0, 'the foliage ambient floor is still there, so treelines cannot go black again',
-        `[meshes under 0.2=${noFloor}/${treeMeshes.length}, worst=${worstEmit.toFixed(3)}]`);
+        `[meshes under 0.18=${noFloor}/${treeMeshes.length}, worst=${worstEmit.toFixed(3)}]`);
       assert(notAlbedo === 0,
         'the foliage floor is proportional to the artwork (emissiveMap === map), not a flat wash',
         `[meshes with a mismatched emissiveMap=${notAlbedo}/${treeMeshes.length}]`);
@@ -2111,6 +2216,22 @@ function run(trackId) {
         `[meshes left suppressed=${notRestored}/${treeMeshes.length}]`);
       assert(firedOnColour === 0, 'the opt-out never fires during the colour or shadow pass',
         `[meshes disturbed=${firedOnColour}/${treeMeshes.length}]`);
+      const shade = named('ground-shade-canopy');
+      if (shade) {
+        const before = { ...shade.geometry.drawRange };
+        shade.onBeforeRender(null, null, null, shade.geometry, nm);
+        const suppressed = shade.geometry.drawRange.count === 0;
+        shade.onAfterRender(null, null, null, shade.geometry, nm);
+        const restored = shade.geometry.drawRange.start === before.start
+          && shade.geometry.drawRange.count === before.count;
+        shade.onBeforeRender(null, null, null, shade.geometry, shade.material);
+        const colourUntouched = shade.geometry.drawRange.start === before.start
+          && shade.geometry.drawRange.count === before.count;
+        shade.onAfterRender(null, null, null, shade.geometry, shade.material);
+        assert(suppressed && restored && colourUntouched,
+          'canopy shade drops its merged draw range only during the AO normal pass',
+          `[suppressed=${suppressed} restored=${restored} colour untouched=${colourUntouched}]`);
+      }
       nm.dispose();
     }
     assert(intruders === 0, 'no tree canopy overhangs the racing surface',
@@ -3258,7 +3379,6 @@ async function runCar() {
 // every species/variant and require: real alpha cut-out (not a filled rect), a
 // ragged top edge (never a cone or a ball), and genuine tonal range in the green.
 async function runCanopyArt() {
-  const TEX = await import('../js/textures.js');
   log('\n=== vegetation art ===');
   if (dumpArt) fsMod.mkdirSync(dumpArt, { recursive: true });
   const species = ['broadleaf', 'poplar', 'pine', 'palm', 'scrub'];

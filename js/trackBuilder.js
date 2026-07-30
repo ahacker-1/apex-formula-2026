@@ -658,19 +658,35 @@ export function buildCircuit(trackId, def, scene) {
   // suppresses an InstancedMesh draw from inside onBeforeRender (which three calls
   // before submitting the buffer), and WebGL*BufferRenderer.renderInstances
   // returns immediately on primcount 0. Nothing else in the pipeline overrides
-  // materials, so this cannot fire during the colour or shadow passes.
+  // materials, so this cannot fire during the colour or shadow passes. Regular
+  // merged decals use the equivalent zero draw-range path below.
   const keepOutOfAO = (mesh) => {
     mesh.onBeforeRender = (rend, sc, cam, geo, mat) => {
-      if (mat && mat.isMeshNormalMaterial && mesh.userData.aoCount === undefined) {
-        mesh.userData.aoCount = mesh.count;
-        mesh.count = 0;
+      if (mat && mat.isMeshNormalMaterial && !mesh.userData.aoSuppressed) {
+        mesh.userData.aoSuppressed = true;
+        if (mesh.isInstancedMesh) {
+          mesh.userData.aoCount = mesh.count;
+          mesh.count = 0;
+        } else {
+          // Merged shade decals are regular Meshes, so an instance count cannot
+          // suppress them. Zero their private geometry draw range for the normal
+          // pass instead; otherwise GTAO sees every transparent decal as a solid
+          // rectangle even though its colour-pass texture is genuinely radial.
+          mesh.userData.aoDrawRange = { ...geo.drawRange };
+          geo.setDrawRange(0, 0);
+        }
       }
     };
     mesh.onAfterRender = () => {
-      if (mesh.userData.aoCount !== undefined) {
+      if (!mesh.userData.aoSuppressed) return;
+      if (mesh.isInstancedMesh) {
         mesh.count = mesh.userData.aoCount;
         mesh.userData.aoCount = undefined;
+      } else if (mesh.userData.aoDrawRange) {
+        mesh.geometry.setDrawRange(mesh.userData.aoDrawRange.start, mesh.userData.aoDrawRange.count);
+        mesh.userData.aoDrawRange = undefined;
       }
+      mesh.userData.aoSuppressed = false;
     };
   };
 
@@ -704,13 +720,12 @@ export function buildCircuit(trackId, def, scene) {
   // K_FOLIAGE: handing that back instead re-brightens the floodlit fronds and the
   // halo returns (measured: pull-down 0.4 -> worst ring pixel 1.0886, 0.25 -> 1.65).
   //
-  // Daylight and dusk keep the full floor. They are not affected: the threshold is
-  // 0.86 and the strength 0.18, the same ring measures EXACTLY 1.0000 at Monza,
-  // Spa and Bahrain today, and bloom's whole contribution in that band is at most
-  // 1.79/255. Cutting their floor to 0.25 would drop Bahrain's darkest foliage
-  // pixel from 54.1 to 42.5, back under the rgb(40,55,40) = 50.7 bar the previous
-  // fix exists to hold, in exchange for no measurable change on screen.
-  const K_FOLIAGE_EMIT = theme.night ? 0.25 : K_FOLIAGE;
+  // Daylight bloom was already safe, but the full 0.62 emission flattened the
+  // newly-authored canopy contrast before direct light could shape it. A restrained
+  // 0.42 floor retains the floor without the wash: the final Monza harness measures
+  // darkest foliage at 53.0 against the rgb(40,55,40)=50.7 bar and p05..p95 at
+  // 2.40x. Night stays below the already bloom-safe 0.25 point at 0.20.
+  const K_FOLIAGE_EMIT = theme.night ? 0.20 : 0.42;
   const K_FACADE = theme.night ? 0.5 : 0.4;
 
   // Fill lights. main.js keeps its sun and its sky hemisphere; these two add a
@@ -2577,6 +2592,17 @@ export function buildCircuit(trackId, def, scene) {
           posts.setMatrixAt(k * 2 + j, m4);
         });
       });
+      // These three batches are one visual object. With independently-derived
+      // InstancedMesh spheres, camera-edge views could accept the posts while
+      // rejecting one board batch, leaving deliberate brake markers as bare poles.
+      // Give every part the union sphere so Three culls the assembly atomically.
+      for (const mesh of [b100, b50, posts]) mesh.computeBoundingSphere();
+      const brakeCullSphere = b100.boundingSphere.clone()
+        .union(b50.boundingSphere).union(posts.boundingSphere);
+      for (const mesh of [b100, b50, posts]) {
+        mesh.boundingSphere = brakeCullSphere.clone();
+        mesh.userData.cullGroup = 'brake-marker-assembly';
+      }
       group.add(b100, b50, posts);
     }
   }
@@ -3363,15 +3389,17 @@ export function buildCircuit(trackId, def, scene) {
     }
 
     // ---- 8b. billboard vegetation ----------------------------------------
-    // The old cone-and-cylinder trees are gone. Every tree is now a pair of
-    // intersecting alpha-cut planes (an X, so it holds up from any angle) that
-    // carry a real canvas canopy sprite, instanced per species AND per baked hue
+    // The old cone-and-cylinder trees are gone. Every tree is now a three-plane
+    // alpha-cut star: the crossed upright pair plus a tapered canopy plane that
+    // preserves a crown silhouette from elevated and directly-overhead cameras.
+    // They carry a real canvas canopy sprite, instanced per species AND per baked hue
     // variant so a treeline is never a repeat of one silhouette.
     {
       const veg = VEG[trackId] || { mix: [['broadleaf', 1]], wall: FOREST.has(trackId) ? 0.8 : 0 };
       const sparse = veg.sparse || 1;
 
-      // Two crossed quads, origin at the base so the instance scale is a height.
+      // Two crossed vertical quads plus a near-horizontal canopy quad, origin at
+      // the base so the instance scale is a height.
       //
       // Each plane is emitted TWICE, with opposite winding, and every normal is
       // authored straight up. Round 2 reported "a giant smooth untextured green
@@ -3394,12 +3422,52 @@ export function buildCircuit(trackId, def, scene) {
       const xGeo = (() => {
         const g = new THREE.BufferGeometry();
         const p = [], uv = [], nrm = [], idx = [];
-        for (let plane = 0; plane < 2; plane++) {
+        const TOP_HALF = 0.34; // inscribed inside the old 0.5 canopy radius
+        for (let plane = 0; plane < 3; plane++) {
           for (let facing = 0; facing < 2; facing++) {
             const b = (plane * 2 + facing) * 4;
             if (plane === 0) p.push(-0.5, 0, 0, 0.5, 0, 0, 0.5, 1, 0, -0.5, 1, 0);
-            else p.push(0, 0, -0.5, 0, 0, 0.5, 0, 1, 0.5, 0, 1, -0.5);
-            uv.push(0, 0, 1, 0, 1, 1, 0, 1);
+            else if (plane === 1) p.push(0, 0, -0.5, 0, 0, 0.5, 0, 1, 0.5, 0, 1, -0.5);
+            else p.push(-TOP_HALF, 0.70, -TOP_HALF, TOP_HALF, 0.73, -TOP_HALF,
+              TOP_HALF, 0.75, TOP_HALF, -TOP_HALF, 0.72, TOP_HALF);
+            // The canopy plane samples the sprite's broad middle band. Full U
+            // retains the ragged left/right alpha silhouette; the reduced V band
+            // avoids stretching the trunk/base or the sparse crown tip into a lid.
+            if (plane < 2) uv.push(0, 0, 1, 0, 1, 1, 0, 1);
+            else uv.push(0, 0.28, 1, 0.28, 1, 0.68, 0, 0.68);
+            for (let q = 0; q < 4; q++) nrm.push(0, 1, 0);
+            if (facing === 0) idx.push(b, b + 1, b + 2, b, b + 2, b + 3);
+            else idx.push(b, b + 2, b + 1, b, b + 3, b + 2);
+          }
+        }
+        g.setAttribute('position', new THREE.Float32BufferAttribute(p, 3));
+        g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+        g.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+        g.setIndex(idx);
+        return g;
+      })();
+
+      // The old crossed far-mass card exposed a full-height perpendicular end
+      // plane as a hard vertical slab. This shallow zig-zag is one geometry and
+      // one draw call per variant, but its five overlapping neighbours carry
+      // independent heights and overlapping UV windows: no single card boundary
+      // spans the treeline and the top resolves as a ragged run.
+      const farMassGeo = (() => {
+        const g = new THREE.BufferGeometry();
+        const p = [], uv = [], nrm = [], idx = [];
+        const segments = [
+          [-0.50, -0.22, 0.000, 0.045, -0.020, 0.76, 0.00, 0.30],
+          [-0.30, -0.02, 0.030, -0.045, 0.000, 0.96, 0.18, 0.48],
+          [-0.10, 0.18, -0.040, 0.050, -0.012, 0.84, 0.36, 0.67],
+          [0.10, 0.38, 0.040, -0.030, 0.005, 1.00, 0.55, 0.86],
+          [0.28, 0.50, -0.045, 0.000, -0.018, 0.73, 0.74, 1.00],
+        ];
+        for (let s = 0; s < segments.length; s++) {
+          const [x0, x1, z0, z1, y0, y1, u0, u1] = segments[s];
+          for (let facing = 0; facing < 2; facing++) {
+            const b = (s * 2 + facing) * 4;
+            p.push(x0, y0, z0, x1, y0, z1, x1, y1, z1, x0, y1, z0);
+            uv.push(u0, 0, u1, 0, u1, 1, u0, 1);
             for (let q = 0; q < 4; q++) nrm.push(0, 1, 0);
             if (facing === 0) idx.push(b, b + 1, b + 2, b, b + 2, b + 3);
             else idx.push(b, b + 2, b + 1, b, b + 3, b + 2);
@@ -3648,6 +3716,19 @@ export function buildCircuit(trackId, def, scene) {
         }
       }
 
+      // Cards and their physical trunks are separate InstancedMeshes, but they
+      // form one object for visibility. Independent auto-computed spheres can
+      // disagree at a frustum edge, so every near/card batch shares this explicit
+      // all-tree bound. Culling stays enabled and becomes atomic across the pair.
+      const vegetationCullBox = new THREE.Box3();
+      for (const t of placements) {
+        const reach = t.h * spAspect(t.sp) * t.widthScale * 0.5;
+        const baseY = terrainAt(t.px, t.pz) - 0.05;
+        vegetationCullBox.expandByPoint(new THREE.Vector3(t.px - reach, baseY, t.pz - reach));
+        vegetationCullBox.expandByPoint(new THREE.Vector3(t.px + reach, baseY + t.h, t.pz + reach));
+      }
+      const vegetationCullSphere = vegetationCullBox.getBoundingSphere(new THREE.Sphere());
+
       // --- bucket into one InstancedMesh per species+variant ----------------
       const buckets = new Map();
       for (const t of placements) {
@@ -3680,6 +3761,9 @@ export function buildCircuit(trackId, def, scene) {
           roughness: 0.92,
         }, K_FOLIAGE_EMIT), b.items.length);
         mesh.name = `trees-${b.sp}-v${b.v}`;
+        mesh.userData.nearCount = b.items.filter(t => t.layer === 'near').length;
+        mesh.userData.trunkEligibleCount = b.items.filter(t => t.layer === 'near' && t.sp !== 'scrub').length;
+        mesh.userData.cullGroup = 'vegetation-card-trunk';
         keepOutOfAO(mesh);
         b.items.forEach((t, k) => {
           // same field the ground disc is built from, so a trunk never floats
@@ -3697,6 +3781,7 @@ export function buildCircuit(trackId, def, scene) {
             base - 0.02 + rnd() * spread * 0.82);
           mesh.setColorAt(k, tint);
         });
+        mesh.boundingSphere = vegetationCullSphere.clone();
         if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
         group.add(mesh);
         treeCount += b.items.length;
@@ -3722,6 +3807,9 @@ export function buildCircuit(trackId, def, scene) {
         const trunks = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.72, 1, 1, 7, 1, false),
           std({ color: 0xffffff, roughness: 0.96 }), trunkItems.length);
         trunks.name = 'vegetation-near-trunks';
+        trunks.userData.nearCardCount = placements.filter(t => t.layer === 'near').length;
+        trunks.userData.eligibleCardCount = trunkCandidates.length;
+        trunks.userData.cullGroup = 'vegetation-card-trunk';
         const mm = new THREE.Matrix4();
         const col = new THREE.Color();
         for (let k = 0; k < trunkItems.length; k++) {
@@ -3732,6 +3820,7 @@ export function buildCircuit(trackId, def, scene) {
           col.offsetHSL((rnd() - 0.5) * 0.025, (rnd() - 0.5) * 0.08, (rnd() - 0.5) * 0.09);
           trunks.setColorAt(k, col);
         }
+        trunks.boundingSphere = vegetationCullSphere.clone();
         if (trunks.instanceColor) trunks.instanceColor.needsUpdate = true;
         group.add(trunks);
         depthStats.near.trunks = trunkItems.length;
@@ -3760,9 +3849,22 @@ export function buildCircuit(trackId, def, scene) {
         }
       }
       if (shrubItems.length) {
-        const shrubs = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 1),
-          std({ color: 0xffffff, roughness: 0.98 }), shrubItems.length);
+        const shrubSpecies = depthProfile.mass === 'arid' ? 'scrub'
+          : depthProfile.mass === 'alpine' ? 'pine' : 'broadleaf';
+        const shrubVariant = Math.min(spVariants(shrubSpecies) - 1,
+          Math.floor(positionHash(centre.x, centre.z, 613) * spVariants(shrubSpecies)));
+        const shrubMap = ctex(draw(TEX.treeCanopy, [shrubSpecies, shrubVariant, 256], 'rgba(48,92,46,0.9)'), {
+          wrapS: THREE.ClampToEdgeWrapping, wrapT: THREE.ClampToEdgeWrapping, aniso: 4,
+        });
+        // Use the same alpha-cut three-plane foliage treatment as the trees. The
+        // old smooth-shaded icosahedra had no map and read as plastic pool floats;
+        // these retain the existing per-instance scale, yaw and tint variation but
+        // present a ragged leaf silhouette from both road and elevated cameras.
+        const shrubs = new THREE.InstancedMesh(xGeo, flatLit(shrubMap, K_FOLIAGE, {
+          side: THREE.FrontSide, transparent: false, alphaTest: 0.38, roughness: 0.96,
+        }, K_FOLIAGE_EMIT), shrubItems.length);
         shrubs.name = 'vegetation-near-shrubs';
+        keepOutOfAO(shrubs);
         const mm = new THREE.Matrix4(), qq = new THREE.Quaternion(), sc2 = new THREE.Vector3();
         const pp = new THREE.Vector3(), col = new THREE.Color();
         const shrubHue = depthProfile.mass === 'arid' ? 0x7d8150
@@ -3770,8 +3872,8 @@ export function buildCircuit(trackId, def, scene) {
             : depthProfile.mass === 'alpine' ? 0x3d6549 : 0x527b43;
         shrubItems.forEach((it, k) => {
           qq.setFromAxisAngle(UP, it.rot);
-          sc2.set(it.sx, it.sy, it.sz);
-          pp.set(it.px, terrainAt(it.px, it.pz) + it.sy * 0.72, it.pz);
+          sc2.set(it.sx * 2, it.sy * 1.65, it.sz * 2);
+          pp.set(it.px, terrainAt(it.px, it.pz) - 0.04, it.pz);
           mm.compose(pp, qq, sc2);
           shrubs.setMatrixAt(k, mm);
           col.setHex(shrubHue).offsetHSL((rnd() - 0.5) * 0.045, (rnd() - 0.5) * 0.16, (rnd() - 0.5) * 0.16);
@@ -3798,19 +3900,21 @@ export function buildCircuit(trackId, def, scene) {
           w: architecturalFar ? 64 + rnd() * 58 : 78 + rnd() * 72,
           rot: (rnd() - 0.5) * Math.PI,
         }))
-        // The crossed cards extend w/2 along two axes; their bounding circle is
-        // exact for every rotation and keeps even the atmospheric geometry away.
+        // The ragged run stays inside the same w/2 radial envelope as the old card,
+        // so its exact rotation-independent keep-out remains unchanged.
         .filter(p => acceptCircle(p.px, p.pz, p.w / 2));
+      let farMassUsed = false;
       for (let v = 0; v < 3; v++) {
         const items = massPlaces.filter((_, k) => k % 3 === v);
         if (!items.length) continue;
         const map = ctex(draw(TEX.vegetationMass, [depthProfile.mass, v, 640, 160], 'rgba(48,76,50,0.9)'), {
           wrapS: THREE.ClampToEdgeWrapping, wrapT: THREE.ClampToEdgeWrapping, aniso: 2,
         });
-        const masses = new THREE.InstancedMesh(xGeo, flatLit(map, K_FOLIAGE, {
+        const masses = new THREE.InstancedMesh(farMassGeo, flatLit(map, K_FOLIAGE, {
           side: THREE.FrontSide, transparent: false, alphaTest: 0.22, roughness: 1,
         }, theme.night ? 0.22 : 0.36), items.length);
         masses.name = `vegetation-far-mass-v${v}`;
+        farMassUsed = true;
         keepOutOfAO(masses);
         const mm = new THREE.Matrix4(), qq = new THREE.Quaternion(), sc2 = new THREE.Vector3();
         const pp = new THREE.Vector3(), col = new THREE.Color();
@@ -3838,7 +3942,8 @@ export function buildCircuit(trackId, def, scene) {
         depthStats.far.masses += items.length;
       }
 
-      if (!buckets.size && !massPlaces.length) xGeo.dispose(); // nothing references it
+      if (!buckets.size && !shrubItems.length) xGeo.dispose(); // nothing references it
+      if (!farMassUsed) farMassGeo.dispose();
     }
 
     if (themeName !== 'classic') {
@@ -4202,21 +4307,26 @@ export function buildCircuit(trackId, def, scene) {
   // off, renderOrder below the cars' own contact shadows, and laid a few cm off
   // the terrain so they never z-fight the grass.
   if (shadeRects.length || shadeBlobs.length) {
+    const CANOPY_SHADE_SUPPORT = 0.5; // visible radius / texture half-extent
     const softTex = (ellipse) => {
-      const c = document.createElement('canvas');
-      c.width = c.height = 128;
-      const g = c.getContext('2d');
-      const grad = g.createRadialGradient(64, 64, ellipse ? 6 : 26, 64, 64, 62);
-      grad.addColorStop(0, 'rgba(0,0,0,1)');
-      grad.addColorStop(ellipse ? 0.45 : 0.62, 'rgba(0,0,0,0.72)');
-      grad.addColorStop(1, 'rgba(0,0,0,0)');
-      g.fillStyle = grad;
-      g.fillRect(0, 0, 128, 128);
+      const c = ellipse ? draw(TEX.canopyShadeDecal, [128], 'rgba(0,0,0,0)')
+        : document.createElement('canvas');
+      if (!ellipse) {
+        c.width = c.height = 128;
+        const g = c.getContext('2d');
+        const grad = g.createRadialGradient(64, 64, 26, 64, 64, 62);
+        grad.addColorStop(0, 'rgba(0,0,0,1)');
+        grad.addColorStop(0.62, 'rgba(0,0,0,0.72)');
+        grad.addColorStop(1, 'rgba(0,0,0,0)');
+        g.fillStyle = grad;
+        g.fillRect(0, 0, 128, 128);
+      }
       const t = new THREE.CanvasTexture(c);
       t.colorSpace = THREE.SRGBColorSpace;
       // This texture is reused by meshes inside one circuit but is still owned
       // by that circuit. `userData.shared` is reserved for external resources.
       t.userData.circuitOwned = true;
+      if (ellipse) t.userData.alphaSupportHalfExtent = CANOPY_SHADE_SUPPORT;
       return t;
     };
     const quad = new THREE.PlaneGeometry(1, 1);
@@ -4236,7 +4346,10 @@ export function buildCircuit(trackId, def, scene) {
         mm.compose(
           new THREE.Vector3(it.x, terrainAt(it.x, it.z) + 0.045, it.z),
           qq,
-          new THREE.Vector3(it.w || it.rx * 2, it.d || it.rz * 2, 1));
+          new THREE.Vector3(
+            it.w || (it.rx * 2) / CANOPY_SHADE_SUPPORT,
+            it.d || (it.rz * 2) / CANOPY_SHADE_SUPPORT,
+            1));
         g2.applyMatrix4(mm);
         // fold per-decal alpha into the vertex colour channel the shader reads
         const c2 = g2.attributes.color.array;
@@ -4276,6 +4389,7 @@ export function buildCircuit(trackId, def, scene) {
       mesh.name = name;
       if (ellipse) mesh.userData.shadePolicy = {
         ...canopyShadeStats,
+        alphaSupportHalfExtent: CANOPY_SHADE_SUPPORT,
         output: items.length,
       };
       mesh.renderOrder = -1;          // under the cars' contact shadows
