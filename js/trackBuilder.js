@@ -152,7 +152,8 @@ const DEPTH_CAP = Object.freeze({
   infraPaddockAprons: 1, infraPaddockVehicleParts: 36, infraPaddockBuildingParts: 28,
   infraPaddockTents: 4, infraPerimeterPosts: 384, infraPerimeterPanels: 384,
   infraPerimeterGates: 8, infraParkingSurfaces: 4, infraParkedCarParts: 320,
-  infraAccessRoads: 260, infraSpectatorBanks: 6, infraSpectatorCrowds: 18,
+  infraAccessRoads: 384, infraSurfaceMargins: 400,
+  infraSpectatorBanks: 6, infraSpectatorCrowds: 18,
   infraSupportClutter: 40, infraCampingTents: 24,
 });
 // Classic circuits keep real gravel traps; the modern venues have paved,
@@ -867,14 +868,15 @@ export function buildCircuit(trackId, def, scene) {
     return ab + (cd - ab) * tz;
   };
   // skirt + sun-offset lobe for one rectangular structure (len x dep, yaw rot)
-  const addStructureShade = (x, z, rot, len, dep, hgt, aSkirt = 0.18, aLobe = 0.26) => {
+  const addStructureShade = (x, z, rot, len, dep, hgt, aSkirt = 0.18, aLobe = 0.26,
+    groundLift = 0.045) => {
     // sun elevation is atan(380 / |(260,160)|) ~ 51.2deg: a wall of height h
     // throws a shadow ~0.8h; capped so a 14m stand does not shade half the verge
     const off = Math.min(9, hgt * 0.55);
-    shadeRects.push({ x, z, rot, w: len + 5, d: dep + 5, a: aSkirt * SHADE_MUL });
+    shadeRects.push({ x, z, rot, w: len + 5, d: dep + 5, a: aSkirt * SHADE_MUL, groundLift });
     shadeRects.push({
       x: x + SHADE_DIR.x * off, z: z + SHADE_DIR.z * off,
-      rot, w: len + 7, d: dep + 8, a: aLobe * SHADE_MUL,
+      rot, w: len + 7, d: dep + 8, a: aLobe * SHADE_MUL, groundLift,
     });
   };
 
@@ -3161,6 +3163,7 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
         paddockAprons: 0, paddockVehicleParts: 0, paddockBuildingParts: 0,
         paddockTents: 0, perimeterPosts: 0, perimeterPanels: 0, perimeterGates: 0,
         parkingSurfaces: 0, parkedCarParts: 0, accessRoads: 0,
+        surfaceMargins: 0,
         spectatorBanks: 0, spectatorCrowds: 0, supportClutter: 0, campingTents: 0,
       },
       caps: { ...DEPTH_CAP },
@@ -3525,7 +3528,7 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
     const infrastructurePlan = {
       paddockAprons: [], paddockVehicles: [], paddockBuildings: [], paddockTents: [],
       perimeterPosts: [], perimeterPanels: [], perimeterGates: [],
-      parkingSurfaces: [], parkedCars: [], accessRoads: [],
+      parkingSurfaces: [], parkedCars: [], accessRoads: [], surfaceMargins: [],
       spectatorBanks: [], spectatorCrowds: [], supportClutter: [], campingTents: [],
     };
     {
@@ -3588,9 +3591,9 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
           for (const side of [pitSide, -pitSide]) {
             for (const gap of [5, 22, 42]) {
               const frame = frameAt(i, side, pitOuter + size.dep / 2 + gap);
-              if (!acceptObb(frame.p.x, frame.p.z, frame.fx, frame.fz, size.len / 2, size.dep / 2)) continue;
-              if (!keepOutClear(frame.p.x, frame.p.z, frame.fx, frame.fz, size.len / 2, size.dep / 2)) continue;
-              if (!insideSky(frame.p.x, frame.p.z, Math.hypot(size.len, size.dep) / 2, 12)) continue;
+              if (!acceptObb(frame.p.x, frame.p.z, frame.fx, frame.fz, (size.len + 5) / 2, (size.dep + 5) / 2)) continue;
+              if (!keepOutClear(frame.p.x, frame.p.z, frame.fx, frame.fz, (size.len + 5) / 2, (size.dep + 5) / 2)) continue;
+              if (!insideSky(frame.p.x, frame.p.z, Math.hypot(size.len + 5, size.dep + 5) / 2, 12)) continue;
               paddock = { ...frame, ...size };
               break;
             }
@@ -3607,9 +3610,9 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
             for (const offset of [wallOff + 100, wallOff + 145, wallOff + 195, wallOff + 245, wallOff + 315]) {
               const frame = frameAt(i, side, offset);
               const size = paddockSizes[paddockSizes.length - 1];
-              if (!acceptObb(frame.p.x, frame.p.z, frame.fx, frame.fz, size.len / 2, size.dep / 2)) continue;
-              if (!keepOutClear(frame.p.x, frame.p.z, frame.fx, frame.fz, size.len / 2, size.dep / 2)) continue;
-              if (!insideSky(frame.p.x, frame.p.z, Math.hypot(size.len, size.dep) / 2, 12)) continue;
+              if (!acceptObb(frame.p.x, frame.p.z, frame.fx, frame.fz, (size.len + 5) / 2, (size.dep + 5) / 2)) continue;
+              if (!keepOutClear(frame.p.x, frame.p.z, frame.fx, frame.fz, (size.len + 5) / 2, (size.dep + 5) / 2)) continue;
+              if (!insideSky(frame.p.x, frame.p.z, Math.hypot(size.len + 5, size.dep + 5) / 2, 12)) continue;
               paddock = { ...frame, ...size };
               break;
             }
@@ -3622,6 +3625,11 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
         infrastructurePlan.paddockAprons.push({
           p: worldAt(paddock, 0, 0, 0.026), yaw: paddock.yaw, len: paddock.len, dep: paddock.dep,
         });
+        infrastructurePlan.surfaceMargins.push({
+          p: worldAt(paddock, 0, 0, 0.018), yaw: paddock.yaw, len: paddock.len + 5, dep: paddock.dep + 5,
+        });
+        addStructureShade(paddock.p.x, paddock.p.z, paddock.yaw,
+          paddock.len + 5, paddock.dep + 5, 0.12, 0.035, 0.045, 0.012);
         const teamColors = [0xe7e8eb, 0xbd3036, 0x315f9f, 0xd0a83a, 0x4b8b68, 0x8b5aa6, 0xd66f35, 0x67717f];
         const perRank = Math.ceil(paddock.transporters / 2);
         const pitch = Math.min(18.4, (paddock.len - 18) / Math.max(1, perRank));
@@ -3680,9 +3688,9 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
             const base = infra.mode === 'street' ? wallOff + 58 : Math.max(wallOff + 105, infra.fenceRadius * 0.54);
             const offset = base + (attempt % 4) * 34;
             const frame = frameAt(i, side, offset);
-            if (!acceptObb(frame.p.x, frame.p.z, frame.fx, frame.fz, parkingDims.len / 2, parkingDims.dep / 2)) continue;
-            if (!keepOutClear(frame.p.x, frame.p.z, frame.fx, frame.fz, parkingDims.len / 2, parkingDims.dep / 2)) continue;
-            if (!insideSky(frame.p.x, frame.p.z, Math.hypot(parkingDims.len, parkingDims.dep) / 2, 4)) continue;
+            if (!acceptObb(frame.p.x, frame.p.z, frame.fx, frame.fz, (parkingDims.len + 4) / 2, (parkingDims.dep + 4) / 2)) continue;
+            if (!keepOutClear(frame.p.x, frame.p.z, frame.fx, frame.fz, (parkingDims.len + 4) / 2, (parkingDims.dep + 4) / 2)) continue;
+            if (!insideSky(frame.p.x, frame.p.z, Math.hypot(parkingDims.len + 4, parkingDims.dep + 4) / 2, 4)) continue;
             anchor = { ...frame, ...parkingDims };
             break;
           }
@@ -3693,6 +3701,11 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
           p: worldAt(anchor, 0, 0, 0.024), yaw: anchor.yaw, len: anchor.len, dep: anchor.dep,
           surface: infra.mode === 'street' ? 'asphalt' : infra.surface,
         });
+        infrastructurePlan.surfaceMargins.push({
+          p: worldAt(anchor, 0, 0, 0.017), yaw: anchor.yaw, len: anchor.len + 4, dep: anchor.dep + 4,
+        });
+        addStructureShade(anchor.p.x, anchor.p.z, anchor.yaw,
+          anchor.len + 4, anchor.dep + 4, 0.10, 0.032, 0.042, 0.012);
         const rows = infra.mode === 'street' ? 2 : 3;
         const cols = infra.mode === 'street' ? 6 : 10;
         const carPalette = [0xdddddc, 0x2e4057, 0x8d3134, 0xc0a04a, 0x426f58, 0x55565b, 0x8a6d93, 0xb86b3a];
@@ -3747,8 +3760,10 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
           infrastructurePlan.spectatorBanks.push({ p: worldAt(bank, 0, 0), yaw: bank.yaw, len, dep, height: bank.height });
           for (const x of [-18, 0, 18]) {
             if (!acceptLocalObb(bank, x, 0.8, 7.5, 0.2, 8)) continue;
+            const ridgeY = bank.height * Math.sin(Math.PI * (x / bank.len + 0.5))
+              * Math.sin(Math.PI * (0.8 / bank.dep + 0.5));
             infrastructurePlan.spectatorCrowds.push({
-              p: worldAt(bank, x, 0.8, bank.height + 2.25), yaw: bank.yaw,
+              p: worldAt(bank, x, 0.8, ridgeY + 2.25), yaw: bank.yaw,
               width: 15, height: 4.5,
             });
           }
@@ -3788,31 +3803,57 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
       // the paddock and each parking/staging court to the venue edge. Every short
       // segment is an independently checked instance, so a folded-back piece of
       // circuit creates a clean break instead of being paved over.
-      const planRoadSegment = (a, b, width = 6.2) => {
-        if (infrastructurePlan.accessRoads.length >= DEPTH_CAP.infraAccessRoads) return;
+      const ROAD_SEGMENT_MAX = 50;
+      const planRoadSegment = (a, b, width = 6.2, allowRoadIntersection = false,
+        forceInfrastructureCrossing = false) => {
+        if (infrastructurePlan.accessRoads.length >= DEPTH_CAP.infraAccessRoads) return false;
         const dx = b.x - a.x, dz = b.z - a.z, len = Math.hypot(dx, dz);
-        if (len < 2) return;
+        if (len < 2 || len > ROAD_SEGMENT_MAX) return false;
         const fx = new THREE.Vector3(dx / len, 0, dz / len);
         const fz = new THREE.Vector3(-fx.z, 0, fx.x);
         const px = (a.x + b.x) / 2, pz = (a.z + b.z) / 2;
-        if (!acceptObb(px, pz, fx, fz, len / 2, width / 2)) return;
-        if (!keepOutClear(px, pz, fx, fz, len / 2, width / 2,
-          k => k.tag === 'infra-paddock' || k.tag === 'infra-parking')) return;
-        if (!insideSky(px, pz, Math.hypot(len, width) / 2, 0.2)) return;
+        const marginLen = len + 1.2, marginWidth = width + 2.4;
+        if (!acceptObb(px, pz, fx, fz, marginLen / 2, marginWidth / 2)) return false;
+        if (!keepOutClear(px, pz, fx, fz, marginLen / 2, marginWidth / 2,
+          k => k.tag === 'infra-paddock' || k.tag === 'infra-parking'
+            || (allowRoadIntersection && k.tag === 'infra-road')
+            || (forceInfrastructureCrossing && k.tag?.startsWith('infra-')))) return false;
+        if (!insideSky(px, pz, Math.hypot(marginLen, marginWidth) / 2, 0.2)) return false;
         const p = new THREE.Vector3(px, terrainAt(px, pz) + 0.032, pz);
         infrastructurePlan.accessRoads.push({ p, yaw: Math.atan2(fz.x, fz.z), len, width });
-        addKeepOut(p, fz, len / 2, width / 2, 'infra-road');
+        infrastructurePlan.surfaceMargins.push({
+          p: new THREE.Vector3(px, terrainAt(px, pz) + 0.022, pz),
+          yaw: Math.atan2(fz.x, fz.z), len: marginLen, dep: marginWidth,
+        });
+        addStructureShade(px, pz, Math.atan2(fz.x, fz.z), marginLen, marginWidth,
+          0.08, 0.025, 0.034, 0.012);
+        addKeepOut(p, fz, marginLen / 2, marginWidth / 2, 'infra-road');
+        return true;
       };
       const ringStep = Math.max(1, stepOf(46));
       const ringSide = paddock?.side ?? pitSide;
       const ringOffset = infra.mode === 'street' ? wallOff + 34 : Math.max(wallOff + 42, 68);
+      const roadPoint = (i, side, offset) => {
+        const s = samples[idxAt(i)];
+        return s.p.clone().addScaledVector(s.n, side * offset);
+      };
+      const planRoadArc = (i0, i1, side, offset, width, depth = 0) => {
+        if (infrastructurePlan.accessRoads.length >= DEPTH_CAP.infraAccessRoads) return;
+        const a = roadPoint(i0, side, offset), b = roadPoint(i1, side, offset);
+        const chord = a.distanceTo(b);
+        if (chord > ROAD_SEGMENT_MAX && i1 - i0 > 1 && depth < 10) {
+          const mid = i0 + Math.floor((i1 - i0) / 2);
+          planRoadArc(i0, mid, side, offset, width, depth + 1);
+          planRoadArc(mid, i1, side, offset, width, depth + 1);
+          return;
+        }
+        planRoadSegment(a, b, width);
+      };
       for (let i = 0; i < N && infrastructurePlan.accessRoads.length < DEPTH_CAP.infraAccessRoads; i += ringStep) {
-        const a = samples[i].p.clone().addScaledVector(samples[i].n, ringSide * ringOffset);
-        const j = idxAt(i + ringStep);
-        const b = samples[j].p.clone().addScaledVector(samples[j].n, ringSide * ringOffset);
-        planRoadSegment(a, b, 6.4);
+        planRoadArc(i, Math.min(N, i + ringStep), ringSide, ringOffset, 6.4);
       }
       const spurTargets = [];
+      const gateRequests = [];
       if (paddock) spurTargets.push({ i: paddock.i, side: paddock.side, outer: Math.max(paddock.offset + paddock.dep / 2, infra.fenceRadius + 18) });
       for (const park of parkingAnchors) spurTargets.push({ i: park.i, side: park.side, outer: Math.max(park.offset + park.dep / 2, infra.fenceRadius + 18) });
       for (const target of spurTargets) {
@@ -3822,7 +3863,35 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
           const next = Math.min(Math.min(450, target.outer), off + 18);
           const a = s.p.clone().addScaledVector(s.n, target.side * off);
           const b = s.p.clone().addScaledVector(s.n, target.side * next);
-          planRoadSegment(a, b, 7.0);
+          const built = planRoadSegment(a, b, 7.0, true);
+          if (built && off <= infra.fenceRadius && next >= infra.fenceRadius) {
+            gateRequests.push({
+              p: s.p.clone().addScaledVector(s.n, target.side * infra.fenceRadius),
+              side: target.side, i: target.i,
+            });
+          }
+        }
+      }
+
+      // Guarantee two real road crossings before the fence is planned. A compact
+      // street paddock and staging court can land in the same 18m gate sector; in
+      // that case move the second service spur one short arc sector along the lap.
+      const gateCandidates = [
+        ...spurTargets,
+        { i: idxAt(pitI + stepOf(length * 0.25)), side: ringSide },
+        { i: idxAt(pitI - stepOf(length * 0.25)), side: ringSide },
+      ];
+      for (const candidate of gateCandidates) {
+        if (gateRequests.length >= 2) break;
+        for (const shift of [0, stepOf(55), -stepOf(55)]) {
+          const i = idxAt(candidate.i + shift), s = samples[i];
+          const p = s.p.clone().addScaledVector(s.n, candidate.side * infra.fenceRadius);
+          if (gateRequests.some(g => g.p.distanceToSquared(p) <= 18 * 18)) continue;
+          const a = s.p.clone().addScaledVector(s.n, candidate.side * (infra.fenceRadius - 9));
+          const b = s.p.clone().addScaledVector(s.n, candidate.side * (infra.fenceRadius + 9));
+          if (!planRoadSegment(a, b, 7.0, true, true)) continue;
+          gateRequests.push({ p, side: candidate.side, i });
+          break;
         }
       }
 
@@ -3830,17 +3899,32 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
       // mesh panels; street profiles use the same continuous placement as solid
       // city-edge hoarding. Road overlaps become explicit overhead gate bars.
       const fenceStep = Math.max(1, stepOf(42));
+      const FENCE_SEGMENT_MAX = 64;
       const gateCentres = [];
-      for (const side of [1, -1]) {
-        for (let i = 0; i < N && infrastructurePlan.perimeterPanels.length < DEPTH_CAP.infraPerimeterPanels; i += fenceStep) {
-          const j = idxAt(i + fenceStep);
+      const fencePoint = (i, side, offset) => {
+        const s = samples[idxAt(i)];
+        return s.p.clone().addScaledVector(s.n, side * offset);
+      };
+      const planFenceSpan = (i0, i1, side, depth = 0) => {
+        if (infrastructurePlan.perimeterPanels.length >= DEPTH_CAP.infraPerimeterPanels) return;
+        const baseOff = Math.min(450, Math.max(wallOff + 32, infra.fenceRadius));
+        const baseA = fencePoint(i0, side, baseOff), baseB = fencePoint(i1, side, baseOff);
+        const baseChord = baseA.distanceTo(baseB);
+        if (baseChord > FENCE_SEGMENT_MAX && i1 - i0 > 1 && depth < 10) {
+          const mid = i0 + Math.floor((i1 - i0) / 2);
+          planFenceSpan(i0, mid, side, depth + 1);
+          planFenceSpan(mid, i1, side, depth + 1);
+          return;
+        }
+          const gateRequest = gateRequests.find(g => g.side === side
+            && pointSegD2(g.p.x, g.p.z, baseA.x, baseA.z, baseB.x, baseB.z) <= 9 * 9);
           let panel = null;
-          for (const extra of [0, 24, 48, 76, 108]) {
+          for (const extra of gateRequest ? [0] : [0, 24, 48, 76, 108]) {
             const off = Math.min(450, Math.max(wallOff + 32, infra.fenceRadius + extra));
-            const a = samples[i].p.clone().addScaledVector(samples[i].n, side * off);
-            const b = samples[j].p.clone().addScaledVector(samples[j].n, side * off);
+            const a = fencePoint(i0, side, off);
+            const b = fencePoint(i1, side, off);
             const dx = b.x - a.x, dz = b.z - a.z, len = Math.hypot(dx, dz);
-            if (len < 3) continue;
+            if (len < 3 || len > FENCE_SEGMENT_MAX) continue;
             const fx = new THREE.Vector3(dx / len, 0, dz / len);
             const fz = new THREE.Vector3(-fx.z, 0, fx.x);
             const px = (a.x + b.x) / 2, pz = (a.z + b.z) / 2;
@@ -3853,29 +3937,37 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
               yaw: Math.atan2(fz.x, fz.z), height: infra.fence === 'mesh' ? 3.2 : 4.2 };
             break;
           }
-          if (!panel) continue;
-          const roadOverlap = !keepOutClear(panel.p.x, panel.p.z, panel.fx, panel.fz,
+          if (!panel) {
+            if (i1 - i0 > 1 && depth < 10) {
+              const mid = i0 + Math.floor((i1 - i0) / 2);
+              planFenceSpan(i0, mid, side, depth + 1);
+              planFenceSpan(mid, i1, side, depth + 1);
+            }
+            return;
+          }
+          const roadOverlap = !!gateRequest || !keepOutClear(panel.p.x, panel.p.z, panel.fx, panel.fz,
             panel.len / 2, 4.0, k => k.tag !== 'infra-road');
           if (roadOverlap) {
+            const gateP = gateRequest?.p || panel.p;
             if (infrastructurePlan.perimeterGates.length < DEPTH_CAP.infraPerimeterGates
-              && gateCentres.every(p => p.distanceToSquared(panel.p) > 32 * 32)
-              && acceptObb(panel.p.x, panel.p.z, panel.fx, panel.fz, Math.min(11, panel.len * 0.42) / 2, 0.21)) {
-              gateCentres.push(panel.p.clone());
+              && gateCentres.every(p => p.distanceToSquared(gateP) > 18 * 18)
+              && acceptObb(gateP.x, gateP.z, panel.fx, panel.fz, Math.min(11, panel.len * 0.42) / 2, 0.21)) {
+              gateCentres.push(gateP.clone());
               infrastructurePlan.perimeterGates.push({
-                p: new THREE.Vector3(panel.p.x, terrainAt(panel.p.x, panel.p.z) + 4.4, panel.p.z),
+                p: new THREE.Vector3(gateP.x, terrainAt(gateP.x, gateP.z) + 4.4, gateP.z),
                 yaw: panel.yaw, len: Math.min(11, panel.len * 0.42), height: 0.42, dep: 0.42,
               });
               for (const dir of [-1, 1]) {
-                const qx = panel.p.x + panel.fx.x * dir * 5.4;
-                const qz = panel.p.z + panel.fx.z * dir * 5.4;
+                const qx = gateP.x + panel.fx.x * dir * 5.4;
+                const qz = gateP.z + panel.fx.z * dir * 5.4;
                 if (acceptCircle(qx, qz, 0.24)) infrastructurePlan.perimeterPosts.push({
                   p: new THREE.Vector3(qx, terrainAt(qx, qz) + 2.2, qz), height: 4.4,
                 });
               }
-              addStructureShade(panel.p.x, panel.p.z, panel.yaw, 11, 0.8, 4.8, 0.05, 0.06);
-              addKeepOut(panel.p, panel.fz, 6, 1.0, 'infra-fence');
+              addStructureShade(gateP.x, gateP.z, panel.yaw, 11, 0.8, 4.8, 0.05, 0.06);
+              addKeepOut(gateP, panel.fz, 6, 1.0, 'infra-fence');
             }
-            continue;
+            return;
           }
           infrastructurePlan.perimeterPanels.push({
             p: new THREE.Vector3(panel.p.x, panel.p.y + panel.height / 2, panel.p.z),
@@ -3891,7 +3983,46 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
           addStructureShade(panel.p.x, panel.p.z, panel.yaw, panel.len, panel.dep,
             panel.height, 0.045, 0.055);
           addKeepOut(panel.p, panel.fz, panel.len / 2, Math.max(0.4, panel.dep), 'infra-fence');
+      };
+      for (const side of [1, -1]) {
+        for (let i = 0; i < N && infrastructurePlan.perimeterPanels.length < DEPTH_CAP.infraPerimeterPanels; i += fenceStep) {
+          planFenceSpan(i, Math.min(N, i + fenceStep), side);
         }
+      }
+      // A gate request can lie inside the paddock/parking keep-out itself, where
+      // no ordinary fence panel is allowed to exist. Materialise those remaining
+      // road crossings directly and remove any nearby panel/post so the opening is
+      // real rather than a bar drawn on top of the fence.
+      for (const request of gateRequests) {
+        if (infrastructurePlan.perimeterGates.length >= 2) break;
+        if (gateCentres.some(p => p.distanceToSquared(request.p) <= 18 * 18)) continue;
+        const s = samples[request.i];
+        const fx = s.t.clone().setY(0).normalize();
+        const fz = new THREE.Vector3(-fx.z, 0, fx.x);
+        const yaw = Math.atan2(fz.x, fz.z), gateLen = 11;
+        if (!acceptObb(request.p.x, request.p.z, fx, fz, gateLen / 2, 0.21)) continue;
+        infrastructurePlan.perimeterPanels = infrastructurePlan.perimeterPanels.filter(panel => {
+          const panelFz = new THREE.Vector3(Math.sin(panel.yaw), 0, Math.cos(panel.yaw));
+          const panelFx = new THREE.Vector3().crossVectors(UP, panelFz).normalize();
+          const dx = request.p.x - panel.p.x, dz = request.p.z - panel.p.z;
+          return Math.abs(dx * panelFx.x + dz * panelFx.z) > panel.len / 2 + gateLen / 2
+            || Math.abs(dx * panelFz.x + dz * panelFz.z) > 4;
+        });
+        infrastructurePlan.perimeterPosts = infrastructurePlan.perimeterPosts
+          .filter(post => post.p.distanceToSquared(request.p) > 7 * 7);
+        gateCentres.push(request.p.clone());
+        infrastructurePlan.perimeterGates.push({
+          p: new THREE.Vector3(request.p.x, terrainAt(request.p.x, request.p.z) + 4.4, request.p.z),
+          yaw, len: gateLen, height: 0.42, dep: 0.42,
+        });
+        for (const dir of [-1, 1]) {
+          const qx = request.p.x + fx.x * dir * 5.4, qz = request.p.z + fx.z * dir * 5.4;
+          if (acceptCircle(qx, qz, 0.24)) infrastructurePlan.perimeterPosts.push({
+            p: new THREE.Vector3(qx, terrainAt(qx, qz) + 2.2, qz), height: 4.4,
+          });
+        }
+        addStructureShade(request.p.x, request.p.z, yaw, gateLen, 0.8, 4.8, 0.05, 0.06);
+        addKeepOut(request.p, fz, 6, 1.0, 'infra-fence');
       }
 
       infraStats.paddockAprons = infrastructurePlan.paddockAprons.length;
@@ -3904,6 +4035,7 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
       infraStats.parkingSurfaces = infrastructurePlan.parkingSurfaces.length;
       infraStats.parkedCarParts = infrastructurePlan.parkedCars.length;
       infraStats.accessRoads = infrastructurePlan.accessRoads.length;
+      infraStats.surfaceMargins = infrastructurePlan.surfaceMargins.length;
       infraStats.spectatorBanks = infrastructurePlan.spectatorBanks.length;
       infraStats.spectatorCrowds = infrastructurePlan.spectatorCrowds.length;
       infraStats.supportClutter = infrastructurePlan.supportClutter.length;
@@ -4628,18 +4760,22 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
       const unitPlane = new THREE.PlaneGeometry(1, 1);
       const unitTent = new THREE.ConeGeometry(1, 1, 4, 1, false);
       const bankGeo = new THREE.BufferGeometry();
-      bankGeo.setAttribute('position', new THREE.Float32BufferAttribute([
-        -0.5, 0, -0.5, 0.5, 0, -0.5, -0.5, 0, 0.5, 0.5, 0, 0.5,
-        -0.5, 1, -0.18, 0.5, 1, -0.18, -0.5, 1, 0.18, 0.5, 1, 0.18,
-      ], 3));
-      bankGeo.setIndex([
-        0, 1, 3, 0, 3, 2,
-        0, 4, 5, 0, 5, 1,
-        2, 3, 7, 2, 7, 6,
-        0, 2, 6, 0, 6, 4,
-        1, 5, 7, 1, 7, 3,
-        4, 6, 7, 4, 7, 5,
-      ]);
+      {
+        const NX = 8, NZ = 4, pos = [], uv = [], idx = [];
+        for (let ix = 0; ix <= NX; ix++) for (let iz = 0; iz <= NZ; iz++) {
+          const u = ix / NX, v = iz / NZ;
+          pos.push(u - 0.5, Math.sin(Math.PI * u) * Math.sin(Math.PI * v), v - 0.5);
+          uv.push(u, v);
+        }
+        for (let ix = 0; ix < NX; ix++) for (let iz = 0; iz < NZ; iz++) {
+          const a = ix * (NZ + 1) + iz, b = a + 1;
+          const c = (ix + 1) * (NZ + 1) + iz, d = c + 1;
+          idx.push(a, b, c, b, d, c);
+        }
+        bankGeo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+        bankGeo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+        bankGeo.setIndex(idx);
+      }
       bankGeo.computeVertexNormals();
       const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), scale = new THREE.Vector3();
       const color = new THREE.Color();
@@ -4655,6 +4791,7 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
           if (it.color !== undefined) { color.setHex(it.color); mesh.setColorAt(i, color); }
         });
         if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+        mesh.userData.declaredFootprints = items.map(it => ({ len: it.len, height: it.height, dep: it.dep }));
         group.add(mesh);
         return mesh;
       };
@@ -4668,6 +4805,8 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
           m4.compose(it.p, q, scale);
           mesh.setMatrixAt(i, m4);
         });
+        mesh.userData.declaredFootprints = items.map(it => ({ len: it.len, height: 0, dep: it.dep ?? it.width }));
+        mesh.receiveShadow = true;
         group.add(mesh);
         return mesh;
       };
@@ -4683,21 +4822,46 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
           color.setHex(it.color); mesh.setColorAt(i, color);
         });
         if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+        mesh.userData.declaredFootprints = items.map(it => ({ len: it.sx * 2, height: it.sy, dep: it.sz * 2 }));
         group.add(mesh);
         return mesh;
       };
 
-      const asphalt = surfaceSet('asphalt', { aniso: 8, repeat: [1, 1] });
+      const marginSurface = surfaceSet('gravel', { aniso: 8 });
+      buildGround(plan.surfaceMargins, 'infra-surface-margins', std({
+        color: theme.night ? 0x99938a : 0xb7aa91, roughness: 1,
+        ...surfaceProps(marginSurface, 0.5),
+      }));
+      const paddockAsphalt = surfaceSet('asphalt', { aniso: 8, repeat: [18, 9] });
       buildGround(plan.paddockAprons, 'infra-paddock-aprons', std({
-        color: theme.night ? 0x24272c : 0x303237, roughness: 0.94,
-        ...surfaceProps(asphalt, 0.28),
+        color: theme.night ? 0xb8bdc5 : 0xf0f0ee, roughness: 0.96,
+        ...surfaceProps(paddockAsphalt, 0.32),
       }));
       buildBoxes(plan.paddockVehicles, 'infra-paddock-vehicle-parts',
         std({ color: 0xffffff, roughness: 0.68 }));
+      const infraFacadeTex = ctex(draw(TEX.buildingFacade,
+        [512, 1024, !!theme.night], theme.night ? '#1b1e24' : '#596068'),
+      { repeat: [1.5, 1.4], aniso: 16 });
       buildBoxes(plan.paddockBuildings, 'infra-paddock-building-parts',
-        std({ color: 0xffffff, roughness: 0.76 }));
+        flatLit(infraFacadeTex, K_FACADE, { roughness: 0.7 }));
+      const marqueeArt = () => {
+        const c = document.createElement('canvas');
+        c.width = 512; c.height = 512;
+        const g = c.getContext('2d');
+        g.fillStyle = '#eeeae0'; g.fillRect(0, 0, 512, 512);
+        const shade = g.createLinearGradient(0, 0, 512, 512);
+        shade.addColorStop(0, 'rgba(255,255,255,0.28)');
+        shade.addColorStop(0.55, 'rgba(255,255,255,0)');
+        shade.addColorStop(1, 'rgba(44,49,56,0.24)');
+        g.fillStyle = shade; g.fillRect(0, 0, 512, 512);
+        g.strokeStyle = '#9c968a'; g.lineWidth = 7;
+        for (let x = 0; x <= 512; x += 128) { g.beginPath(); g.moveTo(x, 0); g.lineTo(256, 256); g.stroke(); }
+        g.strokeStyle = '#6f7479'; g.lineWidth = 14; g.strokeRect(7, 7, 498, 498);
+        return c;
+      };
+      const marqueeTex = ctex(draw(marqueeArt, [], '#eeeae0'), { aniso: 8 });
       buildTents(plan.paddockTents, 'infra-paddock-tents',
-        std({ color: 0xffffff, roughness: 0.86 }));
+        flatLit(marqueeTex, K_FACADE, { roughness: 0.86 }));
 
       if (plan.perimeterPosts.length) {
         const posts = new THREE.InstancedMesh(unitBox,
@@ -4708,6 +4872,7 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
           m4.compose(it.p, new THREE.Quaternion(), scale.set(0.32, it.height, 0.32));
           posts.setMatrixAt(i, m4);
         });
+        posts.userData.declaredFootprints = plan.perimeterPosts.map(it => ({ len: 0.32, height: it.height, dep: 0.32 }));
         group.add(posts);
       }
       if (plan.perimeterPanels.length) {
@@ -4730,6 +4895,9 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
           m4.compose(it.p, q, scale);
           panels.setMatrixAt(i, m4);
         });
+        panels.userData.declaredFootprints = plan.perimeterPanels.map(it => ({
+          len: it.len, height: it.height, dep: infrastructureProfile.fence === 'mesh' ? 0 : it.dep,
+        }));
         if (infrastructureProfile.fence === 'mesh') keepOutOfAO(panels);
         group.add(panels);
       }
@@ -4738,17 +4906,18 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
 
       if (plan.parkingSurfaces.length) {
         const parkingKind = plan.parkingSurfaces[0].surface;
-        const surface = surfaceSet(parkingKind, { aniso: 8, repeat: [1, 1] });
-        const tint = parkingKind === 'grass' ? 0x879879 : parkingKind === 'gravel' ? 0xa69b88 : 0x45474b;
+        const surface = surfaceSet(parkingKind, { aniso: 8, repeat: [9, 5] });
+        const tint = parkingKind === 'grass' ? 0xc9d4ba : parkingKind === 'gravel' ? 0xddd4c3 : 0xe5e6e3;
         buildGround(plan.parkingSurfaces, 'infra-parking-surfaces', std({
           color: tint, roughness: 0.96, ...surfaceProps(surface, parkingKind === 'asphalt' ? 0.26 : 0.42),
         }));
       }
       buildBoxes(plan.parkedCars, 'infra-parked-car-parts',
         std({ color: 0xffffff, roughness: 0.66 }));
+      const accessAsphalt = surfaceSet('asphalt', { aniso: 8, repeat: [6, 1] });
       buildGround(plan.accessRoads, 'infra-access-roads', std({
-        color: theme.night ? 0x2c2f34 : 0x3b3d40, roughness: 0.93,
-        ...surfaceProps(asphalt, 0.26),
+        color: theme.night ? 0xb3b8c0 : 0xe8e9e7, roughness: 0.95,
+        ...surfaceProps(accessAsphalt, 0.3),
       }));
 
       if (plan.spectatorBanks.length) {
@@ -4763,6 +4932,7 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
           m4.compose(it.p, q, scale);
           banks.setMatrixAt(i, m4);
         });
+        banks.userData.declaredFootprints = plan.spectatorBanks.map(it => ({ len: it.len, height: it.height, dep: it.dep }));
         group.add(banks);
       }
       if (plan.spectatorCrowds.length) {
@@ -4786,6 +4956,7 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
           m4.compose(it.p, q, scale);
           crowds.setMatrixAt(i, m4);
         });
+        crowds.userData.declaredFootprints = plan.spectatorCrowds.map(it => ({ len: it.width, height: it.height, dep: 0 }));
         keepOutOfAO(crowds);
         group.add(crowds);
       }
@@ -5050,7 +5221,7 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
         g2.userData.alpha = it.a;
         qq.setFromAxisAngle(new THREE.Vector3(0, 1, 0), it.rot || 0).multiply(flat);
         mm.compose(
-          new THREE.Vector3(it.x, terrainAt(it.x, it.z) + 0.045, it.z),
+          new THREE.Vector3(it.x, terrainAt(it.x, it.z) + (it.groundLift ?? 0.045), it.z),
           qq,
           new THREE.Vector3(
             it.w || (it.rx * 2) / CANOPY_SHADE_SUPPORT,
