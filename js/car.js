@@ -121,6 +121,48 @@ function mergeGeos(parts) {
   return out;
 }
 
+// Merge a handful of coarse primitives into one vertex-coloured mesh. The far
+// car uses this instead of team-specific materials/textures: body paint,
+// accent, and carbon remain legible while the whole non-wheel silhouette costs
+// one draw call. The finished geometry is cached through G(), just like the
+// full-fidelity procedural parts.
+function mergeColoredGeos(parts) {
+  const flat = parts.map((p) => {
+    const g = p.geo.index ? p.geo.toNonIndexed() : p.geo.clone();
+    g.applyMatrix4(p.m);
+    const color = new THREE.Color(p.color);
+    const colors = new Float32Array(g.getAttribute('position').count * 3);
+    for (let i = 0; i < colors.length; i += 3) {
+      colors[i] = color.r;
+      colors[i + 1] = color.g;
+      colors[i + 2] = color.b;
+    }
+    g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    return g;
+  });
+  const out = new THREE.BufferGeometry();
+  for (const name of ['position', 'normal', 'color']) {
+    let count = 0, itemSize = 0;
+    for (const g of flat) {
+      const a = g.getAttribute(name);
+      count += a.count;
+      itemSize = a.itemSize;
+    }
+    const arr = new Float32Array(count * itemSize);
+    let off = 0;
+    for (const g of flat) {
+      const a = g.getAttribute(name);
+      arr.set(a.array.subarray(0, a.count * itemSize), off);
+      off += a.count * itemSize;
+    }
+    out.setAttribute(name, new THREE.BufferAttribute(arr, itemSize));
+  }
+  out.computeBoundingBox();
+  out.computeBoundingSphere();
+  for (const g of flat) g.dispose();
+  return out;
+}
+
 const UP = new THREE.Vector3(0, 1, 0);
 // One suspension / strut tube as a merge part: unit cylinder stretched a->b.
 function tube(ax, ay, az, bx, by, bz, r) {
@@ -139,6 +181,20 @@ const UNIT_CYL = () => G('cyl6', () => new THREE.CylinderGeometry(1, 1, 1, 6, 1)
 const PLANE = () => G('plane', () => new THREE.PlaneGeometry(1, 1));
 const DISC = () => G('disc', () => new THREE.CircleGeometry(1, 20));
 const BALL = () => G('ball', () => new THREE.SphereGeometry(1, 16, 12));
+const FAR_TUB = () => G('farTub8', () => new THREE.CylinderGeometry(0.27, 0.34, 1.75, 8, 1));
+const FAR_NOSE = () => G('farNose8', () => new THREE.CylinderGeometry(0.075, 0.235, 1.55, 8, 1));
+const FAR_WHEEL_FRONT = () => G('farWheelFront8', () =>
+  new THREE.CylinderGeometry(0.34, 0.34, 0.30, 8, 1).rotateZ(HALF_PI));
+const FAR_WHEEL_REAR = () => G('farWheelRear8', () =>
+  new THREE.CylinderGeometry(0.35, 0.35, 0.38, 8, 1).rotateZ(HALF_PI));
+const FAR_LIGHT = () => G('farLightBox', () => new THREE.BoxGeometry(1, 1, 1));
+const FAR_SHADOW = () => G('farShadow16', () =>
+  new THREE.CircleGeometry(1, 16).rotateX(-HALF_PI));
+const FAR_BRAKE_DISC = () => G('farBrakeDisc8', () => new THREE.CircleGeometry(0.20, 8));
+const FAR_BRAKES = () => G('farBrakes', () => mergeGeos([
+  { geo: FAR_BRAKE_DISC(), m: TRS(-0.86, 0.36, -1.60, 1, 1, 1, 0, HALF_PI, 0) },
+  { geo: FAR_BRAKE_DISC(), m: TRS(0.86, 0.36, -1.60, 1, 1, 1, 0, -HALF_PI, 0) },
+]));
 
 function extrude(shape, depth, seg = 8) {
   const g = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: false, curveSegments: seg });
@@ -1201,6 +1257,140 @@ function addTacnDeckLivery(body, team, drv, y) {
   return deck;
 }
 
+/* ------------------------------------------------------- distant race LOD --
+ * This deliberately is not a THREE.LOD: the race owns the final camera and is
+ * the only caller allowed to opt AI cars into the proxy. A car built for the
+ * hero/tooling path therefore stays full fidelity forever unless that caller
+ * explicitly runs RaceSession.updateCarLod().
+ *
+ * Steady-state draw budget: body + 4 independently animated wheels + rain light
+ * + one consolidated contact shadow = 7 calls. The single merged brake mesh is
+ * the eighth call only while glowing. No proxy-specific texture is created.
+ */
+export const DISTANT_CAR_BUDGET = Object.freeze({
+  steadyDrawCalls: 7,
+  brakingDrawCalls: 8,
+  maxTriangles: 900,
+  textures: 0,
+});
+
+function distantBodyGeo(team) {
+  const body = new THREE.Color(team.color ?? 0xcc1020).getHex();
+  const accent = new THREE.Color(team.accent ?? 0xffffff).getHex();
+  const carbon = 0x1c2027;
+  const key = `distantBody:${body.toString(16)}:${accent.toString(16)}`;
+  return G(key, () => mergeColoredGeos([
+    // carbon floor / wings establish the regulation-width silhouette
+    { geo: BOX(), color: carbon, m: TRS(0, 0.075, -0.05, 1.72, 0.07, 4.35) },
+    { geo: BOX(), color: carbon, m: TRS(0, 0.16, 2.02, 1.90, 0.07, 0.42) },
+    { geo: BOX(), color: carbon, m: TRS(0, 0.78, -2.02, 1.68, 0.13, 0.34) },
+    { geo: BOX(), color: carbon, m: TRS(-0.68, 0.48, -1.97, 0.08, 0.62, 0.30) },
+    { geo: BOX(), color: carbon, m: TRS(0.68, 0.48, -1.97, 0.08, 0.62, 0.30) },
+    { geo: BOX(), color: carbon, m: TRS(0, 0.55, 0.33, 0.34, 0.18, 0.56) },
+    // broad paint masses are intentionally chunky at 55m+; their vertex
+    // colours survive fog/IBL better than small livery textures.
+    { geo: FAR_TUB(), color: body, m: TRS(0, 0.37, 0.35, 1.18, 0.82, 1, HALF_PI, 0, 0) },
+    { geo: FAR_NOSE(), color: body, m: TRS(0, 0.27, 1.55, 1.22, 0.70, 1, HALF_PI, 0, 0) },
+    { geo: BOX(), color: body, m: TRS(-0.49, 0.31, -0.42, 0.72, 0.34, 1.42) },
+    { geo: BOX(), color: body, m: TRS(0.49, 0.31, -0.42, 0.72, 0.34, 1.42) },
+    { geo: BOX(), color: body, m: TRS(0, 0.49, -1.16, 0.48, 0.42, 1.18) },
+    // one strong team-accent ribbon is enough identity at this projected size.
+    { geo: BOX(), color: accent, m: TRS(0, 0.655, -0.34, 0.42, 0.075, 1.68) },
+    { geo: BOX(), color: accent, m: TRS(0, 0.835, -2.03, 1.36, 0.055, 0.36) },
+  ]));
+}
+
+function triangleCount(geometry) {
+  if (!geometry) return 0;
+  return geometry.index
+    ? geometry.index.count / 3
+    : (geometry.getAttribute('position')?.count || 0) / 3;
+}
+
+export function buildDistantCarProxy(team) {
+  const root = new THREE.Group();
+  root.name = 'distantCarProxy';
+  root.visible = false;
+
+  const body = new THREE.Mesh(distantBodyGeo(team), M('distantBodyMaterial', () =>
+    new THREE.MeshStandardMaterial({
+      name: 'distantBodyMaterial', vertexColors: true,
+      metalness: 0.14, roughness: 0.54,
+    })));
+  body.name = 'distantBody';
+  root.add(body);
+
+  const wheelMaterial = M('distantTyreMaterial', () => new THREE.MeshStandardMaterial({
+    name: 'distantTyreMaterial', color: 0x111217, metalness: 0.03, roughness: 0.90,
+  }));
+  const wheels = {};
+  for (const [key, x, y, z, rear] of [
+    ['fl', -0.82, 0.34, 1.55, false], ['fr', 0.82, 0.34, 1.55, false],
+    ['rl', -0.85, 0.35, -1.60, true], ['rr', 0.85, 0.35, -1.60, true],
+  ]) {
+    const wheel = new THREE.Group();
+    wheel.name = `distantWheel_${key}`;
+    wheel.position.set(x, y, z);
+    wheel.rotation.order = 'YXZ';
+    const tyre = new THREE.Mesh(rear ? FAR_WHEEL_REAR() : FAR_WHEEL_FRONT(), wheelMaterial);
+    tyre.name = `distantTyre_${key}`;
+    wheel.add(tyre);
+    root.add(wheel);
+    wheels[key] = wheel;
+  }
+
+  const rainLight = new THREE.Mesh(FAR_LIGHT(), M('distantRainLightMaterial', () =>
+    new THREE.MeshBasicMaterial({ name: 'distantRainLightMaterial', color: 0xff2618, toneMapped: false })));
+  rainLight.name = 'distantRainLight';
+  rainLight.position.set(0, 0.38, -2.22);
+  rainLight.scale.set(0.14, 0.08, 0.06);
+  body.add(rainLight);
+
+  // Opacity is car-specific presentation state, so this is intentionally the
+  // sole unshared proxy material; RaceSession.dispose owns it exactly once.
+  const brakeMaterial = new THREE.MeshBasicMaterial({
+    name: 'distantBrakeMaterial', color: 0xff3004, transparent: true,
+    opacity: 0.16, depthWrite: false, toneMapped: false,
+  });
+  const brakeGlow = new THREE.Mesh(FAR_BRAKES(), brakeMaterial);
+  brakeGlow.name = 'distantBrakeGlow';
+  brakeGlow.visible = false;
+  body.add(brakeGlow);
+
+  const shadow = new THREE.Mesh(FAR_SHADOW(), M('distantShadowMaterial', () =>
+    new THREE.MeshBasicMaterial({
+      name: 'distantShadowMaterial', color: 0x050609,
+      transparent: true, opacity: 0.24, depthWrite: false,
+    })));
+  shadow.name = 'distantContactShadow';
+  shadow.position.set(0, 0.026, -0.05);
+  shadow.scale.set(1.18, 1, 2.72);
+  shadow.renderOrder = -1;
+  root.add(shadow);
+
+  const steadyTriangles = triangleCount(body.geometry)
+    + Object.values(wheels).reduce((n, w) => n + triangleCount(w.children[0].geometry), 0)
+    + triangleCount(rainLight.geometry) + triangleCount(shadow.geometry);
+  const stats = Object.freeze({
+    steadyDrawCalls: 7,
+    brakingDrawCalls: 8,
+    steadyTriangles,
+    brakingTriangles: steadyTriangles + triangleCount(brakeGlow.geometry),
+    textures: 0,
+  });
+  root.userData.carLod = 'far';
+  root.userData.stats = stats;
+  return { root, body, wheels, brakeGlows: [brakeGlow], rainLight, shadow, stats };
+}
+
+function attachDistantCarProxy(handle) {
+  const proxy = buildDistantCarProxy(handle.team);
+  handle.group.add(proxy.root);
+  handle.farProxy = proxy;
+  handle.lodLevel = 'full';
+  return handle;
+}
+
 /* -- nose number fit -------------------------------------------------------
  * The nose number panels are fitted to the ACTUAL lathed nose surface (like the
  * GLB path's snapDecals), not hand-typed: probe rays sample the surface across
@@ -1497,7 +1687,7 @@ function decalMaterial(kind, drv, team, accent, lightNumber) {
     roundelTex(drv.num, accent));
 }
 
-function buildFromTemplate(team, driver) {
+function buildFromTemplate(team, driver, withDistantProxy = true) {
   const drv = driver || { num: 0, code: '---' };
   const color = new THREE.Color(team.color);
   const accent = new THREE.Color(team.accent);
@@ -1593,13 +1783,16 @@ function buildFromTemplate(team, driver) {
   }
 
   const group = new THREE.Group();
-  group.add(body);
+  const nearGroup = new THREE.Group();
+  nearGroup.name = 'fullFidelityCar';
+  group.add(nearGroup);
+  nearGroup.add(body);
   for (const k of ['fl', 'fr', 'rl', 'rr']) {
     const w = wheels[k];
     // race.js writes rotation.y (steer) then rotation.x (spin) directly; 'YXZ'
     // applies steer first and keeps the axle horizontal.
     w.rotation.order = 'YXZ';
-    group.add(w);
+    nearGroup.add(w);
   }
 
   // livery planes, fitted to the sculpted surfaces at preload time
@@ -1629,7 +1822,7 @@ function buildFromTemplate(team, driver) {
   const tyreSidewalls = addTyreSidewalls(wheels, wallMat);
 
   const handle = {
-    group, wheels, wheelRadius: 0.34,
+    group, nearGroup, wheels, wheelRadius: 0.34,
     body, team, driver: drv,
     tyreBands, tyreSidewalls,
     tyreBandMats: [bandMat, wallMat].filter(Boolean), compound: 'M',
@@ -1647,7 +1840,7 @@ function buildFromTemplate(team, driver) {
   group.userData.brakeGlows = brakeGlows;
   group.userData.rainLight = rainLight;
   group.userData.carVariant = variant;
-  return handle;
+  return withDistantProxy ? attachDistantCarProxy(handle) : handle;
 }
 
 /* -- primitive -> GLB in-place upgrade -------------------------------------
@@ -1665,51 +1858,60 @@ const _pendingUpgrade = new Set();
 function _upgradePendingCars() {
   if (!_tpl) return;
   for (const h of _pendingUpgrade) {
+    if (h.disposed) continue;
     try { _upgradeToTemplate(h); } catch (e) { /* keep the primitive car */ }
   }
   _pendingUpgrade.clear();
 }
 
-const _disposePerCar = (o) => {
-  // THREE.Sprite instances all share one module-level geometry. Disposing it
-  // while swapping a primitive car to the GLB corrupts every other sprite in
-  // the scene (name tags included), so mirror RaceSession.dispose's exception.
-  if (o.geometry && !o.isSprite && !o.geometry.userData.shared) o.geometry.dispose();
-  const mats = Array.isArray(o.material) ? o.material : (o.material ? [o.material] : []);
-  for (const m of mats) {
-    if (m.userData.shared) continue;
-    if (m.map && !m.map.userData.shared) m.map.dispose();
-    m.dispose();
-  }
-};
+function _disposePerCarRoots(roots) {
+  const geometries = new Set(), materials = new Set(), textures = new Set();
+  for (const root of roots) root?.traverse((o) => {
+    // THREE.Sprite instances all share one module-level geometry. Disposing it
+    // while swapping a primitive car to the GLB corrupts every other sprite in
+    // the scene (name tags included), so mirror RaceSession.dispose's exception.
+    if (o.geometry && !o.isSprite && !o.geometry.userData.shared) geometries.add(o.geometry);
+    const mats = Array.isArray(o.material) ? o.material : (o.material ? [o.material] : []);
+    for (const m of mats) {
+      if (m.userData.shared) continue;
+      materials.add(m);
+      if (m.map && !m.map.userData.shared) textures.add(m.map);
+    }
+  });
+  for (const texture of textures) texture.dispose();
+  for (const material of materials) material.dispose();
+  for (const geometry of geometries) geometry.dispose();
+}
 
 function _upgradeToTemplate(handle) {
-  if (!_tpl || handle.source !== 'primitives') return;
+  if (!_tpl || handle.disposed || handle.source !== 'primitives') return;
   const group = handle.group;
   const glowWasOn = handle.brakeGlows.length ? !!handle.brakeGlows[0].visible : false;
   const rainWasOn = handle.rainLight ? !!handle.rainLight.visible : true;
   const oldBody = handle.body;
   const oldWheels = { ...handle.wheels };
 
-  const fresh = buildFromTemplate(handle.team, handle.driver);
+  const fresh = buildFromTemplate(handle.team, handle.driver, false);
+  const nearGroup = handle.nearGroup || group;
 
   // strip the primitive parts (body group + 4 wheel groups); extra children the
   // race session attached to the group (contact shadow, name tag) stay put
-  for (const n of [oldBody, oldWheels.fl, oldWheels.fr, oldWheels.rl, oldWheels.rr]) {
+  const oldRoots = [oldBody, oldWheels.fl, oldWheels.fr, oldWheels.rl, oldWheels.rr];
+  for (const n of oldRoots) {
     if (!n) continue;
-    group.remove(n);
-    n.traverse(_disposePerCar);
+    n.parent?.remove(n);
   }
+  _disposePerCarRoots(oldRoots);
 
   // graft the sculpted parts, carrying over live pose state
   fresh.body.rotation.copy(oldBody.rotation);       // pitch/roll attitude
   fresh.body.position.y = oldBody.position.y;       // ride bump
-  group.add(fresh.body);
+  nearGroup.add(fresh.body);
   for (const k of ['fl', 'fr', 'rl', 'rr']) {
     const nw = fresh.wheels[k];
     nw.rotation.x = oldWheels[k].rotation.x;        // spin
     nw.rotation.y = oldWheels[k].rotation.y;        // steer
-    group.add(nw);
+    nearGroup.add(nw);
     handle.wheels[k] = nw;    // entries hold this same wheels object — mutate it
   }
   handle.body = fresh.body;
@@ -1725,6 +1927,7 @@ function _upgradeToTemplate(handle) {
   handle.monocoque = fresh.monocoque;
   handle.helmetColors = fresh.helmetColors;
   handle.source = 'glb';
+  nearGroup.visible = handle.lodLevel !== 'far';
   for (const b of handle.brakeGlows) b.visible = glowWasOn;
   if (handle.rainLight) handle.rainLight.visible = rainWasOn;
   group.userData.brakeGlows = handle.brakeGlows;
@@ -1744,11 +1947,21 @@ export function buildCarMesh(team, driver) {
   const handle = buildPrimitiveCarMesh(team, driver);
   if (!isHeadless()) {
     // prune handles whose cars a finished session already removed from the scene
-    for (const h of _pendingUpgrade) if (!h.group.parent) _pendingUpgrade.delete(h);
+    for (const h of _pendingUpgrade) if (h.disposed) _pendingUpgrade.delete(h);
     _pendingUpgrade.add(handle);
     preloadCarModel();   // re-arms the GLB load if a previous attempt failed
   }
   return handle;
+}
+
+// RaceSession calls this before traversing/disposal so an in-flight GLB fetch
+// cannot resurrect an old hidden car after teardown or attach resources to a
+// restarted session. Shared G/M assets deliberately remain module-owned.
+export function releaseCarMesh(handle) {
+  if (!handle || handle.disposed) return false;
+  handle.disposed = true;
+  _pendingUpgrade.delete(handle);
+  return true;
 }
 
 export function buildPrimitiveCarMesh(team, driver) {
@@ -1761,8 +1974,11 @@ export function buildPrimitiveCarMesh(team, driver) {
   const helm = helmetPalette(team);
 
   const group = new THREE.Group();
+  const nearGroup = new THREE.Group();
+  nearGroup.name = 'fullFidelityCar';
   const body = new THREE.Group();
-  group.add(body);
+  group.add(nearGroup);
+  nearGroup.add(body);
 
   // (geo, mat, x, y, z, { s:[..], r:[..], cast, name })
   const put = (geo, mat, x = 0, y = 0, z = 0, o = {}) => {
@@ -1935,14 +2151,14 @@ export function buildPrimitiveCarMesh(team, driver) {
     bandMats.push(bandMat);
     tyreBands.push(band);
 
-    group.add(g);
+    nearGroup.add(g);
     wheels[key] = g;
   }
   const tyreSidewalls = addTyreSidewalls(wheels, wallMat);
   bandMats.push(wallMat);
 
   const handle = {
-    group, wheels, wheelRadius: wr,
+    group, nearGroup, wheels, wheelRadius: wr,
     body, team, driver: drv,
     tyreBands, tyreSidewalls, tyreBandMats: bandMats, compound: 'M',
     brakeGlows, brakeGlowMaterial: glowMat,
@@ -1960,7 +2176,7 @@ export function buildPrimitiveCarMesh(team, driver) {
   group.userData.brakeGlows = brakeGlows;
   group.userData.rainLight = rainLight;
   group.userData.carVariant = variant;
-  return handle;
+  return attachDistantCarProxy(handle);
 }
 
 // Recolour the sidewall compound band on all four wheels. key: 'S' | 'M' | 'H'.

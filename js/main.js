@@ -322,6 +322,7 @@ class Game {
         textures: this.renderer.info.memory.textures,
         geometries: this.renderer.info.memory.geometries,
       },
+      carLod: this.session?.carLodTelemetry ?? null,
       context: {
         lost: this._graphicsContextLost,
         losses: this._graphicsContextLosses,
@@ -1325,6 +1326,10 @@ class Game {
         }, 900);
       }
       this.updateCamera(renderDt);
+      // AI detail selection uses the final smoothed/shaken camera for every
+      // camera mode. RaceSession internally limits this presentation-only pass
+      // to 10 Hz; callers that never invoke it retain full-fidelity cars.
+      if (s.updateCarLod) s.updateCarLod(this.camera);
       // nametags are laid out in screen space (cap/clamp/overlap), which
       // needs this frame's final camera — so this runs after updateCamera
       if (s.updateNametags) s.updateNametags(this.camera, innerWidth, innerHeight);

@@ -26,6 +26,14 @@ const teamById = Object.fromEntries(TEAMS.map(t => [t.id, t]));
 // i.e. ~0.8x the car's ~1.1m body height, nudged up so the lobe reads.
 const SUN_GROUND_AZI = Math.atan2(-260, -160);
 const SUN_SHADOW_OFF = 1.15;
+export const CAR_LOD_SPEC = Object.freeze({
+  enterFarM: 55,
+  returnFullM: 45,
+  cadenceMs: 100,
+  cadenceHz: 10,
+  // (55 - 45) / 55 = 18.18%; reported explicitly for telemetry/validators.
+  hysteresis: (55 - 45) / 55,
+});
 const RENDER_LINEAR_FIELDS = [
   'x', 'y', 'z', 'v', 'wheelSpin', 'steer', 'pitch', 'roll', 'rideBump',
 ];
@@ -53,6 +61,25 @@ export function brakeGlowIntensity(brakeTemp, brake, speed) {
   const load = Math.max(0, Math.min(1, (finiteOrZero(brake) - 0.08) / 0.82));
   const airflow = Math.max(0, Math.min(1, (Math.abs(finiteOrZero(speed)) - 8) / 42));
   return temp * (0.26 + load * 0.74) * (0.68 + airflow * 0.32);
+}
+
+export function resolveCarLod(previous, distanceM, isPlayer = false, mode = 'automatic') {
+  if (isPlayer || mode === 'forced-full') return 'full';
+  const distance = Number.isFinite(distanceM) ? Math.max(0, distanceM) : 0;
+  if (previous === 'far') return distance <= CAR_LOD_SPEC.returnFullM ? 'full' : 'far';
+  return distance >= CAR_LOD_SPEC.enterFarM ? 'far' : 'full';
+}
+
+function applyBrakeGlowState(glows, glow) {
+  if (!glows?.length) return;
+  const visible = glow > 0.025;
+  for (const brakeGlow of glows) brakeGlow.visible = visible;
+  const mat = glows[0]?.material;
+  if (!mat) return;
+  mat.opacity = 0.16 + glow * 0.84;
+  // Discs transition from a deep ember to a restrained orange-yellow at peak
+  // load; bloom can enhance it on higher tiers, but is not required.
+  if (mat.color?.setRGB) mat.color.setRGB(1, 0.12 + glow * 0.42, 0.015);
 }
 
 export function interpolateRenderSnapshot(previous, current, alpha, out = {}) {
@@ -198,6 +225,12 @@ export class RaceSession {
     const c = this.circuit;
     this.entries = [];
     this._renderDisposed = false;
+    this._carLodMode = 'automatic';
+    this._carLodNextAt = -Infinity;
+    this._carLodLastAt = -Infinity;
+    this._carLodUpdates = 0;
+    this._carLodSwitches = 0;
+    this._carLodInitialized = false;
 
     if (this.mode === 'quali') {
       this._buildQuali(opts);
@@ -256,7 +289,7 @@ export class RaceSession {
       this.entries.push({
         driver, team, phys, isPlayer, carHandle,
         ai: isPlayer ? null : new AIDriver(phys, c, driver, this.difficulty, this.random),
-        mesh: group, wheels, wheelRadius, tag,
+        mesh: group, wheels, wheelRadius, tag, contactShadow: blob, lodLevel: 'full',
         shadowLobe: blob.getObjectByName('sunShadowLobe'),
         lap: -1, lapStart: 0, lastLap: 0, bestLap: 0, lapTimes: [],
         position: gi + 1, gridPos: gi + 1, gapText: '', intervalText: '',
@@ -302,7 +335,7 @@ export class RaceSession {
     group.add(blob);
     this.entries = [{
       driver, team, phys, isPlayer: true, ai: null, carHandle,
-      mesh: group, wheels, wheelRadius, tag: null,
+      mesh: group, wheels, wheelRadius, tag: null, contactShadow: blob, lodLevel: 'full',
       shadowLobe: blob.getObjectByName('sunShadowLobe'),
       lap: -1, lapStart: 0, lastLap: 0, bestLap: 0, lapTimes: [],
       position: 1, gridPos: 1, gapText: '', intervalText: '',
@@ -1112,6 +1145,11 @@ export class RaceSession {
       if (!w) continue;
       w.rotation.x = pose.wheelSpin;
       if (k === 'fl' || k === 'fr') w.rotation.y = pose.steer * 0.32;
+      const farWheel = e.carHandle?.farProxy?.wheels?.[k];
+      if (farWheel) {
+        farWheel.rotation.x = pose.wheelSpin;
+        if (k === 'fl' || k === 'fr') farWheel.rotation.y = pose.steer * 0.32;
+      }
     }
 
     const body = e.carHandle && e.carHandle.body;
@@ -1120,27 +1158,90 @@ export class RaceSession {
       body.rotation.z = pose.roll;
       body.position.y = pose.rideBump;
     }
+    const farBody = e.carHandle?.farProxy?.body;
+    if (farBody) {
+      farBody.rotation.x = pose.pitch;
+      farBody.rotation.z = pose.roll;
+      farBody.position.y = pose.rideBump;
+    }
 
     // Race-state visual hooks remain presentation-only. They read authoritative
     // controls but never write physics or interpolation snapshots.
     const p = e.phys;
     const ud = e.mesh.userData || {};
-    if (ud.brakeGlows) {
-      const glow = brakeGlowIntensity(p.brakeTemp, p.brake, p.v);
-      const visible = glow > 0.025;
-      for (const b of ud.brakeGlows) b.visible = visible;
-      const mat = ud.brakeGlows[0]?.material;
-      if (mat) {
-        mat.opacity = 0.16 + glow * 0.84;
-        // Discs transition from a deep ember to a restrained orange-yellow at
-        // peak load; bloom can enhance it on higher tiers, but is not required.
-        if (mat.color?.setRGB) mat.color.setRGB(1, 0.12 + glow * 0.42, 0.015);
-      }
+    const glow = brakeGlowIntensity(p.brakeTemp, p.brake, p.v);
+    applyBrakeGlowState(ud.brakeGlows, glow);
+    applyBrakeGlowState(e.carHandle?.farProxy?.brakeGlows, glow);
+    const harvesting = (p.brake > 0.1 || p.throttle < 0.25) && p.v > 12;
+    const rainVisible = !harvesting || (Math.floor(performance.now() / 110) % 2 === 0);
+    if (ud.rainLight) ud.rainLight.visible = rainVisible;
+    if (e.carHandle?.farProxy?.rainLight) e.carHandle.farProxy.rainLight.visible = rainVisible;
+  }
+
+  _setEntryCarLod(e, level) {
+    const handle = e?.carHandle;
+    if (!handle?.farProxy || !handle.nearGroup) return false;
+    const next = e.isPlayer ? 'full' : (level === 'far' ? 'far' : 'full');
+    const changed = e.lodLevel !== next;
+    e.lodLevel = next;
+    handle.lodLevel = next;
+    handle.nearGroup.visible = next === 'full';
+    handle.farProxy.root.visible = next === 'far';
+    if (e.contactShadow) e.contactShadow.visible = next === 'full';
+    if (changed) this._carLodSwitches++;
+    return changed;
+  }
+
+  /** Select AI detail against the already-settled render camera at 10 Hz. */
+  updateCarLod(camera, nowMs = (typeof performance !== 'undefined' ? performance.now() : Date.now())) {
+    if (this._renderDisposed || !camera?.position) return false;
+    const now = Number.isFinite(nowMs) ? nowMs : 0;
+    const clockRebased = now < this._carLodLastAt;
+    if (this._carLodInitialized && !clockRebased && now < this._carLodNextAt) {
+      return false;
     }
-    if (ud.rainLight) {
-      const harvesting = (p.brake > 0.1 || p.throttle < 0.25) && p.v > 12;
-      ud.rainLight.visible = !harvesting || (Math.floor(performance.now() / 110) % 2 === 0);
+    this._carLodInitialized = true;
+    this._carLodLastAt = now;
+    this._carLodNextAt = now + CAR_LOD_SPEC.cadenceMs;
+    this._carLodUpdates++;
+    const cp = camera.position;
+    for (const e of this.entries) {
+      const dx = e.mesh.position.x - cp.x;
+      const dy = e.mesh.position.y - cp.y;
+      const dz = e.mesh.position.z - cp.z;
+      const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      this._setEntryCarLod(e,
+        resolveCarLod(e.lodLevel, distance, e.isPlayer, this._carLodMode));
     }
+    return true;
+  }
+
+  setCarLodMode(mode) {
+    this._carLodMode = mode === 'forced-full' || mode === 'full'
+      ? 'forced-full' : 'automatic';
+    this._carLodNextAt = -Infinity;
+    if (this._carLodMode === 'forced-full') {
+      for (const e of this.entries) this._setEntryCarLod(e, 'full');
+    }
+    return this.carLodTelemetry;
+  }
+
+  get carLodTelemetry() {
+    let full = 0, far = 0;
+    for (const e of this.entries) e.lodLevel === 'far' ? far++ : full++;
+    return {
+      mode: this._carLodMode,
+      initialized: this._carLodInitialized,
+      cadenceHz: CAR_LOD_SPEC.cadenceHz,
+      enterFarM: CAR_LOD_SPEC.enterFarM,
+      returnFullM: CAR_LOD_SPEC.returnFullM,
+      hysteresis: CAR_LOD_SPEC.hysteresis,
+      updates: this._carLodUpdates,
+      switches: this._carLodSwitches,
+      full,
+      far,
+      playerPinnedFull: !this.player || this.player.lodLevel === 'full',
+    };
   }
 
   // Compatibility for tools/direct callers that still request an immediate
@@ -1196,26 +1297,36 @@ export class RaceSession {
   dispose() {
     if (this._renderDisposed) return;
     this._renderDisposed = true;
+    const geometries = new Set();
+    const materials = new Set();
+    const textures = new Set();
     for (const e of this.entries) {
+      CAR.releaseCarMesh?.(e.carHandle);
       this.scene.remove(e.mesh);
       e.mesh.traverse(o => {
         // sprites share a module-level geometry inside three — never dispose it
         if (o.isSprite) {
-          if (o.material && !o.material.userData.shared) { if (o.material.map && !o.material.map.userData.shared) o.material.map.dispose(); o.material.dispose(); }
+          if (o.material && !o.material.userData.shared) {
+            materials.add(o.material);
+            if (o.material.map && !o.material.map.userData.shared) textures.add(o.material.map);
+          }
           return;
         }
         // resources marked shared are reused across cars/sessions — keep them
-        if (o.geometry && !o.geometry.userData.shared) o.geometry.dispose();
+        if (o.geometry && !o.geometry.userData.shared) geometries.add(o.geometry);
         if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => {
           if (m.userData.shared) return;
-          if (m.map && !m.map.userData.shared) m.map.dispose();
-          m.dispose();
+          materials.add(m);
+          if (m.map && !m.map.userData.shared) textures.add(m.map);
         });
       });
       e.renderPrev = null;
       e.renderCurr = null;
       e.renderPose = null;
     }
+    for (const texture of textures) texture.dispose();
+    for (const material of materials) material.dispose();
+    for (const geometry of geometries) geometry.dispose();
   }
 }
 
