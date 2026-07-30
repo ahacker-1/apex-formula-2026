@@ -42,6 +42,7 @@ const { TRACKS } = await import('../js/tracks.js');
 const { RaceSession, fmtTime } = await import('../js/race.js');
 const { AIDriver } = await import('../js/ai.js');
 const { DRIVERS } = await import('../js/data.js');
+const { createRandom } = await import('../js/random.js');
 
 // Use the first driver in the original APEX grid as the headless player.
 const PLAYER_ID = DRIVERS[0].id;
@@ -61,6 +62,7 @@ console.log(`[feat] ${TRACK}: length=${Math.round(circuit.length)}m N=${circuit.
 // ---- helpers ----
 function newSession(opts = {}) {
   const msgs = [];
+  const random = opts.seed == null ? undefined : createRandom(opts.seed);
   const session = new RaceSession({
     scene, circuit,
     playerDriverId: PLAYER_ID,
@@ -68,10 +70,11 @@ function newSession(opts = {}) {
     difficulty: 1,
     assists: { tc: true, abs: true, autoGear: true },
     mode: 'race', gridOrder: null,
+    random, seed: opts.seed,
     onMessage: (t, c) => msgs.push({ text: t, color: c }),
   });
   const autopilot = new AIDriver(session.player.phys, circuit,
-    { pace: 0.95, consistency: 0.97, racecraft: 0.9 }, 1);
+    { pace: 0.95, consistency: 0.97, racecraft: 0.9 }, 1, random);
   return { session, autopilot, msgs };
 }
 
@@ -446,13 +449,17 @@ console.log('\n[S5] front wing damage — forced contact, aero loss, repaired in
 
   const ais = session.entries.filter(e => e.ai && !e.dnf && !e.pitState);
   const A = ais[0], B = ais[1];
-  // A piles into the back of B: same heading, big speed delta, ~2.5m apart
+  // A piles into the back of B: same heading, big speed delta, noses/tails
+  // initially just 0.1m inside the oriented 5m body envelope.
   const idx = Math.round(circuit.N * 0.25);
   placeAtIdx(B.phys, idx, 0, 40);
-  placeAtIdx(A.phys, idx - Math.round(2.5 / circuit.ds), 0, 95);
-  A.phys.pos.copy(B.phys.pos).addScaledVector(circuit.samples[idx].t, -2.5);
+  placeAtIdx(A.phys, idx - Math.round(4.9 / circuit.ds), 0, 95);
+  A.phys.pos.copy(B.phys.pos).addScaledVector(circuit.samples[idx].t, -4.9);
   A.wingDamage = 0; B.wingDamage = 0;
-  A._contactCool = 0; B._contactCool = 0;
+  A._wallDamageCool = 0; B._wallDamageCool = 0;
+  A._carDamageCool = 0; B._carDamageCool = 0;
+  session._activeContacts.clear();
+  session._impactingContacts.clear();
 
   // force the 25% roll to land so the contact is deterministic
   const rnd = Math.random;
@@ -461,9 +468,11 @@ console.log('\n[S5] front wing damage — forced contact, aero loss, repaired in
   Math.random = rnd;
 
   console.log(`  A=${A.driver.code} wing=${A.wingDamage}  B=${B.driver.code} wing=${B.wingDamage}`);
-  ok(A.wingDamage === 0.15 || B.wingDamage === 0.15,
-    'S5 hard contact (closing speed > 8 m/s) produced no wing damage');
-  const dmg = A.wingDamage > 0 ? A : B;
+  ok(A.wingDamage === 0.15,
+    'S5 nose-first striker should receive the forced front-wing damage');
+  ok(B.wingDamage === 0,
+    'S5 rear-ended car must not receive fictitious front-wing damage');
+  const dmg = A;
 
   // the damage has to show up as an aero (downforce) loss every frame
   frame(ctx);
@@ -539,16 +548,47 @@ console.log('\n[S6] classification — time penalties applied and able to reorde
   ok(r[0].points === 25, `S6 winner should score 25, got ${r[0].points}`);
 
   // 6b: a real race still classifies a full grid, penalties and all
-  const ctx2 = newSession({ laps: 2 });
+  // Give this acceptance race its own stream. Its outcome must not depend on
+  // how many random draws the unrelated S1-S5 scenarios happened to consume.
+  const ctx2 = newSession({ laps: 2, seed: 0x5eed2026 });
   const s2 = ctx2.session;
-  let t = 0;
-  while (!s2.results && t < 2 * circuit.idealLap * 4 + 300) { frame(ctx2); t += DT; }
+  let t = 0, raceTicks = 0, contactTicks = 0, pairTicks = 0, maxPairs = 0;
+  while (!s2.results && t < 2 * circuit.idealLap * 4 + 300) {
+    frame(ctx2);
+    t += DT;
+    if ((s2.phase === 'racing' || s2.phase === 'finished') && !s2.results) {
+      const pairs = s2._activeContacts.size;
+      raceTicks++;
+      pairTicks += pairs;
+      if (pairs > 0) contactTicks++;
+      maxPairs = Math.max(maxPairs, pairs);
+    }
+  }
   ok(!!s2.results, 'S6b race did not classify');
   if (s2.results) {
     const byId2 = new Map(s2.entries.map(e => [e.driver.id, e]));
     const finRows = s2.results.filter(x => byId2.get(x.driver.id).finished);
+    const survivingRows = s2.results.filter(x => !x.dnf);
+    const contactDuty = raceTicks ? contactTicks / raceTicks : 1;
+    const avgPairs = raceTicks ? pairTicks / raceTicks : Infinity;
+    const recoveries = ctx2.msgs.filter(message =>
+      message.text.includes('BEACHED') || message.text.includes('RECOVERED TO THE TRACK')).length;
     console.log(`  live 2-lap race: rows=${s2.results.length} finishers=${finRows.length} winner=${s2.results[0].driver.code} ${s2.results[0].gapText}`);
+    console.log(`  contact telemetry: duty=${(contactDuty * 100).toFixed(1)}% pairTicks=${pairTicks} avgPairs=${avgPairs.toFixed(3)} maxPairs=${maxPairs} recoveries=${recoveries}`);
     ok(s2.results.length === 22, `S6b expected 22 rows, got ${s2.results.length}`);
+    // The player receives results after a short 2.5s grace. With the corrected
+    // 168m-long FIA grid, healthy cars farther back are legitimately classified
+    // as running rather than `finished`; attrition is measured by DNF/recovery.
+    ok(survivingRows.length >= 20,
+      `S6b realistic contact should leave at least 20 non-DNF cars, got ${survivingRows.length}`);
+    ok(contactDuty <= 0.32,
+      `S6b contact duty should stay at or below 32%, got ${(contactDuty * 100).toFixed(1)}%`);
+    ok(avgPairs <= 0.5,
+      `S6b average simultaneous contact pairs should stay at or below 0.5, got ${avgPairs.toFixed(3)}`);
+    ok(maxPairs <= 8,
+      `S6b contact solver should avoid grid-wide pileups, max pairs was ${maxPairs}`);
+    ok(recoveries <= 2,
+      `S6b should need at most two marshal recoveries, got ${recoveries}`);
     for (let i = 1; i < finRows.length; i++) {
       const a = byId2.get(finRows[i - 1].driver.id), b = byId2.get(finRows[i].driver.id);
       ok(ft(a) <= ft(b) + 1e-9,

@@ -8,6 +8,7 @@ import { OutputPass } from '../lib/postprocessing/OutputPass.js';
 import { FXAAPass } from '../lib/postprocessing/FXAAPass.js';
 import { RGBELoader } from '../lib/loaders/RGBELoader.js';
 import { CAMERA_FRAMING, resolveChaseCamera } from './cameraFraming.js';
+import { advanceSteeringInput } from './controls.js';
 
 // Photographic HDRI skies (CC0, PolyHaven). Load only the selected session's
 // theme; fetching all three at boot used 19.8 MB before the player chose a race.
@@ -168,6 +169,7 @@ class Game {
 
     this.keys = {};
     this.keySteer = 0;
+    this._steerInputMode = null;
     this.paused = false;
     this.raceConfig = null;
     this.clock = new THREE.Clock();
@@ -1014,6 +1016,7 @@ class Game {
   releaseDrivingInputs() {
     this.keys = {};
     this.keySteer = 0;
+    this._steerInputMode = null;
     this._shiftQueue.length = 0;
     this._gamepadShiftUp = false;
     this._gamepadShiftDown = false;
@@ -1028,20 +1031,23 @@ class Game {
 
   playerInput(dt) {
     const k = this.keys;
-    let dir = 0;
-    if (k.KeyA || k.ArrowLeft) dir += 1;
-    if (k.KeyD || k.ArrowRight) dir -= 1;
+    let digitalDir = 0;
+    let digitalSteerActive = false;
+    if (k.KeyA || k.ArrowLeft) { digitalDir += 1; digitalSteerActive = true; }
+    if (k.KeyD || k.ArrowRight) { digitalDir -= 1; digitalSteerActive = true; }
     let throttle = (k.KeyW || k.ArrowUp) ? 1 : 0;
     let brake = (k.KeyS || k.ArrowDown) ? 1 : 0;
     let boost = !!k.Space;
     const touch = this.hud.touchState;
     if (touch) {
-      if (touch.left) dir += 1;
-      if (touch.right) dir -= 1;
+      if (touch.left) { digitalDir += 1; digitalSteerActive = true; }
+      if (touch.right) { digitalDir -= 1; digitalSteerActive = true; }
       if (touch.throttle) throttle = 1;
       if (touch.brake) brake = 1;
       if (touch.boost) boost = true;
     }
+    let dir = digitalDir;
+    let steerInputMode = digitalSteerActive ? 'digital' : null;
     let shiftUp = false, shiftDown = false;
     // gamepad
     const gp = navigator.getGamepads && navigator.getGamepads()[0];
@@ -1065,7 +1071,13 @@ class Game {
           this._gamepadShiftDown = false;
         }
       } else {
-        if (Math.abs(ax) > 0.08) dir = -ax;
+        // An actively held key/touch control always wins over a connected
+        // controller's idle-axis drift. Analog steering remains unchanged when
+        // no digital direction is being requested.
+        if (Math.abs(ax) > 0.08 && !digitalSteerActive) {
+          dir = -ax;
+          steerInputMode = 'analog';
+        }
         if (rt > 0.03) throttle = rt;
         if (lt > 0.03) brake = lt;
         if (gamepadBoost) boost = true;
@@ -1097,12 +1109,12 @@ class Game {
         break;
       }
     }
-    // steering shaping: slower ramp at speed for keyboard
     const v = this.session?.player?.phys.v || 0;
-    const rate = 3.4 / (1 + v * 0.02);
-    const ret = 6 / (1 + v * 0.01);
-    if (dir !== 0) this.keySteer += (dir - this.keySteer) * Math.min(1, rate * dt);
-    else this.keySteer += (0 - this.keySteer) * Math.min(1, ret * dt);
+    if (steerInputMode) this._steerInputMode = steerInputMode;
+    const digitalResponse = steerInputMode === 'digital' ||
+      (dir === 0 && this._steerInputMode === 'digital');
+    this.keySteer = advanceSteeringInput(this.keySteer, dir, v, dt, digitalResponse);
+    if (dir === 0 && this.keySteer === 0) this._steerInputMode = null;
     return { steer: this.keySteer, throttle, brake, boost, shiftUp, shiftDown, ersMode: this.ersMode ?? 1 };
   }
 
@@ -1202,7 +1214,8 @@ class Game {
     this._camLook.lerp(targetLook, Math.min(1, (stiff + 4) * dt));
     this.camera.position.copy(this._camPos);
     // speed shake: high-frequency micro jitter, stronger on kerbs/grass
-    const shake = (speed / 95) * 0.035 + (p.onKerb ? 0.05 : 0) + (p.offTrack ? 0.08 : 0);
+    const shake = (speed / 95) * 0.035 + (p.onKerb ? 0.05 : 0) +
+      (p.offTrack ? 0.08 : 0) + (p.impactKick || 0) * 0.16;
     if (shake > 0.004 && !this.paused) {
       const tt = performance.now() * 0.001;
       const left = this._camLeft.set(f.z, 0, -f.x);
@@ -1267,8 +1280,8 @@ class Game {
       if (pps && !this._pitAudio && pps.timer < 2.3) { this._pitAudio = true; this.audio.pitStop && this.audio.pitStop(); }
       if (!pps) this._pitAudio = false;
       // audio events
-      if (s._wallEvent) { this.audio.collision(s._wallEvent); s._wallEvent = 0; }
-      if (s._touchEvent) { this.audio.collision(s._touchEvent); s._touchEvent = 0; }
+      if (s._wallEvent) { this.audio.wallImpact(s._wallEvent); s._wallEvent = 0; }
+      if (s._touchEvent) { this.audio.carImpact(s._touchEvent); s._touchEvent = 0; }
       if (s._shiftEvent) { this.audio.shift(s._shiftEvent > 0 ? 1 : -1); s._shiftEvent = false; }
 
       const p = s.player?.phys;
@@ -1285,6 +1298,11 @@ class Game {
           kerb: p.onKerb && p.v > 8,
           boost: p.boosting,
           offtrack: p.offTrack,
+          wallScrape: p.wallScrape,
+          carScrape: p.carScrape,
+          contactSide: p.wallScrape >= p.carScrape
+            ? (p.lat < 0 ? -1 : 1)
+            : p.carScrapeSide,
         });
         // close high-speed passes: panned doppler whoosh (audio has its own cooldown)
         if (this.audio.passBy && s.entries) {

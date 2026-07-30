@@ -1,6 +1,7 @@
 // 2026-spec car dynamics: ~50/50 ICE/electric power, active aero X/Z modes,
 // Manual Override boost (replaces DRS), tyre compounds + wear, grip circle.
 import * as THREE from 'three';
+import { CAR_HALF_LENGTH, CAR_HALF_WIDTH } from './contact.js';
 
 export const COMPOUNDS = {
   S: { key: 'S', name: 'SOFT', grip: 1.045, wearRate: 1.6 },
@@ -15,6 +16,18 @@ const CLA_Z = 4.3, CLA_X = 1.5;     // downforce area
 const P_BASE = 585e3;               // ICE + standard MGU-K deploy (W)
 const P_OVERRIDE = 240e3;           // Manual Override extra deploy (W)
 const WHEELBASE = 3.4;
+
+export function wallSupportDistance(relativeHeading) {
+  return CAR_HALF_WIDTH * Math.abs(Math.cos(relativeHeading)) +
+    CAR_HALF_LENGTH * Math.abs(Math.sin(relativeHeading));
+}
+
+function syncSurfaceFlags(car, circuit, sample) {
+  const absLat = Math.abs(car.lat);
+  car.offTrack = absLat > circuit.halfWidth + 0.4;
+  car.onKerb = absLat > circuit.halfWidth - 0.5 &&
+    absLat < circuit.halfWidth + 1.5 && Math.abs(sample.curv) > 1 / 260;
+}
 
 // ---- thermal / ERS model constants (additive; see CarPhysics fields) ----
 const TRACK_TEMP = 30;            // ambient air/track reference (°C)
@@ -79,6 +92,15 @@ export class CarPhysics {
     this.onKerb = false;
     this.slip = false;
     this.wallHit = 0;
+    this.wallImpactNormalSpeed = 0;
+    this.wallImpactFront = false;
+    this.wallContact = false;
+    this.wallScrape = 0;
+    this.carScrape = 0;
+    this.carScrapeSide = 0;
+    this.impactKick = 0;
+    this.wallLimit = circuit.wallOff - CAR_HALF_WIDTH;
+    this._wallIncidentSide = 0;
     this.slipstream = 0;   // 0..1 set externally
     this.dirtyAir = 0;     // 0..1 set externally
     this.disabled = false; // hidden (in pit / DNF)
@@ -123,6 +145,9 @@ export class CarPhysics {
     // attitude/surface state is positional — reset it with the car
     this.pitch = 0; this.roll = 0; this.rideBump = 0; this._bumpT = 0;
     this.offTrackTime = 0; this.offTrackSink = 0; this.kerbScrub = 0;
+    this.wallHit = 0; this.wallContact = false; this.wallScrape = 0;
+    this.wallImpactNormalSpeed = 0; this.wallImpactFront = false;
+    this.carScrape = 0; this.carScrapeSide = 0; this.impactKick = 0; this._wallIncidentSide = 0;
   }
 
   setTyre(key) {
@@ -167,6 +192,10 @@ export class CarPhysics {
     this.brake = THREE.MathUtils.clamp(input.brake, 0, 1);
     this.slip = false;
     this.wallHit = 0;
+    this.wallImpactNormalSpeed = 0;
+    this.wallImpactFront = false;
+    this.wallScrape = 0;
+    this.impactKick *= Math.max(0, 1 - dt * 8);
     const v0 = this.v;   // for attitude (pure output) accelerations
 
     // ---- ERS mode (optional input; unset leaves the current mode alone) ----
@@ -335,25 +364,7 @@ export class CarPhysics {
     }
     this._stepAttitude(dt, v0, w);
 
-    // wall collision
-    const wallLim = c.wallOff - 0.95;
-    if (absLat > wallLim) {
-      const sign = Math.sign(this.lat);
-      this.pos.x = s.p.x + s.n.x * sign * wallLim;
-      this.pos.z = s.p.z + s.n.z * sign * wallLim;
-      const trackAng = Math.atan2(s.t.x, s.t.z);
-      let diff = angleDiff(this.heading, trackAng);
-      const impact = Math.abs(Math.sin(diff));
-      if (impact > 0.08 && Math.abs(this.v) > 2) {
-        this.v *= 1 - 0.5 * impact;
-        this.wallHit = Math.min(1, impact * Math.abs(this.v) / 40 + 0.15);
-        ev.wallHit = this.wallHit;
-      } else {
-        this.v *= 1 - 0.15 * dt; // grinding
-      }
-      // deflect heading along wall
-      this.heading = trackAng + Math.sign(diff) * Math.min(Math.abs(diff), 0.35) * 0.4;
-    }
+    ev.wallHit = this.resolveWallCollision(true);
 
     // progress / lap crossing
     let dd = this.sampleIdx - prevIdx;
@@ -375,6 +386,115 @@ export class CarPhysics {
     if (this._wrongWayAcc < -25) ev.wrongWay = true;
 
     return ev;
+  }
+
+  // Resolve the yaw-aware car footprint against the nearest wall. The contact
+  // impulse is decomposed in wall space, so tangent progress survives a graze
+  // while the outward component becomes a small inward separation velocity.
+  // Returns a one-tick impact intensity; sustained contact is exposed separately
+  // through wallContact/wallScrape.
+  projectWallConstraint() {
+    const c = this.circuit;
+    this.sampleIdx = c.nearestSample(this.pos, this.sampleIdx);
+    const s = c.samples[this.sampleIdx];
+    this.lat = c.lateralAt(this.pos, this.sampleIdx);
+    const trackAng = Math.atan2(s.t.x, s.t.z);
+    const wallLim = Math.max(0.1, c.wallOff - wallSupportDistance(angleDiff(this.heading, trackAng)));
+    this.wallLimit = wallLim;
+    const penetration = Math.abs(this.lat) - wallLim;
+    if (penetration <= 0) {
+      syncSurfaceFlags(this, c, s);
+      return 0;
+    }
+
+    // Geometry-only projection for an iterative multi-car constraint solve.
+    // Never change heading, speed, incident state, or feedback here: doing so
+    // inside every solver pass can oscillate a millimetre overlap into a deep
+    // body intersection. The regular physics wall solve owns the impulse.
+    const side = Math.sign(this.lat) || 1;
+    const dx = this.pos.x - s.p.x;
+    const dz = this.pos.z - s.p.z;
+    const along = dx * s.t.x + dz * s.t.z;
+    this.pos.x = s.p.x + s.t.x * along + s.n.x * side * wallLim;
+    this.pos.z = s.p.z + s.t.z * along + s.n.z * side * wallLim;
+    this.lat = c.lateralAt(this.pos, this.sampleIdx);
+    syncSurfaceFlags(this, c, s);
+    return penetration;
+  }
+
+  resolveWallCollision(emitImpact = true) {
+    const c = this.circuit;
+    this.sampleIdx = c.nearestSample(this.pos, this.sampleIdx);
+    const s = c.samples[this.sampleIdx];
+    this.lat = c.lateralAt(this.pos, this.sampleIdx);
+    const trackAng = Math.atan2(s.t.x, s.t.z);
+    const support = wallSupportDistance(angleDiff(this.heading, trackAng));
+    const wallLim = Math.max(0.1, c.wallOff - support);
+    this.wallLimit = wallLim;
+    const absLat = Math.abs(this.lat);
+
+    if (absLat <= wallLim) {
+      if (this._wallIncidentSide && absLat < wallLim - 0.25) {
+        this._wallIncidentSide = 0;
+        this.wallContact = false;
+      } else {
+        this.wallContact = this._wallIncidentSide !== 0;
+      }
+      this.wallScrape = 0;
+      // Car-to-car correction can move a car across the track edge while still
+      // inside the wall. Refresh surface state on this early-return path too.
+      syncSurfaceFlags(this, c, s);
+      return 0;
+    }
+
+    const side = Math.sign(this.lat) || this._wallIncidentSide || 1;
+    const newIncident = this._wallIncidentSide !== side;
+    this._wallIncidentSide = side;
+    this.wallContact = true;
+
+    // Correct only along the wall normal. The previous code replaced x and z
+    // with the discrete sample anchor, visibly deleting along-track progress.
+    const dx = this.pos.x - s.p.x;
+    const dz = this.pos.z - s.p.z;
+    const along = dx * s.t.x + dz * s.t.z;
+    this.pos.x = s.p.x + s.t.x * along + s.n.x * side * wallLim;
+    this.pos.z = s.p.z + s.t.z * along + s.n.z * side * wallLim;
+    this.lat = c.lateralAt(this.pos, this.sampleIdx);
+
+    const oldSign = this.v < 0 ? -1 : 1;
+    const vx = Math.sin(this.heading) * this.v;
+    const vz = Math.cos(this.heading) * this.v;
+    const tangentVelocity = vx * s.t.x + vz * s.t.z;
+    const normalVelocity = vx * s.n.x + vz * s.n.z;
+    const outwardSpeed = Math.max(0, normalVelocity * side);
+    const frontContact = side * (Math.sin(this.heading) * s.n.x + Math.cos(this.heading) * s.n.z) > 0.45;
+
+    if (outwardSpeed > 0) {
+      const tangentRetention = THREE.MathUtils.clamp(0.96 - outwardSpeed * 0.005, 0.72, 0.94);
+      const tangentAfter = tangentVelocity * tangentRetention;
+      // Restitution must never accelerate a crawling car. Positional projection
+      // already prevents sticking, so no minimum rebound speed is necessary.
+      const separationSpeed = Math.min(6, outwardSpeed * 0.12);
+      const normalAfter = -side * separationSpeed;
+      const nextVx = s.t.x * tangentAfter + s.n.x * normalAfter;
+      const nextVz = s.t.z * tangentAfter + s.n.z * normalAfter;
+      this.v = oldSign * Math.hypot(nextVx, nextVz);
+      this.heading = Math.atan2(nextVx * oldSign, nextVz * oldSign);
+    }
+
+    this.wallScrape = THREE.MathUtils.clamp((Math.abs(tangentVelocity) - 3) / 45, 0, 1) *
+      THREE.MathUtils.clamp(1 - outwardSpeed / 22, 0.18, 1);
+    syncSurfaceFlags(this, c, s);
+
+    if (emitImpact && newIncident && outwardSpeed > 2) {
+      const intensity = THREE.MathUtils.clamp(0.15 + outwardSpeed / 45, 0, 1);
+      this.wallHit = Math.max(this.wallHit, intensity);
+      this.wallImpactNormalSpeed = outwardSpeed;
+      this.wallImpactFront = frontContact;
+      this.impactKick = Math.max(this.impactKick, intensity);
+      return intensity;
+    }
+    return 0;
   }
 
   // ---- additive helpers (all state they touch is new, except tyre wear) ----

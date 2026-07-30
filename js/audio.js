@@ -64,6 +64,8 @@ export class AudioEngine {
     // event cooldowns
     this._slipCooldown = 0;
     this._wgCooldown = 0;
+    this._wallImpactCooldown = 0;
+    this._carImpactCooldown = 0;
 
     // beds
     this._crowdLevel = 0;
@@ -248,6 +250,15 @@ export class AudioEngine {
     this.gravelGain = this._gainNode(0, this.engineOut);
     this._noiseSrc.connect(this.gravelLP);
     this.gravelLP.connect(this.gravelGain);
+
+    // Persistent bodywork/barrier scrape bed. The graph is built once; live
+    // contact only moves AudioParams, so sustained rubbing allocates no nodes.
+    this.contactScrapeBP = this._filter('bandpass', 920, 0.85, null);
+    this.contactScrapePan = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
+    if (this.contactScrapePan) this.contactScrapePan.connect(this.engineOut);
+    this.contactScrapeGain = this._gainNode(0, this.contactScrapePan || this.engineOut);
+    this._noiseSrc.connect(this.contactScrapeBP);
+    this.contactScrapeBP.connect(this.contactScrapeGain);
 
     // Tyre scrub: pooled burst chain (no allocation from update()).
     this.scrubBP = this._filter('bandpass', 900, 1.6, null);
@@ -545,6 +556,23 @@ export class AudioEngine {
       this._slipCooldown = 0.3;
       this._scrub(t, 850 + rpm * 400, 0.13);
     }
+
+    const wallScrape = clamp01(s.wallScrape);
+    const carScrape = clamp01(s.carScrape);
+    const scrapeLevel = Math.max(wallScrape * 0.2, carScrape * 0.12);
+    const scrapeOn = scrapeLevel > 0.001;
+    this.contactScrapeBP.frequency.setTargetAtTime(
+      wallScrape >= carScrape ? 720 + speed * 5 : 1180 + speed * 4,
+      t,
+      0.035,
+    );
+    this.contactScrapeBP.Q.setTargetAtTime(wallScrape >= carScrape ? 0.72 : 1.1, t, 0.04);
+    this.contactScrapeGain.gain.setTargetAtTime(scrapeLevel, t, scrapeOn ? 0.035 : 0.1);
+    if (this.contactScrapePan) {
+      this.contactScrapePan.pan.setTargetAtTime(clampNum(s.contactSide, -1, 1) * 0.7, t, 0.04);
+    }
+    this._wallImpactCooldown = Math.max(0, this._wallImpactCooldown - step);
+    this._carImpactCooldown = Math.max(0, this._carImpactCooldown - step);
   }
 
   // Gear-shift. dir > 0 (default) = upshift, dir < 0 = downshift.
@@ -599,16 +627,44 @@ export class AudioEngine {
     }
   }
 
-  // Low thump + debris noise. intensity 0..1.
-  collision(intensity) {
-    if (this._playSample('collision', { gain: Math.min(1, 0.35 + intensity), rate: 0.88, jitter: 0.06, duck: 0.5 })) return;
-
+  wallImpact(event) {
+    const payload = typeof event === 'number' ? { intensity: event } : (event || EMPTY);
+    const i = clamp01(payload.intensity == null ? 1 : payload.intensity);
+    const normal = clamp01((Number(payload.normalSpeed) || 0) / 55);
+    const severity = Math.max(i, normal);
+    const side = clampNum(payload.side, -1, 1);
+    if (i <= 0 || this._wallImpactCooldown > 0) return;
+    this._wallImpactCooldown = 0.09;
+    if (this._playSample('collision', {
+      gain: Math.min(1, 0.4 + severity * 0.58), rate: 0.88 - normal * 0.12, jitter: 0.05, duck: 0.45, pan: side * 0.72,
+    })) return;
     if (!this.ready) return;
-    const i = clamp01(intensity == null ? 1 : intensity);
-    if (i <= 0) return;
-    this._duck(this.ctx.currentTime, 0.25, 1);
-    this._toneShot({ type: 'sine', freq: 130, endFreq: 38, peak: 0.65 * i + 0.1, dur: 0.4, decay: 0.12 });
-    this._noiseShot({ dur: 0.25, type: 'lowpass', freq: 420, q: 0.7, peak: 0.4 * i + 0.05, decay: 0.06 });
+    this._duck(this.ctx.currentTime, 0.28, 1);
+    this._toneShot({ type: 'sine', freq: 120 - normal * 38, endFreq: 34, peak: 0.5 * severity + 0.1, dur: 0.28 + normal * 0.12, decay: 0.09 + normal * 0.035, pan: side * 0.55 });
+    this._noiseShot({ dur: 0.18 + normal * 0.08, type: 'bandpass', freq: 1300 + severity * 900, q: 0.7, peak: 0.28 * severity + 0.07, decay: 0.045, pan: side * 0.82 });
+    this._noiseShot({ dur: 0.24 + normal * 0.1, type: 'highpass', freq: 2600, q: 0.55, peak: 0.13 * severity + 0.025, decay: 0.08, delay: 0.012, pan: side * 0.65 });
+  }
+
+  carImpact(event) {
+    const payload = typeof event === 'number' ? { intensity: event } : (event || EMPTY);
+    const i = clamp01(payload.intensity == null ? 0.4 : payload.intensity);
+    const closing = clamp01((Number(payload.closingSpeed) || 0) / 32);
+    const severity = Math.max(i, closing);
+    const side = clampNum(payload.side, -1, 1);
+    if (i <= 0 || this._carImpactCooldown > 0) return;
+    this._carImpactCooldown = 0.08;
+    if (this._playSample('collision', {
+      gain: Math.min(0.82, 0.24 + severity * 0.5), rate: 1.1 - closing * 0.12, jitter: 0.055, duck: 0.24, pan: side * 0.68,
+    })) return;
+    if (!this.ready) return;
+    this._duck(this.ctx.currentTime, 0.18, 0.72);
+    this._toneShot({ type: 'triangle', freq: 225 - closing * 55, endFreq: 78, peak: 0.28 * severity + 0.06, dur: 0.18 + closing * 0.08, decay: 0.06, pan: side * 0.55 });
+    this._noiseShot({ dur: 0.15 + closing * 0.08, type: 'bandpass', freq: 1850 + severity * 700, q: 0.9, peak: 0.22 * severity + 0.04, decay: 0.05, pan: side * 0.78 });
+  }
+
+  // Backwards-compatible hook used by older tooling/sample auditions.
+  collision(intensity) {
+    this.wallImpact(intensity);
   }
 
   countdownBeep(final) {
@@ -771,7 +827,7 @@ export class AudioEngine {
   _sample(name) { return (this._samples && this._samples[name]) || null; }
 
   /** Play a one-shot sample. Returns true if a sample was played. */
-  _playSample(name, { gain = 1, rate = 1, jitter = 0, duck = 0 } = {}) {
+  _playSample(name, { gain = 1, rate = 1, jitter = 0, duck = 0, pan = 0 } = {}) {
     const buf = this._sample(name);
     if (!buf || !this.ready) return false;
     const t = this.ctx.currentTime;
@@ -780,10 +836,15 @@ export class AudioEngine {
     src.playbackRate.value = rate * (1 + (Math.random() - 0.5) * 2 * jitter);
     const g = this.ctx.createGain();
     g.gain.value = gain;
-    src.connect(g).connect(this._sampleBus() || this.master);
+    const panner = this.ctx.createStereoPanner && Math.abs(pan) > 1e-4
+      ? this.ctx.createStereoPanner() : null;
+    if (panner) {
+      panner.pan.value = clampNum(pan, -1, 1);
+      src.connect(g).connect(panner).connect(this._sampleBus() || this.master);
+    } else src.connect(g).connect(this._sampleBus() || this.master);
     if (duck) this._duck(t, duck, 1);
     src.start(t);
-    src.onended = () => { try { src.disconnect(); g.disconnect(); } catch {} };
+    src.onended = () => { try { src.disconnect(); g.disconnect(); panner?.disconnect(); } catch {} };
     return true;
   }
 
@@ -1230,13 +1291,20 @@ export class AudioEngine {
 
     src.connect(filt);
     filt.connect(g);
-    g.connect(opt.dest || this.master);
+    const pan = ctx.createStereoPanner && Number.isFinite(opt.pan) && Math.abs(opt.pan) > 1e-4
+      ? ctx.createStereoPanner() : null;
+    if (pan) {
+      pan.pan.value = clampNum(opt.pan, -1, 1);
+      g.connect(pan);
+      pan.connect(opt.dest || this.master);
+    } else g.connect(opt.dest || this.master);
     src.start(t0);
     src.stop(t0 + (opt.dur || 0.2) + 0.15);
     src.onended = function () {
       src.disconnect();
       filt.disconnect();
       g.disconnect();
+      pan?.disconnect();
     };
   }
 
@@ -1263,12 +1331,19 @@ export class AudioEngine {
     g.gain.setTargetAtTime(0.0001, t0 + 0.008 + sustain, opt.decay || 0.05);
 
     osc.connect(g);
-    g.connect(opt.dest || this.master);
+    const pan = ctx.createStereoPanner && Number.isFinite(opt.pan) && Math.abs(opt.pan) > 1e-4
+      ? ctx.createStereoPanner() : null;
+    if (pan) {
+      pan.pan.value = clampNum(opt.pan, -1, 1);
+      g.connect(pan);
+      pan.connect(opt.dest || this.master);
+    } else g.connect(opt.dest || this.master);
     osc.start(t0);
     osc.stop(t0 + dur + 0.25);
     osc.onended = function () {
       osc.disconnect();
       g.disconnect();
+      pan?.disconnect();
     };
   }
 }

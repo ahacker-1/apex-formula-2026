@@ -132,6 +132,8 @@ function entryDigest(entry) {
     offTrackAccum: entry._offAcc,
     offTrackLatched: entry._offLatched,
     contactCooldown: entry._contactCool,
+    wallDamageCooldown: entry._wallDamageCool ?? 0,
+    carDamageCooldown: entry._carDamageCool ?? 0,
     stuckTime: entry._stuckT ?? 0,
     stuckReference: entry._stuckRef ?? null,
     physics: {
@@ -162,6 +164,15 @@ function entryDigest(entry) {
       onKerb: p.onKerb,
       slip: p.slip,
       wallHit: p.wallHit,
+      wallImpactNormalSpeed: p.wallImpactNormalSpeed,
+      wallImpactFront: p.wallImpactFront,
+      wallContact: p.wallContact,
+      wallScrape: p.wallScrape,
+      carScrape: p.carScrape,
+      carScrapeSide: p.carScrapeSide,
+      impactKick: p.impactKick,
+      wallLimit: p.wallLimit,
+      wallIncidentSide: p._wallIncidentSide,
       slipstream: p.slipstream,
       dirtyAir: p.dirtyAir,
       disabled: p.disabled,
@@ -231,6 +242,12 @@ function sessionDigest(session, autopilot, simulationRandom) {
     blueFlagFor: session.blueFlagFor,
     radioCooldown: session._radioCool,
     radioQueue: session.radioQueue.map((item) => ({ text: item.text, tone: item.tone })),
+    activeContacts: [...session._activeContacts].sort(),
+    impactingContacts: [...session._impactingContacts].sort(),
+    wallEvent: session._wallEvent && typeof session._wallEvent === 'object'
+      ? { ...session._wallEvent } : session._wallEvent,
+    touchEvent: session._touchEvent && typeof session._touchEvent === 'object'
+      ? { ...session._touchEvent } : session._touchEvent,
     playerAutopilot: {
       avoidOffset: autopilot.avoidOffset,
       mistakeTimer: autopilot.mistakeTimer,

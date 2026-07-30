@@ -616,22 +616,23 @@ function groundSampler(c, mesh) {
 }
 
 // ------------------------------------------------------- API identity ------
-// The elevation work is a RENDER change: every number the simulation reads out
-// of buildCircuit has to remain identical at simulation precision. These are
-// SHA-256 digests over a canonical six-decimal representation of exactly that
-// surface. Canonicalization ignores only sub-micrometre platform differences in
+// Approved simulation-surface baseline. Grid positions intentionally changed in
+// the contact-racecraft pass from an unsafe 4.5m pitch to an 8m FIA-style pitch;
+// any later numeric change still requires explicit review and a regenerated
+// table. These are SHA-256 digests over a canonical six-decimal representation.
+// Canonicalization ignores only sub-micrometre platform differences in
 // trigonometric output between macOS and Linux. Regenerate with
 //   API_BASELINE=/abs/path/to/old/trackBuilder.js node tools/validate-geometry.mjs
 // which recomputes them from that module and prints a fresh table.
 const BASELINE_API = {
-  melbourne: '68c28575c7a201b3', shanghai: '5b37d0ab10395734', suzuka: '51ddebb29faaca8d',
-  bahrain: '58b4a611decc44ec', jeddah: '63fc5426a59f4153', miami: '850b44c43fb54cce',
-  montreal: '407f393ff317c9da', monaco: '5cf8dc31e39acdd3', barcelona: '223b27702da85f09',
-  spielberg: 'fdc72108e09707da', silverstone: '2bc5802b5650281c', spa: '185c3f5ca7cab320',
-  hungaroring: '11fde6df5ad065c0', zandvoort: 'f98ebc5f9bc03d82', monza: '397cacb508badc88',
-  madrid: 'a72ed850aaf3c674', baku: '6e6c12033724d819', singapore: '94442310f17c95a4',
-  austin: '87340eafedf73872', mexico: '544e95db087986fc', interlagos: '5300edede1ac2bc0',
-  lasvegas: 'faeed8f5994cff66', lusail: '081ceae9509c3185', yasmarina: 'ee0226bf8d2aa034',
+  melbourne: '3d4500666f285278', shanghai: 'cc6ba025692a0ee9', suzuka: '09d8e8264c5fe572',
+  bahrain: '0912e0ba419f4ef3', jeddah: '803d937493c0e7b4', miami: '4c5ca8087887119d',
+  montreal: '2895ae4ed0b38d03', monaco: '1d1b0f85f289e57d', barcelona: 'c76f37eeb2692479',
+  spielberg: '670c825e3ce38993', silverstone: '7f89fdcada7d50b3', spa: 'b5615073a215d4e7',
+  hungaroring: '76d8865348238bc4', zandvoort: '4bfdb94c101b2f08', monza: '4b8a469c8355dd0b',
+  madrid: 'a918b6e8070045d9', baku: '0cbb8595cb443c9a', singapore: 'a25d100ad0e06f8f',
+  austin: '3d8d9dcc052b6861', mexico: '88ce02c7643d10a8', interlagos: '40b1ad5ba9eaf389',
+  lasvegas: '3bb36e0c08dd630f', lusail: 'f0c764c5ba6ef28a', yasmarina: '6b16108ddab4abd7',
 };
 const crypto = await import('node:crypto');
 // The exact list of numbers physics.js / ai.js / race.js / hud.js consume. Order
@@ -711,7 +712,7 @@ function run(trackId) {
     const got = apiDigest(c);
     const want = BASELINE_API[trackId];
     if (want) {
-      assert(got === want, 'sim-visible numeric API matches the pre-elevation build to 6 decimals',
+      assert(got === want, 'sim-visible numeric API matches the approved baseline to 6 decimals',
         `[digest=${got} baseline=${want}]`);
     } else {
       log(`  WARN  no API baseline recorded for ${trackId} [digest=${got}]`);
@@ -821,6 +822,19 @@ function run(trackId) {
     }
     assert(badSlot === 0, 'every grid slot publishes the road height at its sample',
       `[wrong=${badSlot}/${c.gridSlots.length}]`);
+    const gridGaps = c.gridSlots.slice(1).map((slot, i) => {
+      const previous = c.gridSlots[i];
+      const tangent = samples[previous.idx].t;
+      return Math.abs((slot.pos.x - previous.pos.x) * tangent.x +
+        (slot.pos.z - previous.pos.z) * tangent.z);
+    });
+    const minGridGap = Math.min(...gridGaps);
+    const maxGridGap = Math.max(...gridGaps);
+    // Slots snap to the 2.5m circuit sample lattice, so the requested 8m pitch
+    // resolves to three or four samples (with small tangent error on curves).
+    assert(minGridGap >= 6.8 && maxGridGap <= 10.5,
+      'successive staggered grid positions keep a safe nominal 8m longitudinal pitch',
+      `[longitudinal gaps=${minGridGap.toFixed(2)}..${maxGridGap.toFixed(2)}m]`);
   }
 
   // ---- 0aa. every LIT surface must have normals -----------------------------

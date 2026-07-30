@@ -3919,8 +3919,11 @@ export function buildCircuit(trackId, def, scene) {
   // ---- grid slots (2 columns, staggered rows) ----
   const gridSlots = [];
   for (let k = 0; k < 22; k++) {
-    const row = k >> 1, col = k % 2;
-    const back = 14 + row * 9 + col * 4.5;
+    const col = k % 2;
+    // FIA-style stagger: successive starting positions are eight metres apart.
+    // The old 4.5m pitch was shorter than the corrected 4.96m car body, so the
+    // two columns became an impossible overlapping zipper at the first corner.
+    const back = 14 + k * 8;
     const i = (N - Math.round(back / ds) + N) % N;
     const s = samples[i];
     const lat = (col === 0 ? 1 : -1) * Math.min(2.9, halfWidth * 0.42);

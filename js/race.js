@@ -7,6 +7,13 @@ import * as CAR from './car.js';
 import { layoutNametags } from './nametags.js';
 import { DRIVERS, TEAMS, POINTS } from './data.js';
 import { fmtTime } from './format.js';
+import {
+  applyContactVelocity,
+  contactLongitudinalFor,
+  contactSideFor,
+  orientedCarContact,
+  syncContactBody,
+} from './contact.js';
 
 // Preserve the established public race-module API for headless tooling while
 // allowing menu code to import the tiny formatter without loading this module.
@@ -15,6 +22,41 @@ export { fmtTime } from './format.js';
 const { buildCarMesh, buildNameTag } = CAR;
 
 const teamById = Object.fromEntries(TEAMS.map(t => [t.id, t]));
+const CONTACT_SLOP = 0.002;
+
+function solveContactPositions(session, entries, bodies, corrX, corrZ, passes = 8) {
+  for (let iteration = 0; iteration < passes; iteration++) {
+    corrX.fill(0);
+    corrZ.fill(0);
+    for (let i = 0; i < entries.length; i++) syncContactBody(bodies[i], entries[i].phys);
+    let any = false;
+    for (let i = 0; i < entries.length; i++) {
+      if (entries[i].phys.disabled || entries[i].dnf) continue;
+      for (let j = i + 1; j < entries.length; j++) {
+        if (entries[j].phys.disabled || entries[j].dnf) continue;
+        const contact = orientedCarContact(bodies[i], bodies[j]);
+        if (!contact || contact.penetration <= CONTACT_SLOP) continue;
+        any = true;
+        const invA = bodies[i].invMass;
+        const invB = bodies[j].invMass;
+        const invSum = invA + invB;
+        const correction = Math.min(0.7, contact.penetration - CONTACT_SLOP);
+        const moveA = Math.min(0.35, correction * invA / invSum);
+        const moveB = Math.min(0.35, correction * invB / invSum);
+        corrX[i] += contact.nx * moveA;
+        corrZ[i] += contact.nz * moveA;
+        corrX[j] -= contact.nx * moveB;
+        corrZ[j] -= contact.nz * moveB;
+      }
+    }
+    if (!any) break;
+    for (let i = 0; i < entries.length; i++) {
+      entries[i].phys.pos.x += corrX[i];
+      entries[i].phys.pos.z += corrZ[i];
+      entries[i].phys.projectWallConstraint?.();
+    }
+  }
+}
 
 // Square canvas + fully-contained radius: the plane's own scale turns this into
 // the ellipse, and alpha genuinely reaches 0 before the quad edge (the old
@@ -205,6 +247,10 @@ export class RaceSession {
     this.results = null;
     this.jumpStart = false;
     this._posTimer = 0;
+    this._activeContacts = new Set();
+    this._impactingContacts = new Set();
+    this._wallEvent = 0;
+    this._touchEvent = 0;
 
     // ---- race direction ----
     this.vsc = {
@@ -309,6 +355,7 @@ export class RaceSession {
         trackLimits: 0,
         _secStage: 0, _secSplit: [null, null], _offAcc: 0, _offLatched: false,
         _blueFrom: null, _blueT: 0, _contactCool: 0,
+        _wallDamageCool: 0, _carDamageCool: 0,
       });
     });
     this.player = this.entries.find(e => e.isPlayer) || null;
@@ -354,6 +401,7 @@ export class RaceSession {
       trackLimits: 0,
       _secStage: 0, _secSplit: [null, null], _offAcc: 0, _offLatched: false,
       _blueFrom: null, _blueT: 0, _contactCool: 0,
+      _wallDamageCool: 0, _carDamageCool: 0,
     }];
     this.player = this.entries[0];
     this.phase = 'racing';
@@ -449,13 +497,13 @@ export class RaceSession {
       } else {
         input = (liveDrive && !e.finished) ? e.ai.update(dt, allPhys) : ZERO_INPUT;
       }
-      if (e._contactCool > 0) e._contactCool -= dt;
+      if (e._wallDamageCool > 0) e._wallDamageCool -= dt;
+      if (e._carDamageCool > 0) e._carDamageCool -= dt;
       const ev = e.phys.step(dt, input);
       if (ev.crossedSF && (racing || this.phase === 'lights')) this._onCross(e, ev.crossedSF);
       if (ev.wrongWay && e.isPlayer) this._msgOnce('wrongway', 'WRONG WAY', 'red');
-      if (ev.wallHit && e.isPlayer) this._wallEvent = ev.wallHit;
+      if (ev.wallHit) this._handleWallImpact(e, ev.wallHit);
       if (ev.shifted && e.isPlayer) this._shiftEvent = ev.shifted; // ±1: up/down for audio character
-      if (ev.wallHit > 0.5 && this.mode === 'race') this._maybeWingDamage(e);
       if (racing) {
         this._sectorTiming(e);
         if (this.mode === 'race') this._trackLimits(e, dt);
@@ -650,7 +698,7 @@ export class RaceSession {
     if (e.finished || e.dnf || e.pitState) return;
     if (p.offTrack) {
       // gaining an advantage, not crashing: still quick and not hitting anything
-      if (p.v > 30 && !(p.wallHit > 0)) {
+      if (p.v > 30 && !p.wallContact) {
         e._offAcc += dt;
         if (e._offAcc > 0.4 && !e._offLatched) {
           e._offLatched = true;
@@ -680,12 +728,15 @@ export class RaceSession {
   }
 
   // ---- front wing damage ----
-  _maybeWingDamage(e) {
+  _maybeWingDamage(e, source = 'car') {
     if (e.wingDamage > 0 || e.dnf || e.finished || e.pitState) return;
-    // physics re-raises wallHit every frame a car is scraping the barrier, so
-    // debounce to one roll per incident — otherwise a single graze is a certainty
-    if (e._contactCool > 0) return;
-    e._contactCool = 2;
+    // Wall and car incidents have independent debounce windows: a wall brush
+    // must not suppress damage from a subsequent nose-to-tail impact (or vice
+    // versa). `_contactCool` is retained only as harmless legacy state for old
+    // snapshots and tooling.
+    const cooldown = source === 'wall' ? '_wallDamageCool' : '_carDamageCool';
+    if ((e[cooldown] || 0) > 0) return;
+    e[cooldown] = 2;
     if (this.random() >= 0.25) return;
     e.wingDamage = 0.15;
     if (e.isPlayer) {
@@ -693,6 +744,26 @@ export class RaceSession {
       this._radio('FRONT WING DAMAGE — BOX TO REPAIR', 'warning', true);
     } else {
       e.boxThisLap = true;   // AI come in next time by to replace the wing
+    }
+  }
+
+  _handleWallImpact(e, intensity) {
+    if (!(intensity > 0)) return;
+    if (e.isPlayer) {
+      const candidate = {
+        intensity,
+        normalSpeed: e.phys.wallImpactNormalSpeed || Math.max(0, (intensity - 0.15) * 45),
+        side: e.phys.lat < 0 ? -1 : 1,
+      };
+      const current = this._wallEvent;
+      if (!current || candidate.intensity > (current.intensity || 0) ||
+          (candidate.intensity === (current.intensity || 0) &&
+            candidate.normalSpeed > (current.normalSpeed || 0))) {
+        this._wallEvent = candidate;
+      }
+    }
+    if (intensity > 0.5 && e.phys.wallImpactFront && this.mode === 'race') {
+      this._maybeWingDamage(e, 'wall');
     }
   }
 
@@ -914,26 +985,141 @@ export class RaceSession {
 
   _collisions() {
     const es = this.entries;
+    const bodies = es.map((entry) => syncContactBody(entry._contactBody || (entry._contactBody = {}), entry.phys));
+    const activeNow = new Set();
+    const impactingBefore = this._impactingContacts || new Set();
+    const impactingNow = new Set();
+    const impacts = [];
+    const baseVx = new Float64Array(es.length);
+    const baseVz = new Float64Array(es.length);
+    const deltaVx = new Float64Array(es.length);
+    const deltaVz = new Float64Array(es.length);
+
     for (let i = 0; i < es.length; i++) {
-      const A = es[i]; if (A.phys.disabled || A.dnf) continue;
+      baseVx[i] = bodies[i].fx * es[i].phys.v;
+      baseVz[i] = bodies[i].fz * es[i].phys.v;
+    }
+
+    for (const e of es) {
+      e.phys.carScrape = 0;
+      e.phys.carScrapeSide = 0;
+    }
+
+    // Capture contact-entry kinematics before positional correction. Audio and
+    // damage are based on relative velocity, never on overlap depth.
+    for (let i = 0; i < es.length; i++) {
+      const A = es[i];
+      if (A.phys.disabled || A.dnf) continue;
       for (let j = i + 1; j < es.length; j++) {
-        const B = es[j]; if (B.phys.disabled || B.dnf) continue;
-        const dx = A.phys.pos.x - B.phys.pos.x, dz = A.phys.pos.z - B.phys.pos.z;
-        const d2 = dx * dx + dz * dz;
-        if (d2 > 14.5 || d2 < 1e-6) continue;
-        const d = Math.sqrt(d2), push = (3.8 - d) / 2;
-        const nx = dx / d, nz = dz / d;
-        // closing speed along the contact normal, before the cars are separated
-        const avx = Math.sin(A.phys.heading) * A.phys.v, avz = Math.cos(A.phys.heading) * A.phys.v;
-        const bvx = Math.sin(B.phys.heading) * B.phys.v, bvz = Math.cos(B.phys.heading) * B.phys.v;
-        const closing = -((avx - bvx) * nx + (avz - bvz) * nz);
-        A.phys.pos.x += nx * push; A.phys.pos.z += nz * push;
-        B.phys.pos.x -= nx * push; B.phys.pos.z -= nz * push;
-        A.phys.v *= 0.988; B.phys.v *= 0.988;
-        if (A.isPlayer || B.isPlayer) this._touchEvent = 0.4;
-        if (closing > 8) { this._maybeWingDamage(A); this._maybeWingDamage(B); }
+        const B = es[j];
+        if (B.phys.disabled || B.dnf) continue;
+        const contact = orientedCarContact(bodies[i], bodies[j]);
+        if (!contact) continue;
+        const aId = String(A.driver?.id ?? i);
+        const bId = String(B.driver?.id ?? j);
+        const key = aId < bId ? `${aId}:${bId}` : `${bId}:${aId}`;
+        activeNow.add(key);
+        const rvx = baseVx[i] - baseVx[j];
+        const rvz = baseVz[i] - baseVz[j];
+        const closing = Math.max(0, -(rvx * contact.nx + rvz * contact.nz));
+        const tx = -contact.nz;
+        const tz = contact.nx;
+        const tangentSpeed = rvx * tx + rvz * tz;
+        const scrape = Math.max(0, Math.min(1, (Math.abs(tangentSpeed) - 0.5) / 14));
+        A.phys.carScrape = Math.max(A.phys.carScrape, scrape);
+        B.phys.carScrape = Math.max(B.phys.carScrape, scrape);
+        if (scrape >= A.phys.carScrape) A.phys.carScrapeSide = contactSideFor(bodies[i], contact.nx, contact.nz, true);
+        if (scrape >= B.phys.carScrape) B.phys.carScrapeSide = contactSideFor(bodies[j], contact.nx, contact.nz, false);
+        if (impactingBefore.has(key) && closing > 0.15) impactingNow.add(key);
+        impacts.push({ i, j, A, B, a: bodies[i], b: bodies[j], contact, closing, tangentSpeed, key });
       }
     }
+
+    const corrX = new Float64Array(es.length);
+    const corrZ = new Float64Array(es.length);
+
+    // First remove the overlap represented by the captured contact normal. This
+    // preserves the established pack behaviour and gives the impulse a valid
+    // non-penetrating starting configuration.
+    solveContactPositions(this, es, bodies, corrX, corrZ);
+
+    // Low-restitution impulse plus capped tangential friction. Every pair reads
+    // the same pre-solve velocity snapshot and accumulates a world-space delta;
+    // applying once per car removes entry-order bias in three-car pileups.
+    for (const impact of impacts) {
+      const { i, j, A, B, a, b, contact, closing, tangentSpeed, key } = impact;
+      if (closing <= 0.5) continue;
+      const invSum = a.invMass + b.invMass;
+      const normalImpulse = (1.04 * closing) / invSum;
+      const tx = -contact.nz;
+      const tz = contact.nx;
+      const tangentImpulse = Math.max(-normalImpulse * 0.16,
+        Math.min(normalImpulse * 0.16, -tangentSpeed / invSum));
+      const impulseX = contact.nx * normalImpulse + tx * tangentImpulse;
+      const impulseZ = contact.nz * normalImpulse + tz * tangentImpulse;
+      deltaVx[i] += impulseX * a.invMass;
+      deltaVz[i] += impulseZ * a.invMass;
+      deltaVx[j] -= impulseX * b.invMass;
+      deltaVz[j] -= impulseZ * b.invMass;
+      const intensity = Math.max(0, Math.min(1, (closing - 0.5) / 18));
+      A.phys.impactKick = Math.max(A.phys.impactKick || 0, intensity * 0.75);
+      B.phys.impactKick = Math.max(B.phys.impactKick || 0, intensity * 0.75);
+
+      const newImpact = !impactingBefore.has(key);
+      if (newImpact) {
+        impactingNow.add(key);
+        if (A.isPlayer || B.isPlayer) {
+          const playerBody = A.isPlayer ? a : b;
+          const candidate = {
+            intensity,
+            closingSpeed: closing,
+            side: contactSideFor(playerBody, contact.nx, contact.nz, A.isPlayer),
+          };
+          const current = this._touchEvent;
+          if (!current || candidate.intensity > (current.intensity || 0) ||
+              (candidate.intensity === (current.intensity || 0) &&
+                candidate.closingSpeed > (current.closingSpeed || 0))) {
+            this._touchEvent = candidate;
+          }
+        }
+        if (closing > 8) {
+          // Front-wing damage belongs only to a nose-first participant. The
+          // car being rear-ended, or either car in a sidepod rub, is not assigned
+          // fictitious front-wing damage.
+          if (contactLongitudinalFor(a, contact.nx, contact.nz, true) > 0.45) {
+            this._maybeWingDamage(A, 'car');
+          }
+          if (contactLongitudinalFor(b, contact.nx, contact.nz, false) > 0.45) {
+            this._maybeWingDamage(B, 'car');
+          }
+        }
+      }
+    }
+
+    for (let i = 0; i < es.length; i++) {
+      if (deltaVx[i] === 0 && deltaVz[i] === 0) continue;
+      applyContactVelocity(es[i].phys, baseVx[i] + deltaVx[i], baseVz[i] + deltaVz[i]);
+    }
+
+    // Apply at most one real wall impulse after contact has changed velocity and
+    // heading. The geometry pass below then resolves bodies using this final
+    // response; running the wall impulse after it can recreate deep overlap.
+    for (const e of es) {
+      const wallHit = e.phys.resolveWallCollision?.(true) || 0;
+      if (wallHit) this._handleWallImpact?.(e, wallHit);
+    }
+
+    // Solve positions after velocity impulses have updated headings. Doing this
+    // in the opposite order let a final yaw-aware wall projection move a newly
+    // rotated car deep into its neighbour. Eight alternating Jacobi/contact and
+    // wall passes converge small packs and wall squeezes without pair-order bias.
+    solveContactPositions(this, es, bodies, corrX, corrZ);
+
+    // Finish with geometry-only wall projection: never rotate a car after the
+    // last body constraint pass.
+    for (const e of es) e.phys.projectWallConstraint?.();
+    this._activeContacts = activeNow;
+    this._impactingContacts = impactingNow;
   }
 
   _updatePositions() {

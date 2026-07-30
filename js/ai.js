@@ -87,14 +87,25 @@ export class AIDriver {
     const straight = Math.abs(c.line[idx].curv) < 1 / 650;
 
     // ---- avoidance / overtaking / defending / battle awareness ----
-    let targetAvoid = 0, chase = null, chaseDist = 1e9, blocking = false;
+    let targetAvoid = 0, avoidDist = 1e9, chase = null, chaseDist = 1e9;
+    let follow = null, followDist = 1e9;
+    let brakeLead = null, brakeLeadDist = 1e9;
     let attacker = null, attackerDist = 1e9, nearestGapT = 1e9;
+    const selfSample = c.samples[idx];
+    const selfAlong = (car.pos.x - selfSample.p.x) * selfSample.t.x +
+      (car.pos.z - selfSample.p.z) * selfSample.t.z;
     for (const o of others) {
       if (o === car || o.disabled) continue;
       let ahead = o.sampleIdx - idx;
       if (ahead > N / 2) ahead -= N;
       if (ahead < -N / 2) ahead += N;
-      const dAhead = ahead * ds;
+      // sampleIdx is quantised to ds (normally 2.5 m), which is half a car
+      // length. Add each car's along-track residual so following decisions do
+      // not disappear for a frame just as two cars reach contact distance.
+      const otherSample = c.samples[o.sampleIdx];
+      const otherAlong = (o.pos.x - otherSample.p.x) * otherSample.t.x +
+        (o.pos.z - otherSample.p.z) * otherSample.t.z;
+      const dAhead = ahead * ds + otherAlong - selfAlong;
       // battle proximity — within a second of the car AHEAD, i.e. actually
       // chasing someone. Train leaders get no free pace from this.
       const absD = Math.abs(dAhead);
@@ -103,22 +114,36 @@ export class AIDriver {
         if (gapT < nearestGapT) nearestGapT = gapT;
       }
       // a faster car close behind is an attacker worth covering off
-      if (dAhead < 0 && dAhead > -8 && o.v > car.v + 0.5 && Math.abs(o.lat - car.lat) < 4.5) {
+      // Commit to a defensive line before the attacker reaches car-length
+      // range. Starting a move inside that range turns a legal cover into a
+      // side-swipe with the full-size contact boxes.
+      if (dAhead < -5.8 && dAhead > -22 && o.v > car.v + 0.5 && Math.abs(o.lat - car.lat) < 4.5) {
         if (absD < attackerDist) { attackerDist = absD; attacker = o; }
       }
       if (dAhead < -4 || dAhead > 42) continue;
       const latDiff = o.lat - car.lat;
-      if (dAhead < chaseDist && dAhead > 2) { chaseDist = dAhead; chase = o; }
+      if (dAhead < chaseDist && dAhead > 0.35) { chaseDist = dAhead; chase = o; }
+      if (dAhead < followDist && dAhead > 0.35 && Math.abs(latDiff) < 2.55) {
+        followDist = dAhead;
+        follow = o;
+      }
+      if (dAhead < brakeLeadDist && dAhead > 0.35 && Math.abs(latDiff) < 2.8) {
+        brakeLeadDist = dAhead;
+        brakeLead = o;
+      }
       // under the VSC nobody may improve position: no avoidance-based passes
-      if (!this.noOvertake && Math.abs(latDiff) < 3.6 && dAhead > 0 && dAhead < 30 && o.v < car.v + 4) {
-        // pick the side with room; offset is relative to the line AT the lookahead point
+      if (!this.noOvertake && Math.abs(latDiff) < 3.6 && dAhead > 0 && dAhead < 30 &&
+          dAhead < avoidDist && o.v < car.v + 4) {
         const room = c.halfWidth - 1.8;
         const side = o.lat > 0 ? -1 : 1;
-        targetAvoid = Math.max(-room, Math.min(room, o.lat + side * 3.5)) - lineLat(c, li);
-        blocking = dAhead < 10 && Math.abs(latDiff) < 2.2;
+        targetAvoid = Math.max(-room, Math.min(room, o.lat + side * 3.7)) - lineLat(c, li);
+        avoidDist = dAhead;
       }
     }
-    this.avoidOffset += (targetAvoid - this.avoidOffset) * Math.min(1, dt * 2.6);
+    // Turn into a pass promptly, then blend back more gently. The physical
+    // lateral separation (not this target) controls headway release below.
+    const avoidRate = targetAvoid !== 0 ? 3.4 : 2.6;
+    this.avoidOffset += (targetAvoid - this.avoidOffset) * Math.min(1, dt * avoidRate);
 
     // ---- defending: one legal line change per straight ----
     // The re-arm interval matters: circuits like Monaco expose ~17 short
@@ -135,7 +160,10 @@ export class AIDriver {
       // narrow circuits simply have less room to move over
       this._defendMag = Math.min(1.8, Math.max(0.9, (c.halfWidth - 1.9) * 0.5));
     }
-    const defendTarget = this.defendT > 0 ? this._defendSide * this._defendMag : 0;
+    // Passing/avoidance has priority over defending, preventing two line-change
+    // intents from combining while cars are already close together.
+    const defendTarget = this.defendT > 0 && targetAvoid === 0
+      ? this._defendSide * this._defendMag : 0;
     this.defendOffset += (defendTarget - this.defendOffset) * Math.min(1, dt * 2.2);
 
     // ---- battle variance: a sustained close fight raises commitment ----
@@ -180,22 +208,44 @@ export class AIDriver {
     if (this.yieldT > 0) vT *= 0.97;              // blue flags: let them by
     if (this.scrubT > 0) vT *= 0.985;             // track-limits sanction
     if (this.vscFactor !== 1) vT *= this.vscFactor; // virtual safety car
-    // don't ram the car directly ahead (kept under the VSC too)
-    if (chase && chaseDist < 9 && Math.abs(chase.lat - car.lat) < 2.4 && !blockingFree(this.avoidOffset)) {
-      vT = Math.min(vT, Math.max(chase.v * 0.985, 8));
+    // Keep a real nose-to-tail buffer until the cars have PHYSICALLY separated
+    // laterally. Releasing this from avoidOffset let the throttle come back as
+    // soon as a pass was requested, several frames before the car moved over.
+    let followBrake = 0;
+    if (follow) {
+      const closing = Math.max(0, car.v - follow.v);
+      const speedBuffer = Math.min(3.2, car.v * 0.045);
+      const safeGap = 6.35 + speedBuffer + Math.min(7, closing * 0.6);
+      const gapError = safeGap - followDist;
+      if (gapError > 0) {
+        const backoff = Math.min(4, 0.85 + gapError * 0.35 + closing * 0.2);
+        vT = Math.min(vT, Math.max(follow.v - backoff, 6));
+        followBrake = Math.min(0.7, 0.04 + gapError * 0.12 + closing * 0.06);
+      }
     }
 
     const err = vT - car.v;
     this.input.throttle = err > 0.4 ? Math.min(1, 0.45 + err * 0.28) : (err > -0.6 ? 0.28 : 0);
     this.input.brake = err < -0.8 ? Math.min(1, -err * 0.22) : 0;
+    if (followBrake > 0) {
+      this.input.throttle = 0;
+      this.input.brake = Math.max(this.input.brake, followBrake);
+    }
+    // Propagate a braking wave before it becomes a contact wave. At racing
+    // speed a car needs to react to the aligned car ahead before the static
+    // body-clearance controller engages; the preview collapses at low speed.
+    const brakePreview = 6.35 + Math.min(3.2, car.v * 0.045) +
+      Math.max(4, Math.min(14, car.v * 0.18));
+    if (brakeLead && brakeLeadDist < brakePreview && brakeLead.brake > 0.03) {
+      this.input.throttle = 0;
+      this.input.brake = Math.max(this.input.brake, Math.min(0.92, brakeLead.brake * 0.96));
+    }
 
     // ---- Manual Override boost: chase within range on straights ----
     this.input.boost = this.vscFactor === 1 && straight && car.battery > 0.35 && car.v > 45 &&
-      ((chase && chaseDist < 26) || car.battery > 0.92);
+      this.input.brake < 0.03 && ((chase && chaseDist < 26) || car.battery > 0.92);
 
     return this.input;
-
-    function blockingFree(off) { return Math.abs(off - 0) > 2.8; }
   }
 }
 
