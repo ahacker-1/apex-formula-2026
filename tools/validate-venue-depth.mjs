@@ -52,6 +52,7 @@ const NEW_NAMES = new Set([
   'venue-near-service', 'venue-near-tyre-stacks',
   'vegetation-near-trunks', 'vegetation-near-shrubs',
   'city-near', 'city-skyline', 'city-skyline-caps',
+  'bahrain-paddock-boxes', 'bahrain-paddock-canopies', 'bahrain-paddock-towers',
 ]);
 const isNewMesh = name => NEW_NAMES.has(name) || name.startsWith('vegetation-far-mass-v');
 
@@ -188,6 +189,7 @@ const profiles = new Map();
 let worstMargin = { value: Infinity, track: '', mesh: '', index: -1 };
 let minBatches = Infinity, maxBatches = 0, minTriangles = Infinity, maxTriangles = 0;
 let minServices = Infinity, maxSkyRadius = 0;
+let bahrainIdentity = null;
 
 for (const trackId of Object.keys(TRACKS)) {
   const first = buildCircuit(trackId, TRACKS[trackId], new THREE.Scene());
@@ -211,6 +213,9 @@ for (const trackId of Object.keys(TRACKS)) {
     cityNear: countNamed(meshes, 'city-near'),
     citySkyline: countNamed(meshes, 'city-skyline'),
     skylineCaps: countNamed(meshes, 'city-skyline-caps'),
+    identityBoxes: countNamed(meshes, 'bahrain-paddock-boxes'),
+    identityCanopies: countNamed(meshes, 'bahrain-paddock-canopies'),
+    identityTowers: countNamed(meshes, 'bahrain-paddock-towers'),
   };
   const caps = stats.caps;
   assert(actual.trunks <= caps.trunks, `${trackId}: near-trunk cap`, `[${actual.trunks}/${caps.trunks}]`);
@@ -231,12 +236,38 @@ for (const trackId of Object.keys(TRACKS)) {
     `${trackId}: guaranteed service-bay minimum`, `[${stats.near.serviceBays}/${stats.minimums.serviceBays}]`);
   minServices = Math.min(minServices, stats.near.serviceBays);
 
+  const identityMeshes = meshes.filter(mesh => mesh.name.startsWith('bahrain-paddock-'));
+  const identityInstances = actual.identityBoxes + actual.identityCanopies + actual.identityTowers;
+  if (trackId === 'bahrain') {
+    assert(stats.identity?.feature === 'bahrain-desert-paddock',
+      'bahrain: circuit-specific identity feature is published', `[${stats.identity?.feature}]`);
+    assert(identityMeshes.map(mesh => mesh.name).join(',')
+      === 'bahrain-paddock-boxes,bahrain-paddock-canopies,bahrain-paddock-towers',
+    'bahrain: identity has exactly the three expected batches');
+    assert(actual.identityBoxes === 9 && actual.identityCanopies === 3 && actual.identityTowers === 3,
+      'bahrain: identity object counts are exact',
+      `[boxes=${actual.identityBoxes} canopies=${actual.identityCanopies} towers=${actual.identityTowers}]`);
+    assert(identityInstances === stats.identity.instances && identityInstances <= caps.identityInstances,
+      'bahrain: published identity instance count is capped',
+      `[${identityInstances}/${caps.identityInstances}]`);
+    assert(identityMeshes.length === stats.identity.batches && identityMeshes.length <= caps.identityBatches,
+      'bahrain: identity draw-batch count is capped', `[${identityMeshes.length}/${caps.identityBatches}]`);
+    assert(identityMeshes.every(mesh => mesh.userData.venue === 'bahrain'
+      && mesh.userData.feature === stats.identity.feature),
+    'bahrain: every identity batch carries circuit ownership metadata');
+  } else {
+    assert(stats.identity?.feature === null && identityMeshes.length === 0 && identityInstances === 0,
+      `${trackId}: Bahrain identity remains circuit-exclusive`);
+  }
+
   let batches = 0, triangles = 0;
+  let identityTriangles = 0;
   for (const mesh of meshes) {
     batches++;
     const primitiveTriangles = mesh.geometry.index
       ? mesh.geometry.index.count / 3 : mesh.geometry.attributes.position.count / 3;
     triangles += primitiveTriangles * mesh.count;
+    if (mesh.name.startsWith('bahrain-paddock-')) identityTriangles += primitiveTriangles * mesh.count;
 
     if (mesh.name.startsWith('vegetation-far-mass-v')) {
       const material = mesh.material;
@@ -276,11 +307,30 @@ for (const trackId of Object.keys(TRACKS)) {
         `[radius=${instanceSkyR.toFixed(1)}m/${SKY_R}m]`);
     }
   }
+  if (trackId === 'bahrain') {
+    assert(identityTriangles === stats.identity.triangles && identityTriangles <= caps.identityTriangles,
+      'bahrain: published identity triangle cost is exact and capped',
+      `[${identityTriangles}/${caps.identityTriangles}]`);
+    bahrainIdentity = {
+      batches: identityMeshes.length,
+      instances: identityInstances,
+      triangles: identityTriangles,
+      sample: stats.identity.sample,
+      side: stats.identity.side,
+      offset: stats.identity.offset,
+    };
+  }
   minBatches = Math.min(minBatches, batches); maxBatches = Math.max(maxBatches, batches);
   minTriangles = Math.min(minTriangles, triangles); maxTriangles = Math.max(maxTriangles, triangles);
-  assert(batches >= 7 && batches <= 10, `${trackId}: new scenery stays within 7-10 batches`, `[${batches}]`);
-  assert(triangles >= 5700 && triangles <= 12500,
-    `${trackId}: new scenery triangle cost stays within baseline band`, `[${Math.round(triangles)}]`);
+  const baseBatches = batches - identityMeshes.length;
+  const baseTriangles = triangles - identityTriangles;
+  assert(baseBatches >= 7 && baseBatches <= 10,
+    `${trackId}: base scenery stays within 7-10 batches`, `[${baseBatches}]`);
+  assert(baseTriangles >= 5700 && baseTriangles <= 12500,
+    `${trackId}: base scenery triangle cost stays within baseline band`, `[${Math.round(baseTriangles)}]`);
+  assert(batches <= 13 && triangles <= 12760,
+    `${trackId}: total scenery including identity stays within bounded render cost`,
+    `[batches=${batches}/13 triangles=${Math.round(triangles)}/12760]`);
 
   first.dispose();
   second.dispose();
@@ -292,5 +342,6 @@ assert(profiles.size === Object.keys(TRACKS).length, 'every circuit has a distin
 console.log(`VENUE DEPTH: ${checks - failures}/${checks} checks passed across ${Object.keys(TRACKS).length} circuits`);
 console.log(`worst footprint margin: ${worstMargin.value.toFixed(3)}m (${worstMargin.track}/${worstMargin.mesh}#${worstMargin.index})`);
 console.log(`service bays: minimum ${minServices}; batches ${minBatches}-${maxBatches}; triangles ${Math.round(minTriangles)}-${Math.round(maxTriangles)}`);
+console.log(`Bahrain identity: ${bahrainIdentity?.batches || 0} batches, ${bahrainIdentity?.instances || 0} instances, ${bahrainIdentity?.triangles || 0} triangles; sample ${bahrainIdentity?.sample ?? 'missing'}, side ${bahrainIdentity?.side ?? 'missing'}, offset ${bahrainIdentity?.offset ?? 'missing'}m`);
 console.log(`furthest venue vertex: ${maxSkyRadius.toFixed(1)}m of ${SKY_R}m sky radius`);
 process.exit(failures ? 1 : 0);

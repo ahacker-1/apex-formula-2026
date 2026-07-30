@@ -112,6 +112,7 @@ const VENUE_DEPTH_DEFAULT = { cue: 'circuit-service', mass: 'woodland', accent: 
 const DEPTH_CAP = Object.freeze({
   trunks: 96, shrubs: 120, serviceBays: 8, serviceParts: 64,
   tyreStacks: 20, farMass: 36, cityNear: 96, citySkyline: 112, skylineCaps: 20,
+  identityBatches: 3, identityInstances: 15, identityTriangles: 260,
 });
 // Classic circuits keep real gravel traps; the modern venues have paved,
 // painted run-off areas instead.
@@ -2858,6 +2859,7 @@ export function buildCircuit(trackId, def, scene) {
       near: { trunks: 0, shrubs: 0, serviceBays: 0, serviceParts: 0, tyreStacks: 0, cityBlocks: 0 },
       mid: { trees: 0, clusters: 0 },
       far: { trees: 0, masses: 0, skyline: 0, skylineCaps: 0 },
+      identity: { feature: null, batches: 0, instances: 0, boxes: 0, canopies: 0, towers: 0, triangles: 0 },
       caps: { ...DEPTH_CAP },
     };
     group.userData.sceneryDepth = depthStats;
@@ -3060,6 +3062,155 @@ export function buildCircuit(trackId, def, scene) {
         depthStats.near.serviceBays = serviceAnchors.length;
         depthStats.near.serviceParts = pi;
         depthStats.near.tyreStacks = ti;
+      }
+    }
+
+    // ---- 8a.1 Bahrain main-straight identity cluster -----------------------
+    // The generic low skyline and arid planting gave Bahrain the right climate
+    // but no unmistakable silhouette from the starting grid. A compact paddock
+    // compound now sits beyond the outside furniture on the main straight:
+    // three square tent roofs step toward a three-mast floodlight grouping. It
+    // is an original procedural composition, consumes no random values, and is
+    // batched into three InstancedMeshes (15 instances total).
+    if (depthProfile.cue === 'desert-canopy') {
+      const FEATURE = 'bahrain-desert-paddock';
+      const BOX_COUNT = 9;       // three bases, three fascias, three lamp heads
+      const CANOPY_COUNT = 3;
+      const TOWER_COUNT = 3;
+      const HALF_LEN = 28;
+      const HALF_DEP = 15;
+
+      // SAT overlap against previously registered architecture. This keeps the
+      // complete cluster clear of grandstands, pit buildings and the TV wall;
+      // checking only its centre would allow a 56m compound to clip their edges.
+      const keepOutClear = (px, pz, fx, fz, halfLen, halfDep) => {
+        for (const k of keepOut) {
+          const dx = px - k.x, dz = pz - k.z;
+          let separated = false;
+          for (const axis of [fx, fz, k.fx, k.fz]) {
+            const distance = Math.abs(dx * axis.x + dz * axis.z);
+            const radiusA = halfLen * Math.abs(fx.x * axis.x + fx.z * axis.z)
+              + halfDep * Math.abs(fz.x * axis.x + fz.z * axis.z);
+            const radiusB = k.halfLen * Math.abs(k.fx.x * axis.x + k.fx.z * axis.z)
+              + k.halfDep * Math.abs(k.fz.x * axis.x + k.fz.z * axis.z);
+            if (distance > radiusA + radiusB) { separated = true; break; }
+          }
+          if (!separated) return false;
+        }
+        return true;
+      };
+
+      // Prefer the side opposite the pit complex, then move outward before
+      // moving the landmark farther down the straight. This ordering keeps the
+      // cluster prominent in the grid/chase-camera evidence while every fallback
+      // remains deterministic and inside the procedural sky.
+      const start = samples[0];
+      const pitDot = pitBuilding
+        ? (pitBuilding.position.x - start.p.x) * start.n.x
+          + (pitBuilding.position.z - start.p.z) * start.n.z
+        : 1;
+      const pitSide = pitDot < 0 ? -1 : 1;
+      let anchor = null;
+      for (const metres of [125, 165, 205]) {
+        const i = idxAt(stepOf(metres));
+        const s = samples[i];
+        for (const side of [-pitSide, pitSide]) {
+          for (const offset of [wallOff + 42, wallOff + 66, wallOff + 90]) {
+            const p = s.p.clone().addScaledVector(s.n, side * offset);
+            const fz = s.p.clone().sub(p).setY(0).normalize();
+            const fx = new THREE.Vector3().crossVectors(UP, fz).normalize();
+            if (!acceptObb(p.x, p.z, fx, fz, HALF_LEN, HALF_DEP)) continue;
+            if (!keepOutClear(p.x, p.z, fx, fz, HALF_LEN, HALF_DEP)) continue;
+            if (Math.hypot(p.x, p.z) + Math.hypot(HALF_LEN, HALF_DEP) >= SKY_R - 200) continue;
+            anchor = { p: p.setY(terrainAt(p.x, p.z)), fz, fx, yaw: Math.atan2(fz.x, fz.z), i, side, offset };
+            break;
+          }
+          if (anchor) break;
+        }
+        if (anchor) break;
+      }
+
+      if (anchor) {
+        const boxGeo = new THREE.BoxGeometry(1, 1, 1);
+        const canopyGeo = new THREE.ConeGeometry(1, 1, 4, 1, false);
+        const towerGeo = new THREE.CylinderGeometry(1, 1, 1, 8, 1, false);
+        const boxes = new THREE.InstancedMesh(boxGeo,
+          std({ color: 0xffffff, roughness: 0.76 }), BOX_COUNT);
+        const canopies = new THREE.InstancedMesh(canopyGeo,
+          std({ color: 0xffffff, roughness: 0.88 }), CANOPY_COUNT);
+        const towers = new THREE.InstancedMesh(towerGeo,
+          std({ color: 0x6b645b, roughness: 0.58, metalness: 0.18 }), TOWER_COUNT);
+        boxes.name = 'bahrain-paddock-boxes';
+        canopies.name = 'bahrain-paddock-canopies';
+        towers.name = 'bahrain-paddock-towers';
+        for (const mesh of [boxes, canopies, towers]) {
+          mesh.userData.venue = 'bahrain';
+          mesh.userData.feature = FEATURE;
+        }
+
+        const mm = new THREE.Matrix4();
+        const yawQ = new THREE.Quaternion().setFromAxisAngle(UP, anchor.yaw);
+        const roofQ = yawQ.clone().multiply(new THREE.Quaternion().setFromAxisAngle(UP, Math.PI / 4));
+        const lp = new THREE.Vector3(), wp = new THREE.Vector3(), sc = new THREE.Vector3();
+        const sand = new THREE.Color(0xc8a56f);
+        const limestone = new THREE.Color(0xe5d7b9);
+        const bronze = new THREE.Color(0x8b5b34);
+        const dark = new THREE.Color(0x34363a);
+        const localPut = (mesh, index, x, y, z, sx, sy, sz, color, q = yawQ) => {
+          lp.set(x, y, z).applyQuaternion(yawQ);
+          wp.copy(anchor.p).add(lp);
+          sc.set(sx, sy, sz);
+          mm.compose(wp, q, sc);
+          mesh.setMatrixAt(index, mm);
+          if (color) mesh.setColorAt(index, color);
+        };
+
+        const tentX = [-17, 0, 17];
+        for (let k = 0; k < tentX.length; k++) {
+          const x = tentX[k];
+          const bodyH = 3.8 + k * 0.32;
+          localPut(boxes, k, x, bodyH / 2, -3.2, 13.5, bodyH, 10.8,
+            k === 1 ? limestone : sand);
+          localPut(boxes, 3 + k, x, bodyH - 0.42, 2.28, 12.2, 0.72, 0.32, bronze);
+          // The four-sided cone is stretched into a taut square canopy. Rotating
+          // it 45 degrees aligns its four eaves with the rectangular paddock bay.
+          localPut(canopies, k, x, bodyH + 2.7, -3.2, 8.2, 5.4, 6.7,
+            k === 1 ? new THREE.Color(0xf0e4ca) : limestone, roofQ);
+          addStructureShade(anchor.p.x + anchor.fx.x * x - anchor.fz.x * 3.2,
+            anchor.p.z + anchor.fx.z * x - anchor.fz.z * 3.2,
+            anchor.yaw, 16.4, 13.4, bodyH + 5.4, 0.17, 0.22);
+        }
+
+        const towerX = [-22, 0, 22];
+        const towerH = [20, 27, 23];
+        for (let k = 0; k < towerX.length; k++) {
+          const x = towerX[k], h = towerH[k];
+          localPut(towers, k, x, h / 2, -12.6, 0.34, h, 0.34, null);
+          localPut(boxes, 6 + k, x, h - 0.35, -12.25, 5.8, 0.78, 1.2, dark);
+        }
+
+        if (boxes.instanceColor) boxes.instanceColor.needsUpdate = true;
+        if (canopies.instanceColor) canopies.instanceColor.needsUpdate = true;
+        group.add(boxes, canopies, towers);
+        addKeepOut(anchor.p, anchor.fz, HALF_LEN + 4, HALF_DEP + 4);
+
+        const primitiveTriangles = geometry => geometry.index
+          ? geometry.index.count / 3 : geometry.attributes.position.count / 3;
+        const triangleCount = primitiveTriangles(boxGeo) * BOX_COUNT
+          + primitiveTriangles(canopyGeo) * CANOPY_COUNT
+          + primitiveTriangles(towerGeo) * TOWER_COUNT;
+        depthStats.identity = {
+          feature: FEATURE,
+          batches: 3,
+          instances: BOX_COUNT + CANOPY_COUNT + TOWER_COUNT,
+          boxes: BOX_COUNT,
+          canopies: CANOPY_COUNT,
+          towers: TOWER_COUNT,
+          triangles: triangleCount,
+          sample: anchor.i,
+          side: anchor.side,
+          offset: anchor.offset,
+        };
       }
     }
 
