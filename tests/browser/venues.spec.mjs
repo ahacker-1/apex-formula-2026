@@ -1,10 +1,27 @@
 import { test, expect } from '@playwright/test';
 import { mkdir, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 
-const CAPTURE_DIR = process.env.APEX_CAPTURE_DIR
-  ? path.resolve(process.env.APEX_CAPTURE_DIR)
+// Opt-in only: a visual run writes reproducible review artifacts under the
+// already-ignored test-results/ tree, never into the distributable build.
+const CAPTURE_DIR = process.env.APEX_VISUAL_EVIDENCE_DIR || process.env.APEX_CAPTURE_DIR
+  ? path.resolve(process.env.APEX_VISUAL_EVIDENCE_DIR || process.env.APEX_CAPTURE_DIR)
   : null;
+
+const VISUAL_EVIDENCE_SCHEMA = 'apex-formula.visual-evidence/v1';
+const FIXED_VIEWPORT = { width: 1600, height: 900 };
+const FIXED_DPR = 1;
+const evidenceRecords = [];
+
+// Visual review must not inherit a developer's current browser size, display
+// scale, colour preference, or motion preference from playwright.config.mjs.
+test.use({
+  viewport: FIXED_VIEWPORT,
+  deviceScaleFactor: FIXED_DPR,
+  colorScheme: 'dark',
+  reducedMotion: 'reduce',
+});
 
 const VENUES = [
   { trackId: 'melbourne', environment: 'day', seed: 'venue-smoke-melbourne-2026' },
@@ -20,6 +37,16 @@ const RENDER_CEILINGS = {
   triangles: 2_750_000,
   textures: 160,
 };
+
+function sha256(buffer) {
+  return createHash('sha256').update(buffer).digest('hex');
+}
+
+function pngDimensions(png) {
+  // PNG IHDR stores width/height as two unsigned big-endian 32-bit integers.
+  expect(png.subarray(1, 4).toString('ascii')).toBe('PNG');
+  return { width: png.readUInt32BE(16), height: png.readUInt32BE(20) };
+}
 
 function observeErrors(page) {
   const errors = { console: [], page: [], http: [] };
@@ -48,6 +75,45 @@ async function configureFreshPage(page) {
       volume: 0,
       quali: false,
     }));
+  });
+}
+
+async function lockCaptureFrame(page) {
+  return page.evaluate(() => {
+    const game = window.__game;
+    // The seeded session is paused before this point. Snap the standard chase
+    // camera once so its smoothing state cannot depend on scheduling between
+    // the session constructor and our first screenshot.
+    game.camMode = 0;
+    game.snapCamera();
+    game.camera.lookAt(game._camLook);
+    game.camera.updateProjectionMatrix();
+    game.composer.render();
+
+    const player = game.session.player.phys;
+    const projected = player.pos.clone().project(game.camera);
+    const canvas = game.renderer.domElement;
+    const rect = canvas.getBoundingClientRect();
+    return {
+      camera: {
+        mode: game.camMode,
+        position: game.camera.position.toArray().map(value => Number(value.toFixed(4))),
+        quaternion: game.camera.quaternion.toArray().map(value => Number(value.toFixed(6))),
+        fov: Number(game.camera.fov.toFixed(4)),
+      },
+      playerFrame: {
+        normalizedX: Number(((projected.x + 1) / 2).toFixed(4)),
+        normalizedY: Number(((-projected.y + 1) / 2).toFixed(4)),
+        clipZ: Number(projected.z.toFixed(4)),
+      },
+      canvas: {
+        cssWidth: Number(rect.width.toFixed(2)),
+        cssHeight: Number(rect.height.toFixed(2)),
+        bufferWidth: canvas.width,
+        bufferHeight: canvas.height,
+      },
+      devicePixelRatio: window.devicePixelRatio,
+    };
   });
 }
 
@@ -147,6 +213,66 @@ async function measureScreenshot(page, png) {
   }, dataUrl);
 }
 
+async function measureScreenshotDelta(page, first, second) {
+  const toDataUrl = png => `data:image/png;base64,${png.toString('base64')}`;
+  return page.evaluate(async ([firstSource, secondSource]) => {
+    const load = async source => {
+      const image = new Image();
+      image.src = source;
+      await image.decode();
+      return image;
+    };
+    const [first, second] = await Promise.all([load(firstSource), load(secondSource)]);
+    const sample = document.createElement('canvas');
+    sample.width = 160;
+    sample.height = 90;
+    const context = sample.getContext('2d', { willReadFrequently: true });
+    context.drawImage(first, 0, 0, sample.width, sample.height);
+    const a = context.getImageData(0, 0, sample.width, sample.height).data;
+    context.clearRect(0, 0, sample.width, sample.height);
+    context.drawImage(second, 0, 0, sample.width, sample.height);
+    const b = context.getImageData(0, 0, sample.width, sample.height).data;
+
+    let total = 0;
+    let max = 0;
+    let changed = 0;
+    for (let i = 0; i < a.length; i += 4) {
+      const difference = Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]);
+      total += difference / 3;
+      max = Math.max(max, difference / 3);
+      if (difference / 3 > 2) changed++;
+    }
+    const count = a.length / 4;
+    return {
+      sampleSize: `${sample.width}x${sample.height}`,
+      meanAbsoluteDifference: Number((total / count).toFixed(4)),
+      maxChannelDifference: Number(max.toFixed(4)),
+      changedPixelRatio: Number((changed / count).toFixed(5)),
+    };
+  }, [toDataUrl(first), toDataUrl(second)]);
+}
+
+async function persistEvidence(venue, screenshot, repeatScreenshot, record) {
+  if (!CAPTURE_DIR) return;
+  await mkdir(CAPTURE_DIR, { recursive: true });
+  const stem = `${venue.trackId}-${venue.environment}`;
+  const primary = `${stem}.png`;
+  const repeat = `${stem}-repeat.png`;
+  const metrics = `${stem}.metrics.json`;
+  await Promise.all([
+    writeFile(path.join(CAPTURE_DIR, primary), screenshot),
+    writeFile(path.join(CAPTURE_DIR, repeat), repeatScreenshot),
+    writeFile(path.join(CAPTURE_DIR, metrics), `${JSON.stringify(record, null, 2)}\n`),
+  ]);
+  evidenceRecords.push({
+    venue: venue.trackId,
+    environment: venue.environment,
+    files: { primary, repeat, metrics },
+    sha256: { primary: sha256(screenshot), repeat: sha256(repeatScreenshot) },
+    metrics: record,
+  });
+}
+
 for (const venue of VENUES) {
   test(`${venue.trackId} uses one ${venue.environment} HDR and stays within the visual budget`, async ({ page }) => {
     test.setTimeout(90_000);
@@ -239,6 +365,22 @@ for (const venue of VENUES) {
     await expect(page.locator('#hud')).toHaveClass(/active/);
     await expect.poll(() => page.evaluate(() => window.__game.paused)).toBe(true);
 
+    const frame = await lockCaptureFrame(page);
+    expect(frame.devicePixelRatio).toBe(FIXED_DPR);
+    expect(frame.camera.mode).toBe(0);
+    expect(frame.camera.fov).toBeGreaterThan(50);
+    expect(frame.camera.fov).toBeLessThan(90);
+    expect(frame.playerFrame.normalizedX).toBeGreaterThan(0.15);
+    expect(frame.playerFrame.normalizedX).toBeLessThan(0.85);
+    expect(frame.playerFrame.normalizedY).toBeGreaterThan(0.2);
+    expect(frame.playerFrame.normalizedY).toBeLessThan(0.95);
+    expect(frame.playerFrame.clipZ).toBeGreaterThan(-1);
+    expect(frame.playerFrame.clipZ).toBeLessThan(1);
+    expect(frame.canvas.cssWidth).toBe(FIXED_VIEWPORT.width);
+    expect(frame.canvas.cssHeight).toBe(FIXED_VIEWPORT.height);
+    expect(frame.canvas.bufferWidth).toBe(FIXED_VIEWPORT.width * FIXED_DPR);
+    expect(frame.canvas.bufferHeight).toBe(FIXED_VIEWPORT.height * FIXED_DPR);
+
     const renderer = await measureRenderer(page);
     expect(renderer.calls).toBeGreaterThan(0);
     expect(renderer.triangles).toBeGreaterThan(0);
@@ -248,25 +390,40 @@ for (const venue of VENUES) {
     expect(renderer.textures).toBeLessThanOrEqual(RENDER_CEILINGS.textures);
 
     const screenshot = await page.screenshot({ animations: 'disabled' });
+    const repeatScreenshot = await page.screenshot({ animations: 'disabled' });
+    const screenshotDimensions = pngDimensions(screenshot);
+    expect(screenshotDimensions).toEqual(FIXED_VIEWPORT);
     const screenshotMetrics = await measureScreenshot(page, screenshot);
+    const repeatStability = await measureScreenshotDelta(page, screenshot, repeatScreenshot);
     expect(screenshotMetrics.opaqueRatio).toBeGreaterThan(0.99);
     expect(screenshotMetrics.range).toBeGreaterThan(40);
     expect(screenshotMetrics.standardDeviation).toBeGreaterThan(8);
     expect(screenshotMetrics.luminanceBuckets).toBeGreaterThan(4);
-
-    if (CAPTURE_DIR) {
-      await mkdir(CAPTURE_DIR, { recursive: true });
-      await writeFile(path.join(CAPTURE_DIR, `${venue.trackId}-${venue.environment}.png`), screenshot);
-    }
+    // The same frozen frame must retain its composition. This intentionally
+    // permits tiny GPU rasterisation variation rather than byte-for-byte PNG
+    // equality, which would make evidence flaky across supported hardware.
+    expect(repeatStability.meanAbsoluteDifference).toBeLessThanOrEqual(1.5);
+    expect(repeatStability.changedPixelRatio).toBeLessThanOrEqual(0.02);
 
     const metrics = {
+      schema: VISUAL_EVIDENCE_SCHEMA,
       venue: venue.trackId,
       environment: venue.environment,
       seed: venue.seed,
+      capture: {
+        viewport: FIXED_VIEWPORT,
+        deviceScaleFactor: FIXED_DPR,
+        graphicsQuality: state.appliedQuality,
+        paused: state.paused,
+        frame,
+        screenshotDimensions,
+      },
       hdr: hdrPaths,
       renderer,
       screenshot: screenshotMetrics,
+      repeatStability,
     };
+    await persistEvidence(venue, screenshot, repeatScreenshot, metrics);
     console.log(`[venue-smoke] ${JSON.stringify(metrics)}`);
 
     if (venue.environment === 'night') {
@@ -290,3 +447,25 @@ for (const venue of VENUES) {
     expect(errors.http, 'HTTP error responses').toEqual([]);
   });
 }
+
+test.afterAll(async () => {
+  if (!CAPTURE_DIR || evidenceRecords.length === 0) return;
+  const manifest = {
+    schema: VISUAL_EVIDENCE_SCHEMA,
+    generatedBy: 'tests/browser/venues.spec.mjs',
+    outputDirectory: CAPTURE_DIR,
+    captureContract: {
+      viewport: FIXED_VIEWPORT,
+      deviceScaleFactor: FIXED_DPR,
+      graphicsQuality: 'high',
+      state: 'seeded quick race paused on the first live session frame',
+      repeatTolerance: {
+        sampleSize: '160x90',
+        meanAbsoluteDifferenceMax: 1.5,
+        changedPixelRatioMax: 0.02,
+      },
+    },
+    records: evidenceRecords,
+  };
+  await writeFile(path.join(CAPTURE_DIR, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+});

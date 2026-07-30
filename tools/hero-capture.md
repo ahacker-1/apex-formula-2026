@@ -16,12 +16,13 @@ re-runnable pass/fail instead of a hope.
 | `r4-hero-03.png` | grandstand pass | grandstand + crowd >= 25% of frame; car >= 8k px; stand backs >= 60% of the car's columns (stand is BEHIND the car) |
 | `r4-hero-04.png` | low nose shot toward the gantry | camera <= 1.1 m above the road; car >= 3% of frame; gantry >= 1.2k px with centroid in the upper 60% |
 | `r4-hero-05.png` | wide beauty on the main straight | camera on a real straight (\|curv\| < 1/900); tree walls >= 6%; hoardings >= 0.8%; TV screen >= 700 px |
-| `r4-hero-contracts.png` | machine-readable summary | **JSON body** (the `/shot` sink appends `.png` to everything): overall `pass`, per-shot `camera`/`metrics`/`asserts`, and a `failed[]` list of every missed assertion — this is the loud failure |
+| `r4-hero-contracts.png` | machine-readable summary | **JSON body** (the `/shot` sink appends `.png` to everything): schema, fixed capture contract, renderer/DPR settings, overall `pass`, per-shot `camera`/`metrics`/`asserts`, and a `failed[]` list of every missed assertion — this is the loud failure |
 
 Every shot also asserts `frame mean luminance > 25` so a black/broken frame can
-never "pass" vacuously. All frames are 2560x1440, rendered through the game's
-own pipeline (buildCircuit scenery, buildCarMesh cars with the sculpted GLB,
-main.js's exact HDRI/lighting/ACES/GTAO/bloom composer).
+never "pass" vacuously, then re-renders its fixed scene and records
+`repeatStability`. All frames are 2560x1440 at DPR 1, rendered through the
+game's own pipeline (buildCircuit scenery, buildCarMesh cars with the sculpted
+GLB, main.js's exact HDRI/lighting/ACES/GTAO/bloom composer).
 
 ## How to run
 
@@ -47,6 +48,36 @@ print('PASS' if d['pass'] else 'FAIL'); [print(' -', f) for f in d['failed']]"
 ```
 
 Or from the browser console: `window.__RIG__` (`.pass`, `.failed`, `.shots`).
+The completed browser object also exposes the same machine-readable summary as
+`window.__RIG__.manifest`.
+
+## Venue evidence bundle
+
+The Playwright venue suite captures the shipping game at a fixed 1600x900 DPR 1
+desktop viewport, persisted high graphics, known seed, chase camera, and paused
+first live session frame. It preserves the day/dusk/night HDR, renderer-budget,
+console, and screenshot-health checks while emitting reviewable evidence:
+
+```sh
+cd <repo root>
+npm run build
+APEX_VISUAL_EVIDENCE_DIR=test-results/visual-evidence \
+  npx playwright test tests/browser/venues.spec.mjs --project=desktop-chromium
+```
+
+`test-results/visual-evidence/` is already ignored and outside `dist/`, so it
+cannot enter a release artifact. It contains one primary PNG, one immediate
+repeat PNG, and one `<venue>-<environment>.metrics.json` for each of Melbourne
+day, Bahrain dusk, and Singapore night, plus `manifest.json`. The manifest
+(`apex-formula.visual-evidence/v1`) records the fixed capture contract, HDR
+loaded, frame/camera data, renderer counters, image-health metrics, repeat
+metrics, and SHA-256 digests of both PNGs.
+
+Repeat comparisons are 160x90 image samples. A capture passes when mean
+absolute RGB difference is at most `1.5` and fewer than `2%` of samples differ
+by more than two RGB levels. Those are intentionally hardware-tolerant checks,
+not baseline-image equality; the exact PNG digest may differ across GPU/driver
+stacks while the composition and renderer ceilings remain enforced.
 
 ## How the contracts are measured (no blind pixels)
 
@@ -66,10 +97,13 @@ Or from the browser console: `window.__RIG__` (`.pass`, `.failed`, `.shots`).
 
 The circuit build is seeded per track id, the cars and cameras are fixed poses
 (no gameplay loop, no time-dependent state, no `Math.random` in the rig), so
-reruns produce the same framing. GPU rasterisation differences can move
-individual pixel counts by a fraction of a percent; every threshold carries a
-wide margin over the measured values (see `metrics` in the JSON — e.g. kerb
-16.4% vs the 3% floor, gravel 19.5% vs 3%, grandstand 30.1% vs 25%).
+reruns produce the same framing. Both the hero rig and venue suite make an
+immediate repeat capture and enforce mean absolute RGB difference <= `1.5` and
+changed-pixel ratio <= `2%` (sampled; a changed pixel differs by more than two
+RGB levels). GPU rasterisation differences can move individual pixel counts by
+a fraction of a percent; every framing threshold carries a wide margin over the
+measured values (see `metrics` in the JSON — e.g. kerb 16.4% vs the 3% floor,
+gravel 19.5% vs 3%, grandstand 30.1% vs 25%).
 
 ## Tuning cameras
 
