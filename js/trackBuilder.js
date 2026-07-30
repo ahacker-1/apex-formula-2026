@@ -72,6 +72,42 @@ const SPECIES_H = {
   // photographic neighbours.
   broadleaf: [10, 18], poplar: [15, 23], pine: [13, 23], palm: [8.5, 15], scrub: [1.4, 3.0],
 };
+
+// Structural identity for the three scenery depths. These are intentionally
+// original compositions rather than replicas of branded real-world landmarks:
+// the cue controls the little service compound beside the barrier, `mass` the
+// distant vegetation silhouette, and `skyline` the rhythm of generic buildings.
+// Every circuit gets a distinct combination even when it shares a climate.
+const VENUE_DEPTH = {
+  melbourne:   { cue: 'park-workshop',    mass: 'park',     accent: 0x4f8c78 },
+  shanghai:    { cue: 'garden-service',   mass: 'park',     accent: 0xb75b3e },
+  suzuka:      { cue: 'hillside-post',    mass: 'alpine',   accent: 0xd06a43 },
+  bahrain:     { cue: 'desert-canopy',    mass: 'arid',     accent: 0xc18a48, skyline: 'low' },
+  jeddah:      { cue: 'coastal-service',  mass: 'tropical', accent: 0x4a9ca6, skyline: 'needle' },
+  miami:       { cue: 'pastel-courtyard', mass: 'tropical', accent: 0xdb806f, skyline: 'low' },
+  montreal:    { cue: 'island-post',      mass: 'park',     accent: 0x4c7898 },
+  monaco:      { cue: 'hillside-terrace', mass: 'tropical', accent: 0xd1a06e, skyline: 'terrace' },
+  barcelona:   { cue: 'dry-park-post',    mass: 'park',     accent: 0xb86c45 },
+  spielberg:   { cue: 'alpine-workshop',  mass: 'alpine',   accent: 0xa95245 },
+  silverstone: { cue: 'airfield-service', mass: 'park',     accent: 0x668ca1 },
+  spa:         { cue: 'forest-shelter',   mass: 'alpine',   accent: 0xb8793e },
+  hungaroring: { cue: 'bowl-lookout',     mass: 'park',     accent: 0x796c9f },
+  zandvoort:   { cue: 'dune-service',     mass: 'arid',     accent: 0x57908d },
+  monza:       { cue: 'park-pavilion',    mass: 'woodland', accent: 0xa57642 },
+  madrid:      { cue: 'expo-courtyard',   mass: 'park',     accent: 0xc2734c, skyline: 'slab' },
+  baku:        { cue: 'stone-workshop',   mass: 'arid',     accent: 0xb28d5c, skyline: 'slender' },
+  singapore:   { cue: 'garden-service',   mass: 'tropical', accent: 0x4ba89a, skyline: 'vertical' },
+  austin:      { cue: 'scrub-lookout',    mass: 'arid',     accent: 0x8c658f },
+};
+const VENUE_DEPTH_DEFAULT = { cue: 'circuit-service', mass: 'woodland', accent: 0x687b71, skyline: 'mixed' };
+
+// Hard caps are independent of lap length. The forest wall may contain thousands
+// of cheap billboard instances, but the geometry-rich near layer and the broad
+// atmospheric cards stay fixed-cost on the largest venue.
+const DEPTH_CAP = Object.freeze({
+  trunks: 96, shrubs: 120, serviceBays: 8, serviceParts: 64,
+  tyreStacks: 20, farMass: 36, cityNear: 96, citySkyline: 112, skylineCaps: 20,
+});
 // Classic circuits keep real gravel traps; the modern venues have paved,
 // painted run-off areas instead.
 const GRAVEL_TRAP = new Set(['spa', 'suzuka', 'monza', 'zandvoort', 'spielberg']);
@@ -2775,6 +2811,15 @@ export function buildCircuit(trackId, def, scene) {
 
   // ---- 8. environment: trees / skyline / floodlights -----------------------
   {
+    const depthProfile = VENUE_DEPTH[trackId] || VENUE_DEPTH_DEFAULT;
+    const depthStats = {
+      profile: depthProfile.cue,
+      near: { trunks: 0, shrubs: 0, serviceBays: 0, serviceParts: 0, tyreStacks: 0 },
+      mid: { trees: 0, clusters: 0 },
+      far: { trees: 0, masses: 0, skyline: 0, skylineCaps: 0 },
+      caps: { ...DEPTH_CAP },
+    };
+    group.userData.sceneryDepth = depthStats;
     // reject a scenery position that would sit on any part of the circuit
     const clearOfTrack = (px, pz, margin) => {
       for (let j = 0; j < N; j += 6) {
@@ -2800,7 +2845,101 @@ export function buildCircuit(trackId, def, scene) {
       return out;
     };
 
-    // ---- 8a. billboard vegetation ----------------------------------------
+    // ---- 8a. near-depth service compounds ---------------------------------
+    // A handful of compact, ORIGINAL track-operations posts provide real scale
+    // at eye level: open shelters made from separate roof/back/post pieces,
+    // equipment cabinets, and loose tyre trolleys. Parts are collected into two
+    // InstancedMeshes, so an entire venue costs two draw calls rather than one
+    // object per shed. The anchors use a jittered sequence, not an even lap pitch.
+    const serviceAnchors = [];
+    {
+      const wanted = Math.min(DEPTH_CAP.serviceBays, Math.max(4, Math.round(length / 1050)));
+      const stride = N / wanted;
+      const phase = rnd() * N;
+      for (let k = 0; k < wanted; k++) {
+        const i = idxAt(Math.round(phase + k * stride + (rnd() - 0.5) * stride * 0.52));
+        const s = samples[i];
+        const side = rnd() < 0.5 ? 1 : -1;
+        const d = wallOff + 10 + rnd() * 13;
+        const px = s.p.x + s.n.x * side * d;
+        const pz = s.p.z + s.n.z * side * d;
+        if (!clearOfTrack(px, pz, halfWidth + 2.5) || inKeepOut(px, pz)) continue;
+        const fz = s.p.clone().sub(new THREE.Vector3(px, 0, pz)).setY(0).normalize();
+        const fx = new THREE.Vector3().crossVectors(UP, fz).normalize();
+        if (!trackClear(px, pz, fx, fz, 3.8, 2.6)) continue;
+        const p = new THREE.Vector3(px, terrainAt(px, pz), pz);
+        serviceAnchors.push({ p, s, side, fz, yaw: Math.atan2(fz.x, fz.z) });
+        // Keep the near shrubs and tree cards from swallowing the small shelter.
+        addKeepOut(p, fz, 5.5, 4.2);
+      }
+
+      if (serviceAnchors.length) {
+        const partGeo = new THREE.BoxGeometry(1, 1, 1);
+        const PARTS_PER = 7; // roof, back, two posts, cabinet, bench, marker panel
+        const partCount = Math.min(DEPTH_CAP.serviceParts, serviceAnchors.length * PARTS_PER);
+        const parts = new THREE.InstancedMesh(partGeo, std({ color: 0xffffff, roughness: 0.76 }), partCount);
+        parts.name = 'venue-near-service';
+        const tyreGeo = new THREE.CylinderGeometry(1, 1, 1, 12, 1, false);
+        const tyreCount = Math.min(DEPTH_CAP.tyreStacks, serviceAnchors.length * 2);
+        const tyres = new THREE.InstancedMesh(tyreGeo, std({ color: 0xffffff, roughness: 0.92 }), tyreCount);
+        tyres.name = 'venue-near-tyre-stacks';
+        const mm = new THREE.Matrix4();
+        const yawQ = new THREE.Quaternion(), tyreQ = new THREE.Quaternion();
+        const qStack = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI / 2);
+        const lp = new THREE.Vector3(), wp = new THREE.Vector3(), sc = new THREE.Vector3();
+        const accent = new THREE.Color(depthProfile.accent);
+        const neutral = new THREE.Color(theme.night ? 0x68717d : 0x8b908c);
+        const dark = new THREE.Color(0x26292c);
+        let pi = 0, ti = 0;
+        for (let a = 0; a < serviceAnchors.length; a++) {
+          const an = serviceAnchors[a];
+          yawQ.setFromAxisAngle(UP, an.yaw);
+          // Local x spans the shelter, local z points toward the track.
+          const specs = [
+            // x, y, z, width, height, depth, colour role
+            [0, 3.05, 0, 6.2, 0.22, 3.4, 0],
+            [0, 1.55, -1.48, 6.0, 2.8, 0.18, 1],
+            [-2.72, 1.45, 0, 0.18, 2.8, 0.18, 1],
+            [2.72, 1.45, 0, 0.18, 2.8, 0.18, 1],
+            [-1.6, 0.82, -1.05, 1.25, 1.65, 0.72, 0],
+            [0.5, 0.42, -1.0, 2.1, 0.32, 0.7, 2],
+            [2.45, 1.25, 0.12, 0.72, 1.7, 0.12, 0],
+          ];
+          for (const spec of specs) {
+            if (pi >= partCount) break;
+            const [x, y, z, w, h, d, role] = spec;
+            lp.set(x, y, z).applyQuaternion(yawQ);
+            wp.copy(an.p).add(lp);
+            sc.set(w, h, d);
+            mm.compose(wp, yawQ, sc);
+            parts.setMatrixAt(pi, mm);
+            parts.setColorAt(pi, role === 0 ? accent : role === 1 ? neutral : dark);
+            pi++;
+          }
+          for (let j = 0; j < 2 && ti < tyreCount; j++) {
+            lp.set((j ? 1 : -1) * 1.15, 0.46, 1.72 + j * 0.12).applyQuaternion(yawQ);
+            wp.copy(an.p).add(lp);
+            tyreQ.copy(yawQ).multiply(qStack);
+            sc.set(0.43, 1.05 + j * 0.18, 0.43);
+            mm.compose(wp, tyreQ, sc);
+            tyres.setMatrixAt(ti, mm);
+            tyres.setColorAt(ti, j ? new THREE.Color(0x34383c) : dark);
+            ti++;
+          }
+          addStructureShade(an.p.x, an.p.z, an.yaw, 6.2, 3.4, 3.2, 0.14, 0.17);
+        }
+        parts.count = pi;
+        tyres.count = ti;
+        if (parts.instanceColor) parts.instanceColor.needsUpdate = true;
+        if (tyres.instanceColor) tyres.instanceColor.needsUpdate = true;
+        group.add(parts, tyres);
+        depthStats.near.serviceBays = serviceAnchors.length;
+        depthStats.near.serviceParts = pi;
+        depthStats.near.tyreStacks = ti;
+      }
+    }
+
+    // ---- 8b. billboard vegetation ----------------------------------------
     // The old cone-and-cylinder trees are gone. Every tree is now a pair of
     // intersecting alpha-cut planes (an X, so it holds up from any angle) that
     // carry a real canvas canopy sprite, instanced per species AND per baked hue
@@ -2856,12 +2995,12 @@ export function buildCircuit(trackId, def, scene) {
         for (const [sp, wgt] of veg.mix) { if ((r -= wgt) <= 0) return sp; }
         return veg.mix[veg.mix.length - 1][0];
       };
-      const placements = [];   // { px, pz, sp, v, h, rot }
+      const placements = [];   // { px, pz, sp, v, h, widthScale, rot, layer }
       // A billboard is as wide as h * aspect, so its canopy reaches h*aspect/2
       // either side of the trunk. Placement rejects on the CANOPY, not the trunk:
       // the branches must never hang over the racing surface. Where a tree only
       // just fits, it is shrunk rather than dropped, so treelines stay unbroken.
-      const put = (px, pz, sp, minWall) => {
+      const put = (px, pz, sp, minWall, layer = 'mid') => {
         const [hMin, hMax] = SPECIES_H[sp];
         const aspect = spAspect(sp);
         const { d, i: near } = distTo(px, pz);
@@ -2879,17 +3018,22 @@ export function buildCircuit(trackId, def, scene) {
           if (rel <= stepOf(320) || rel >= N - stepOf(90)) return false;
         }
         let h = ((hMin + hMax) / 2) * (0.8 + rnd() * 0.8);
+        // Width breathes independently of height. Combined with the extra baked
+        // silhouettes this prevents a mid-ground grove from reading as one tree
+        // stamp resized uniformly. Keep the near layer more natural in aspect;
+        // broad far masses are handled separately below.
+        const widthScale = layer === 'mid' ? 0.76 + rnd() * 0.52 : 0.9 + rnd() * 0.22;
         // Explicit ceiling at 1.5x the variant's median height, so no single
         // instance can ever tower over its own treeline.
         const median = ((hMin + hMax) / 2) * 1.2;
         if (h > median * 1.5) h = median * 1.5;
-        const room = (d - halfWidth - 0.6) * 2 / aspect;   // widest tree that clears the road
+        const room = (d - halfWidth - 0.6) * 2 / (aspect * widthScale); // widest tree that clears the road
         if (room < hMin * 0.6) return false;
         if (h > room) h = room;
         placements.push({
-          px, pz, sp, h,
+          px, pz, sp, h, widthScale, layer,
           v: (rnd() * spVariants(sp)) | 0,
-          rot: (rnd() - 0.5) * 0.9,
+          rot: (rnd() - 0.5) * Math.PI,
         });
         return true;
       };
@@ -2904,18 +3048,45 @@ export function buildCircuit(trackId, def, scene) {
       // canopy radius used for both the track-clearance margin and the spacing
       const canopyR = (sp) => SPECIES_H[sp][1] * spAspect(sp) * 0.8;
 
-      // --- scatter: near and mid ground, both sides, all distances -----------
-      const nearWant = Math.round((themeName === 'classic' ? 210 : 90) * sparse);
-      for (let guard = 0, got = 0; got < nearWant && guard < nearWant * 14; guard++) {
+      // --- near scatter: sparse enough that the real trunks can be read -------
+      const nearWant = Math.round((themeName === 'classic' ? 92 : 48) * sparse);
+      for (let guard = 0, got = 0; got < nearWant && guard < nearWant * 18; guard++) {
         const s = samples[(rnd() * N) | 0];
         const side = rnd() < 0.5 ? 1 : -1;
-        const dist = wallOff + 8 + rnd() * 105;
+        const dist = wallOff + 8 + rnd() * 44;
         const px = s.p.x + s.n.x * side * dist, pz = s.p.z + s.n.z * side * dist;
         const sp = pickSpecies();
         if (px * px + pz * pz > (SKY_R - 220) * (SKY_R - 220)) continue;
-        if (put(px, pz, sp, wallOff + 2)) got++;
+        if (put(px, pz, sp, wallOff + 2, 'near')) got++;
       }
-      // --- depth layer: a far ring so the treeline has somewhere to recede to -
+
+      // --- mid-depth clustered groves ---------------------------------------
+      // Instead of drawing 200 independent points from the same distribution,
+      // build irregular 3-10 tree families around a smaller set of anchors. The
+      // silhouette now has gaps, shoulders and dense pockets at track speed.
+      const midWant = Math.round((themeName === 'classic' ? 220 : 96) * sparse);
+      const groveTarget = Math.max(8, Math.round(midWant / 7));
+      let midGot = 0, groveGot = 0;
+      for (let guard = 0; midGot < midWant && guard < groveTarget * 18; guard++) {
+        const s = samples[(rnd() * N) | 0];
+        const side = rnd() < 0.5 ? 1 : -1;
+        const baseD = wallOff + 46 + rnd() * 96;
+        const family = 3 + ((rnd() * 8) | 0);
+        let inFamily = 0;
+        for (let j = 0; j < family && midGot < midWant; j++) {
+          const along = (rnd() - 0.5) * (18 + family * 4.5);
+          const dist = baseD + (rnd() - 0.5) * (15 + family * 1.2);
+          const px = s.p.x + s.n.x * side * dist + s.t.x * along;
+          const pz = s.p.z + s.n.z * side * dist + s.t.z * along;
+          const sp = pickSpecies();
+          if (px * px + pz * pz > (SKY_R - 220) * (SKY_R - 220)) continue;
+          if (put(px, pz, sp, wallOff + 18, 'mid')) { midGot++; inFamily++; }
+        }
+        if (inFamily >= 2) groveGot++;
+      }
+      depthStats.mid.clusters = groveGot;
+
+      // --- far individual crowns: transition into the atmospheric mass ------
       const farWant = Math.round((themeName === 'classic' ? 260 : 110) * sparse);
       for (let guard = 0, got = 0; got < farWant && guard < farWant * 12; guard++) {
         const s = samples[(rnd() * N) | 0];
@@ -2924,7 +3095,7 @@ export function buildCircuit(trackId, def, scene) {
         const px = s.p.x + s.n.x * side * dist, pz = s.p.z + s.n.z * side * dist;
         const sp = pickSpecies();
         if (px * px + pz * pz > (SKY_R - 220) * (SKY_R - 220)) continue;
-        if (put(px, pz, sp, wallOff + 45)) got++;
+        if (put(px, pz, sp, wallOff + 45, 'far')) got++;
       }
 
       // --- forest walls -----------------------------------------------------
@@ -2957,17 +3128,25 @@ export function buildCircuit(trackId, def, scene) {
             const stride = Math.max(1, Math.round(spacing / ds));
             // stagger the rows a third of a spacing apart, so trunks never line
             // up into visible ranks
-            const phase = Math.round((stride * row) / ROWS);
+            const phase = Math.round((stride * row) / ROWS + rnd() * stride * 0.4);
             const rowOff = wallOff + 6 + row * (spacing * 1.05) + (rnd() - 0.5) * 2;
-            for (let k = phase; k <= st.count; k += stride) {
+            // Variable gap and a slowly wandering lateral offset remove the
+            // evenly-spaced billboard fence. Average density stays equivalent
+            // to `stride`, preserving the wooded-venue instance budget.
+            for (let k = phase, run = 0; k <= st.count;) {
               const s = samples[idxAt(st.i0 + k)];
-              const jitter = (rnd() - 0.5) * spacing * 0.7;
-              const d = rowOff + (rnd() - 0.5) * 3.2;
+              const pocket = Math.sin((run + row * 7) * 0.71) * spacing * 0.32;
+              const jitter = (rnd() - 0.5) * spacing * 1.15 + pocket;
+              const d = rowOff + (rnd() - 0.5) * 5.2 + Math.sin(run * 0.43) * 1.8;
               const px = s.p.x + s.n.x * st.side * d + s.t.x * jitter;
               const pz = s.p.z + s.n.z * st.side * d + s.t.z * jitter;
               const sp = pickSpecies();
-              if (px * px + pz * pz > (SKY_R - 220) * (SKY_R - 220)) continue;
-              put(px, pz, sp, wallOff + 1.5);
+              if (px * px + pz * pz <= (SKY_R - 220) * (SKY_R - 220)) {
+                put(px, pz, sp, wallOff + 1.5, row === 0 ? 'near' : 'mid');
+              }
+              run++;
+              const gap = spacing * (0.52 + rnd() * 1.08) * (rnd() < 0.08 ? 1.75 : 1);
+              k += Math.max(1, Math.round(gap / ds));
             }
           }
         }
@@ -2976,6 +3155,8 @@ export function buildCircuit(trackId, def, scene) {
       // --- bucket into one InstancedMesh per species+variant ----------------
       const buckets = new Map();
       for (const t of placements) {
+        if (t.layer === 'mid') depthStats.mid.trees++;
+        else if (t.layer === 'far') depthStats.far.trees++;
         const key = `${t.sp}-${t.v}`;
         let a = buckets.get(key);
         if (!a) buckets.set(key, a = { sp: t.sp, v: t.v, items: [] });
@@ -3008,7 +3189,7 @@ export function buildCircuit(trackId, def, scene) {
           // same field the ground disc is built from, so a trunk never floats
           posv.set(t.px, terrainAt(t.px, t.pz) - 0.05, t.pz);
           q.setFromAxisAngle(yAxis, t.rot);
-          scl.set(t.h * aspect, t.h, t.h * aspect);
+          scl.set(t.h * aspect * t.widthScale, t.h, t.h * aspect * t.widthScale);
           m4.compose(posv, q, scl);
           mesh.setMatrixAt(k, m4);
           // canopy shade: round-4 env major called out mowing stripes running at
@@ -3025,52 +3206,268 @@ export function buildCircuit(trackId, def, scene) {
             });
           }
           // per-instance tint: a treeline of identical greens reads as wallpaper
-          tint.setRGB(0.86 + rnd() * 0.22, 0.9 + rnd() * 0.18, 0.84 + rnd() * 0.2);
+          // The middle layer gets the widest palette range; near trunks provide
+          // their own colour cue, while far crowns converge toward the fog.
+          const spread = t.layer === 'mid' ? 0.28 : t.layer === 'far' ? 0.12 : 0.18;
+          const base = t.layer === 'far' ? 0.91 : 0.86;
+          tint.setRGB(base + rnd() * spread, base + 0.03 + rnd() * spread * 0.9,
+            base - 0.02 + rnd() * spread * 0.82);
           mesh.setColorAt(k, tint);
         });
         if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
         group.add(mesh);
         treeCount += b.items.length;
       }
-      if (!buckets.size) xGeo.dispose();     // nothing referenced it
       group.userData.treeCount = treeCount;
+
+      // --- near physical trunks ---------------------------------------------
+      // Only the closest cards receive geometry. Their canvas trunks remain as
+      // distant fill, while these low-poly cylinders create actual parallax and
+      // contact at racing-camera distance for one bounded draw call.
+      const trunkCandidates = placements.filter(t => t.layer === 'near' && t.sp !== 'scrub');
+      const trunkCount = Math.min(DEPTH_CAP.trunks, trunkCandidates.length);
+      if (trunkCount) {
+        const trunks = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.72, 1, 1, 7, 1, false),
+          std({ color: 0xffffff, roughness: 0.96 }), trunkCount);
+        trunks.name = 'vegetation-near-trunks';
+        const mm = new THREE.Matrix4();
+        const col = new THREE.Color();
+        for (let k = 0; k < trunkCount; k++) {
+          const t = trunkCandidates[Math.min(trunkCandidates.length - 1,
+            Math.floor((k + 0.35) * trunkCandidates.length / trunkCount))];
+          const f = t.sp === 'palm' ? 0.68 : t.sp === 'pine' ? 0.72 : t.sp === 'poplar' ? 0.58 : 0.54;
+          const th = Math.max(1.1, t.h * f);
+          const r = Math.max(0.10, Math.min(0.42, t.h * (t.sp === 'palm' ? 0.022 : 0.028)));
+          mm.makeScale(r, th, r).setPosition(t.px, terrainAt(t.px, t.pz) + th / 2 - 0.05, t.pz);
+          trunks.setMatrixAt(k, mm);
+          col.setHex(t.sp === 'palm' ? 0x8a7656 : t.sp === 'pine' ? 0x51402f : 0x70583b);
+          col.offsetHSL((rnd() - 0.5) * 0.025, (rnd() - 0.5) * 0.08, (rnd() - 0.5) * 0.09);
+          trunks.setColorAt(k, col);
+        }
+        if (trunks.instanceColor) trunks.instanceColor.needsUpdate = true;
+        group.add(trunks);
+        depthStats.near.trunks = trunkCount;
+      }
+
+      // --- near clustered 3D shrubs -----------------------------------------
+      const shrubItems = [];
+      const shrubWant = Math.min(DEPTH_CAP.shrubs,
+        Math.round((themeName === 'classic' ? 104 : 72) * sparse));
+      for (let guard = 0; shrubItems.length < shrubWant && guard < shrubWant * 7; guard++) {
+        const s = samples[(rnd() * N) | 0];
+        const side = rnd() < 0.5 ? 1 : -1;
+        const centreD = wallOff + 6 + rnd() * 34;
+        const family = 2 + ((rnd() * 4) | 0);
+        for (let j = 0; j < family && shrubItems.length < shrubWant; j++) {
+          const along = (rnd() - 0.5) * (5 + family * 1.5);
+          const d = centreD + (rnd() - 0.5) * 5;
+          const px = s.p.x + s.n.x * side * d + s.t.x * along;
+          const pz = s.p.z + s.n.z * side * d + s.t.z * along;
+          if (!clearOfTrack(px, pz, halfWidth + 2.2) || inKeepOut(px, pz)) continue;
+          shrubItems.push({ px, pz, sx: 0.75 + rnd() * 1.55, sy: 0.55 + rnd() * 0.8,
+            sz: 0.7 + rnd() * 1.4, rot: rnd() * Math.PI });
+        }
+      }
+      if (shrubItems.length) {
+        const shrubs = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 1),
+          std({ color: 0xffffff, roughness: 0.98 }), shrubItems.length);
+        shrubs.name = 'vegetation-near-shrubs';
+        const mm = new THREE.Matrix4(), qq = new THREE.Quaternion(), sc2 = new THREE.Vector3();
+        const pp = new THREE.Vector3(), col = new THREE.Color();
+        const shrubHue = depthProfile.mass === 'arid' ? 0x7d8150
+          : depthProfile.mass === 'tropical' ? 0x3e8150
+            : depthProfile.mass === 'alpine' ? 0x3d6549 : 0x527b43;
+        shrubItems.forEach((it, k) => {
+          qq.setFromAxisAngle(UP, it.rot);
+          sc2.set(it.sx, it.sy, it.sz);
+          pp.set(it.px, terrainAt(it.px, it.pz) + it.sy * 0.72, it.pz);
+          mm.compose(pp, qq, sc2);
+          shrubs.setMatrixAt(k, mm);
+          col.setHex(shrubHue).offsetHSL((rnd() - 0.5) * 0.045, (rnd() - 0.5) * 0.16, (rnd() - 0.5) * 0.16);
+          shrubs.setColorAt(k, col);
+        });
+        if (shrubs.instanceColor) shrubs.instanceColor.needsUpdate = true;
+        group.add(shrubs);
+        depthStats.near.shrubs = shrubItems.length;
+      }
+
+      // --- far atmospheric vegetation mass ---------------------------------
+      // Dense city/night venues use the skyline as their dominant far layer;
+      // their vegetation mass stays a low planted band instead of rising as a
+      // dark canopy behind floodlit architecture.
+      const architecturalFar = themeName === 'city' || theme.night;
+      const massWant = Math.min(DEPTH_CAP.farMass,
+        Math.round((themeName === 'classic' ? 34 : architecturalFar ? 10 : 24) * sparse));
+      // The selected centreline normal can point across another loop of track;
+      // retain only positions whose ACTUAL nearest section is still far away.
+      const massPlaces = scatter(massWant, 270, 475, wallOff + 70, 24)
+        .filter(p => distTo(p.px, p.pz).d > 220);
+      for (let v = 0; v < 3; v++) {
+        const items = massPlaces.filter((_, k) => k % 3 === v);
+        if (!items.length) continue;
+        const map = ctex(draw(TEX.vegetationMass, [depthProfile.mass, v, 640, 160], 'rgba(48,76,50,0.9)'), {
+          wrapS: THREE.ClampToEdgeWrapping, wrapT: THREE.ClampToEdgeWrapping, aniso: 2,
+        });
+        const masses = new THREE.InstancedMesh(xGeo, flatLit(map, K_FOLIAGE, {
+          side: THREE.FrontSide, transparent: false, alphaTest: 0.22, roughness: 1,
+        }, theme.night ? 0.22 : 0.36), items.length);
+        masses.name = `vegetation-far-mass-v${v}`;
+        keepOutOfAO(masses);
+        const mm = new THREE.Matrix4(), qq = new THREE.Quaternion(), sc2 = new THREE.Vector3();
+        const pp = new THREE.Vector3(), col = new THREE.Color();
+        const fogCol = new THREE.Color(theme.fog);
+        items.forEach((it, k) => {
+          const h = architecturalFar ? 5 + rnd() * 6 : 12 + rnd() * 14;
+          const w = architecturalFar ? 64 + rnd() * 58 : 78 + rnd() * 72;
+          qq.setFromAxisAngle(UP, (rnd() - 0.5) * Math.PI);
+          sc2.set(w, h, w);
+          pp.set(it.px, terrainAt(it.px, it.pz) - 0.3, it.pz);
+          mm.compose(pp, qq, sc2);
+          masses.setMatrixAt(k, mm);
+          if (theme.night) {
+            // Scene fog already provides distance convergence. A dark fog-colour
+            // instance tint would multiply the painted canopy twice and turn the
+            // broad card into a black cloud against the lit skyline.
+            col.setHex(depthProfile.mass === 'tropical' ? 0xa0b69f : 0xa8ad99);
+          } else {
+            col.setHex(depthProfile.mass === 'arid' ? 0xb2aa7e
+              : depthProfile.mass === 'tropical' ? 0x82a386
+                : depthProfile.mass === 'alpine' ? 0x789080 : 0x879a7c).lerp(fogCol, 0.10 + rnd() * 0.08);
+          }
+          masses.setColorAt(k, col);
+        });
+        if (masses.instanceColor) masses.instanceColor.needsUpdate = true;
+        group.add(masses);
+        depthStats.far.masses += items.length;
+      }
+
+      if (!buckets.size && !massPlaces.length) xGeo.dispose(); // nothing references it
     }
 
     if (themeName !== 'classic') {
-      // near city blocks
+      // ---- 8c. clustered architecture / far skyline ------------------------
+      // Generic boxes become a composition only when neighbouring masses share
+      // a rhythm. Generate families around a few anchors, then vary proportions
+      // by venue profile: low courtyards, stepped terraces, slender stone towers
+      // or a vertical night-city cadence. No landmark or brand is reproduced.
+      const cityForm = depthProfile.skyline || 'mixed';
+      const isCity = themeName === 'city' || themeName === 'night';
+      const clusterScatter = (want, minD, maxD, margin, minFamily, maxFamily) => {
+        const out = [];
+        const anchors = scatter(Math.ceil(want / ((minFamily + maxFamily) / 2)), minD, maxD, margin, 28);
+        for (const a of anchors) {
+          const family = minFamily + ((rnd() * (maxFamily - minFamily + 1)) | 0);
+          const pitch = 11 + rnd() * 11;
+          for (let j = 0; j < family && out.length < want; j++) {
+            const along = (j - (family - 1) / 2) * pitch + (rnd() - 0.5) * pitch * 0.55;
+            const radial = (rnd() - 0.5) * 18;
+            const px = a.px + a.s.t.x * along + a.s.n.x * radial;
+            const pz = a.pz + a.s.t.z * along + a.s.n.z * radial;
+            if (!clearOfTrack(px, pz, margin) || inKeepOut(px, pz)) continue;
+            if (px * px + pz * pz > (SKY_R - 200) * (SKY_R - 200)) continue;
+            out.push({ px, pz, s: a.s, family: j, familySize: family });
+          }
+        }
+        return out;
+      };
+
+      const tintSets = {
+        low:      [0xd9c7a3, 0xc9b397, 0xd6a79c, 0xb9c8bd],
+        needle:   [0xc6d0d0, 0xaebfc5, 0xd8d2c3, 0x9eb4bd],
+        terrace:  [0xd4c0a7, 0xc4ab91, 0xe0d1bd, 0xb99b83],
+        slender:  [0xcab894, 0xb8a582, 0xd7c8a8, 0xa99678],
+        slab:     [0xc6b7aa, 0xb9aaa0, 0xd0c4b8, 0xa9b7b4],
+        vertical: [0xaabcc5, 0x93a9b5, 0xc4c8c1, 0x879ba9],
+        mixed:    [0xc1c3c0, 0xa9afb1, 0xd0c5b2, 0x9ea6aa],
+      };
+      const tints = tintSets[cityForm] || tintSets.mixed;
+
+      // near clustered blocks
       // Repeat halved and anisotropy raised: round 2 found the window mullion grid
       // collapsing into 1px interference banding across the Monaco facades.
       const facadeTex = ctex(draw(TEX.buildingFacade, [512, 1024, !!theme.night], theme.night ? '#14161c' : '#3c4048'),
         { repeat: [0.9, 1.7], aniso: 16 });
       const bmat = flatLit(facadeTex, K_FACADE, { roughness: 0.62 });
-      const isCity = themeName === 'city' || themeName === 'night';
-      const near = scatter(isCity ? 90 : 40, wallOff + 20, wallOff + 130, wallOff + 16, 26);
+      const nearWant = Math.min(DEPTH_CAP.cityNear, isCity ? 88 : 44);
+      const near = clusterScatter(nearWant, wallOff + 28, wallOff + 126, wallOff + 16, 3, 5);
       if (near.length) {
         const buildings = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), bmat, near.length);
         buildings.name = 'city-near';
-        const m4 = new THREE.Matrix4();
+        const m4 = new THREE.Matrix4(), qq = new THREE.Quaternion(), sc2 = new THREE.Vector3();
+        const pp = new THREE.Vector3(), col = new THREE.Color();
         near.forEach((b, k) => {
-          const w = 14 + rnd() * 22, h = isCity ? 18 + rnd() * 55 : 9 + rnd() * 16, dpt = 14 + rnd() * 22;
-          m4.makeScale(w, h, dpt).setPosition(b.px, terrainAt(b.px, b.pz) + h / 2 - 0.1, b.pz);
+          let w = 13 + rnd() * 22, h = isCity ? 18 + rnd() * 48 : 9 + rnd() * 16, dpt = 13 + rnd() * 20;
+          if (cityForm === 'low') { w *= 1.35; dpt *= 1.22; h *= 0.58; }
+          else if (cityForm === 'terrace') h *= 0.66 + (b.family + 1) / b.familySize * 0.62;
+          else if (cityForm === 'needle' || cityForm === 'slender') { w *= 0.78; dpt *= 0.8; h *= 1.22; }
+          else if (cityForm === 'vertical') h *= 1.05 + (k % 4) * 0.11;
+          qq.setFromAxisAngle(UP, Math.atan2(b.s.t.x, b.s.t.z) + (rnd() - 0.5) * 0.32);
+          sc2.set(w, h, dpt);
+          pp.set(b.px, terrainAt(b.px, b.pz) + h / 2 - 0.1, b.pz);
+          m4.compose(pp, qq, sc2);
           buildings.setMatrixAt(k, m4);
+          col.setHex(tints[(b.family + k) % tints.length]).lerp(new THREE.Color(0xffffff), rnd() * 0.12);
+          buildings.setColorAt(k, col);
         });
+        if (buildings.instanceColor) buildings.instanceColor.needsUpdate = true;
         group.add(buildings);
       }
-      // far skyline, 200-500m out and much taller
+
+      // far skyline, clustered inside 200-500m and much taller
       const farTex = ctex(draw(TEX.buildingFacade, [512, 1024, !!theme.night], theme.night ? '#14161c' : '#3c4048'),
         { repeat: [1.1, 3], aniso: 16 });
       const fmat = flatLit(farTex, K_FACADE, { roughness: 0.62 });
-      const far = scatter(isCity ? 110 : 55, 200, 500, wallOff + 60, 20);
+      const farWant = Math.min(DEPTH_CAP.citySkyline, isCity ? 110 : 58);
+      const far = clusterScatter(farWant, 225, 445, wallOff + 60, 3, 6);
       if (far.length) {
         const sky = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), fmat, far.length);
         sky.name = 'city-skyline';
-        const m4 = new THREE.Matrix4();
+        const m4 = new THREE.Matrix4(), qq = new THREE.Quaternion(), sc2 = new THREE.Vector3();
+        const pp = new THREE.Vector3(), col = new THREE.Color();
+        const capItems = [];
         far.forEach((b, k) => {
-          const w = 22 + rnd() * 40, h = isCity ? 40 + rnd() * 100 : 18 + rnd() * 42, dpt = 22 + rnd() * 40;
-          m4.makeScale(w, h, dpt).setPosition(b.px, terrainAt(b.px, b.pz) + h / 2 - 0.1, b.pz);
+          let w = 22 + rnd() * 38, h = isCity ? 42 + rnd() * 96 : 18 + rnd() * 40, dpt = 22 + rnd() * 36;
+          if (cityForm === 'low') { w *= 1.38; dpt *= 1.25; h *= 0.46; }
+          else if (cityForm === 'needle') { w *= 0.58; dpt *= 0.62; h *= 1.28 + (k % 5) * 0.09; }
+          else if (cityForm === 'terrace') h *= 0.54 + (b.family + 1) / b.familySize * 0.82;
+          else if (cityForm === 'slender') { w *= 0.68; dpt *= 0.72; h *= 1.12; }
+          else if (cityForm === 'slab') { w *= 1.18; dpt *= 0.72; h *= 0.82 + (k % 3) * 0.12; }
+          else if (cityForm === 'vertical') { w *= 0.72; dpt *= 0.76; h *= 1.12 + (k % 6) * 0.07; }
+          const yaw = Math.atan2(b.s.t.x, b.s.t.z) + (rnd() - 0.5) * 0.28;
+          qq.setFromAxisAngle(UP, yaw);
+          sc2.set(w, h, dpt);
+          const groundY = terrainAt(b.px, b.pz);
+          pp.set(b.px, groundY + h / 2 - 0.1, b.pz);
+          m4.compose(pp, qq, sc2);
           sky.setMatrixAt(k, m4);
+          col.setHex(tints[(b.family * 2 + k) % tints.length]).lerp(new THREE.Color(theme.fog), 0.05 + rnd() * 0.13);
+          sky.setColorAt(k, col);
+          const cappedForm = cityForm === 'needle' || cityForm === 'vertical' || cityForm === 'slender';
+          if (cappedForm && capItems.length < DEPTH_CAP.skylineCaps && k % (cityForm === 'needle' ? 4 : 6) === 0) {
+            capItems.push({ x: b.px, z: b.pz, y: groundY + h, r: Math.min(w, dpt) * 0.22,
+              h: 4 + rnd() * 9, yaw, color: col.clone() });
+          }
         });
+        if (sky.instanceColor) sky.instanceColor.needsUpdate = true;
         group.add(sky);
+        depthStats.far.skyline = far.length;
+        if (capItems.length) {
+          const caps = new THREE.InstancedMesh(new THREE.ConeGeometry(1, 1, 4, 1, false),
+            std({ color: 0xffffff, roughness: 0.7 }), capItems.length);
+          caps.name = 'city-skyline-caps';
+          const cm = new THREE.Matrix4(), cq = new THREE.Quaternion(), cs = new THREE.Vector3(), cp = new THREE.Vector3();
+          capItems.forEach((it, k) => {
+            cq.setFromAxisAngle(UP, it.yaw + Math.PI / 4);
+            cs.set(it.r, it.h, it.r);
+            cp.set(it.x, it.y + it.h / 2, it.z);
+            cm.compose(cp, cq, cs);
+            caps.setMatrixAt(k, cm);
+            caps.setColorAt(k, it.color);
+          });
+          if (caps.instanceColor) caps.instanceColor.needsUpdate = true;
+          group.add(caps);
+          depthStats.far.skylineCaps = capItems.length;
+        }
       }
     }
 

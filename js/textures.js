@@ -16,12 +16,27 @@ function cnv(w, h) {
 // falls back to procedural — validators stay deterministic.
 const PHOTOS = {};
 export function registerPhoto(key, img) { PHOTOS[key] = img; }
-function photo(key, w, h, filter) {
+function photo(key, w, h, filter, pose = 0) {
   const img = PHOTOS[key];
   if (!img) return null;
   const c = cnv(w, h), g = c.getContext('2d');
   if (filter) g.filter = filter;
-  g.drawImage(img, 0, 0, w, h);
+  // Tree atlases use one source photo for several variants. A small deterministic
+  // crop/mirror gives those variants a different OUTLINE as well as a different
+  // hue, while every non-foliage caller keeps the exact old pose (zero).
+  const p = Math.max(0, pose | 0);
+  if (p) {
+    const mirror = p & 1;
+    const grow = p >= 3 ? 1.08 : p === 2 ? 1.04 : 1;
+    const dx = (p % 3 - 1) * w * 0.025;
+    g.save();
+    if (mirror) { g.translate(w, 0); g.scale(-1, 1); }
+    g.drawImage(img, (w - w * grow) * 0.5 + dx, p >= 3 ? -h * 0.018 : 0,
+      w * grow, h * (p >= 3 ? 1.035 : 1));
+    g.restore();
+  } else {
+    g.drawImage(img, 0, 0, w, h);
+  }
   return c;
 }
 
@@ -1123,7 +1138,7 @@ export function treeBillboard(size = 256) {
 // treeCanopyAspect() so sprite pixels stay square.
 const TREE_ASPECT = { broadleaf: 1.0, poplar: 0.40, pine: 0.62, palm: 0.92, scrub: 1.45 };
 // Hue variants baked per species: different sprites, not a runtime tint.
-const TREE_VARIANTS = { broadleaf: 3, poplar: 3, pine: 3, palm: 2, scrub: 2 };
+const TREE_VARIANTS = { broadleaf: 4, poplar: 4, pine: 4, palm: 3, scrub: 3 };
 
 export function treeCanopyAspect(species) { return TREE_ASPECT[species] || 1; }
 export function treeCanopyVariants(species) { return TREE_VARIANTS[species] || 1; }
@@ -1134,24 +1149,29 @@ const TREE_PAL = {
     { deep: [16, 47, 22], mid: [45, 103, 43], lit: [122, 168, 74], bark: ['#2b2015', '#6d4f31', '#8e6a42'] },
     { deep: [21, 44, 17], mid: [62, 108, 36], lit: [146, 176, 68], bark: ['#2f2417', '#75563a', '#9a744b'] },
     { deep: [14, 44, 30], mid: [38, 96, 57], lit: [98, 154, 92], bark: ['#241d16', '#5f4630', '#836044'] },
+    { deep: [28, 45, 18], mid: [78, 104, 38], lit: [164, 166, 78], bark: ['#332719', '#79603d', '#a18152'] },
   ],
   poplar: [
     { deep: [19, 50, 25], mid: [56, 110, 46], lit: [136, 176, 82], bark: ['#302a1e', '#6f6349', '#95866a'] },
     { deep: [24, 52, 20], mid: [70, 118, 40], lit: [158, 186, 74], bark: ['#332c20', '#77694c', '#9d8d6e'] },
     { deep: [17, 46, 27], mid: [48, 100, 52], lit: [116, 160, 86], bark: ['#2b261c', '#665c45', '#8b7e63'] },
+    { deep: [31, 49, 17], mid: [82, 110, 35], lit: [174, 178, 70], bark: ['#382f20', '#806e4e', '#a99570'] },
   ],
   pine: [
     { deep: [8, 30, 20], mid: [24, 60, 38], lit: [58, 100, 62], bark: ['#1d1611', '#3f2e20', '#584029'] },
     { deep: [10, 28, 26], mid: [26, 58, 50], lit: [62, 98, 78], bark: ['#1b1712', '#3a2c22', '#523c2c'] },
     { deep: [12, 34, 16], mid: [32, 68, 30], lit: [74, 110, 52], bark: ['#211a12', '#463322', '#5f462c'] },
+    { deep: [18, 32, 20], mid: [44, 66, 40], lit: [92, 108, 68], bark: ['#251b13', '#4d3725', '#694c31'] },
   ],
   palm: [
     { deep: [18, 52, 28], mid: [48, 108, 52], lit: [124, 172, 88], bark: ['#3a2f20', '#7d6a4a', '#a38d63'] },
     { deep: [22, 48, 22], mid: [62, 104, 42], lit: [146, 170, 76], bark: ['#3d3324', '#856f4e', '#ab9468'] },
+    { deep: [15, 46, 34], mid: [38, 99, 64], lit: [104, 162, 105], bark: ['#322b20', '#74664d', '#9c8966'] },
   ],
   scrub: [
     { deep: [42, 52, 28], mid: [96, 112, 62], lit: [154, 166, 106], bark: ['#3a3225', '#6b5c42', '#8d7b59'] },
     { deep: [34, 48, 30], mid: [82, 106, 68], lit: [138, 158, 112], bark: ['#332c22', '#63563f', '#857457'] },
+    { deep: [38, 50, 25], mid: [92, 112, 55], lit: [150, 168, 98], bark: ['#403426', '#746044', '#967e5b'] },
   ],
 };
 
@@ -1436,16 +1456,16 @@ export function treeCanopy(species = 'broadleaf', variant = 0, size = 256) {
     // Species-dependent hue base so poplar and broadleaf, which now share one
     // source photograph, still read as two different species.
     const HUE_BASE = { broadleaf: 0, poplar: 11, pine: -7, palm: 4, scrub: -5 };
-    const vv = (variant | 0) % 3;
-    const hue = (HUE_BASE[sp] || 0) + (vv - 1) * 13;
-    const bri = (sp === 'poplar' ? 0.95 : 1.03) + vv * 0.06;
+    const vv = (((variant | 0) % TREE_VARIANTS[sp]) + TREE_VARIANTS[sp]) % TREE_VARIANTS[sp];
+    const hue = (HUE_BASE[sp] || 0) + (vv - (TREE_VARIANTS[sp] - 1) / 2) * 11;
+    const bri = (sp === 'poplar' ? 0.94 : 1.01) + vv * 0.045;
     // contrast below 1 lifts the deep shadow pixels of the source photograph.
     // Those pixels are the ones the visual harness measures as the darkest foliage
     // in a daylight frame, and the acceptance bar is rgb(40,55,40): a canopy photo
     // shot against the sky has near-black interior leaves that no amount of scene
     // light can raise, because they are dark ALBEDO rather than dark shading.
     const _p = photo(PHOTO_KEY[sp], w, h,
-      `hue-rotate(${hue}deg) brightness(${bri.toFixed(3)}) contrast(0.72) saturate(1.12)`);
+      `hue-rotate(${hue}deg) brightness(${bri.toFixed(3)}) contrast(0.72) saturate(1.12)`, vv);
     // The cutout's part-transparent edge texels still carry the sky the tree was
     // photographed against, and alphaTest renders them at full opacity.
     if (_p) return decontaminateMatte(_p);
@@ -1465,6 +1485,86 @@ export function treeCanopy(species = 'broadleaf', variant = 0, size = 256) {
   else if (sp === 'palm') drawPalm(g, w, h, pal, rand);
   else if (sp === 'scrub') drawScrub(g, w, h, pal, rand);
   else drawBroadleaf(g, w, h, pal, rand);
+  return c;
+}
+
+// A low-frequency vegetation silhouette for the atmospheric layer. Unlike the
+// individual tree cards this is deliberately a MASS: several overlapping rows,
+// no readable trunk rhythm, and a broad irregular crown line. TrackBuilder uses
+// a few large instanced cards hundreds of metres out, so a venue gains depth
+// without paying hundreds more tree instances or repeating one billboard at a
+// fixed pitch.
+const MASS_PAL = {
+  woodland: [[24, 58, 35], [39, 76, 46], [65, 96, 58]],
+  alpine:   [[22, 49, 38], [34, 68, 51], [55, 88, 65]],
+  park:     [[31, 65, 34], [52, 88, 46], [76, 108, 63]],
+  tropical: [[21, 61, 39], [38, 87, 54], [66, 112, 72]],
+  arid:     [[68, 72, 43], [91, 94, 54], [116, 112, 68]],
+};
+
+export function vegetationMass(kind = 'woodland', variant = 0, w = 512, h = 128) {
+  const style = MASS_PAL[kind] ? kind : 'woodland';
+  const c = cnv(Math.max(128, w | 0), Math.max(48, h | 0));
+  const g = c.getContext('2d');
+  const W = c.width, H = c.height;
+  g.clearRect(0, 0, W, H);
+  let seed = 0x48a3d27b ^ Math.imul((variant | 0) + 17, 0x9e3779b1);
+  for (let i = 0; i < style.length; i++) seed = Math.imul(seed ^ style.charCodeAt(i), 16777619);
+  const rand = treeRand(seed);
+  const pal = MASS_PAL[style];
+
+  // Back-to-front rows. Large, overlapping crowns remove any periodic gap while
+  // independent row phases keep the top line from resolving into a sine wave.
+  for (let row = 0; row < 3; row++) {
+    const baseY = H * (0.92 + row * 0.018);
+    const step = W * (0.055 + row * 0.012);
+    const count = Math.ceil(W / step) + 4;
+    const col = pal[Math.min(pal.length - 1, row)];
+    const alpha = 0.82 + row * 0.06;
+    for (let i = -2; i < count; i++) {
+      const x = i * step + (rand() - 0.5) * step * 0.9 + row * step * 0.37;
+      const crown = style === 'alpine'
+        ? H * (0.20 + rand() * 0.32)
+        : style === 'arid'
+          ? H * (0.09 + rand() * 0.18)
+          : H * (0.13 + rand() * 0.24);
+      const rx = step * (0.72 + rand() * 0.68);
+      const top = baseY - crown;
+      g.fillStyle = rgba(col, alpha);
+      if (style === 'alpine' && rand() < 0.68) {
+        // Broad, slightly crooked conifer wedge. Two shoulders prevent a row of
+        // perfect triangles from looking like a fence.
+        g.beginPath();
+        g.moveTo(x - rx, baseY);
+        g.lineTo(x - rx * (0.28 + rand() * 0.14), top + crown * 0.45);
+        g.lineTo(x + (rand() - 0.5) * rx * 0.18, top);
+        g.lineTo(x + rx * (0.32 + rand() * 0.16), top + crown * 0.52);
+        g.lineTo(x + rx, baseY);
+        g.closePath(); g.fill();
+      } else {
+        // Three lobes share a base and overlap their neighbours, forming one
+        // continuous canopy instead of separately countable tree circles.
+        for (let l = 0; l < 3; l++) {
+          const lx = x + (l - 1) * rx * 0.48 + (rand() - 0.5) * rx * 0.16;
+          const lr = rx * (0.5 + rand() * 0.22);
+          ellipse(g, lx, top + crown * (0.38 + rand() * 0.16), lr, crown * (0.48 + rand() * 0.13), 0);
+          g.fill();
+        }
+        g.fillRect(x - rx, top + crown * 0.44, rx * 2, Math.max(1, baseY - top - crown * 0.4));
+      }
+    }
+  }
+
+  // Sparse highlight islands survive fog as palette variation, without drawing
+  // a crisp row of repeated crowns on top of the mass.
+  const hi = pal[pal.length - 1];
+  for (let i = 0; i < 18; i++) {
+    const x = rand() * W, y = H * (0.62 + rand() * 0.18);
+    g.fillStyle = rgba(hi, 0.10 + rand() * 0.12);
+    ellipse(g, x, y, W * (0.018 + rand() * 0.025), H * (0.035 + rand() * 0.045), 0);
+    g.fill();
+  }
+  c._vegetationMass = { kind: style, variant: variant | 0, rows: 3 };
   return c;
 }
 
