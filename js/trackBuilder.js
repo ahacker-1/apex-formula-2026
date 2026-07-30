@@ -106,6 +106,42 @@ const VENUE_DEPTH = {
 };
 const VENUE_DEPTH_DEFAULT = { cue: 'circuit-service', mass: 'woodland', accent: 0x687b71, skyline: 'mixed' };
 
+// Mid-ground venue infrastructure. This table is deliberately data, rather
+// than a set of per-circuit branches: the same placement machinery scales the
+// paddock, parking/staging, spectator banks and venue boundary to each host.
+// `carParks` means open spectator fields; street venues instead get one compact
+// asphalt `staging` court behind the temporary paddock.
+const INFRASTRUCTURE_PROFILE = {
+  melbourne:   { mode: 'permanent', paddock: 'large',   carParks: 3, surface: 'grass',  camping: false, banks: 4, fence: 'mesh',     fenceRadius: 230 },
+  shanghai:    { mode: 'permanent', paddock: 'large',   carParks: 3, surface: 'gravel', camping: false, banks: 3, fence: 'mesh',     fenceRadius: 260 },
+  suzuka:      { mode: 'permanent', paddock: 'large',   carParks: 4, surface: 'gravel', camping: true,  banks: 5, fence: 'mesh',     fenceRadius: 235 },
+  bahrain:     { mode: 'permanent', paddock: 'xlarge',  carParks: 3, surface: 'gravel', camping: false, banks: 4, fence: 'mesh',     fenceRadius: 285 },
+  jeddah:      { mode: 'street',    paddock: 'compact', carParks: 0, surface: 'none',   camping: false, banks: 0, fence: 'hoarding', fenceRadius: 92,  staging: 1 },
+  miami:       { mode: 'street',    paddock: 'compact', carParks: 0, surface: 'none',   camping: false, banks: 0, fence: 'hoarding', fenceRadius: 105, staging: 1 },
+  montreal:    { mode: 'street',    paddock: 'compact', carParks: 0, surface: 'none',   camping: false, banks: 1, fence: 'hoarding', fenceRadius: 88,  staging: 1 },
+  monaco:      { mode: 'street',    paddock: 'compact', carParks: 0, surface: 'none',   camping: false, banks: 0, fence: 'hoarding', fenceRadius: 72,  staging: 1 },
+  barcelona:   { mode: 'permanent', paddock: 'large',   carParks: 3, surface: 'gravel', camping: true,  banks: 4, fence: 'mesh',     fenceRadius: 245 },
+  spielberg:   { mode: 'permanent', paddock: 'medium',  carParks: 4, surface: 'grass',  camping: true,  banks: 6, fence: 'mesh',     fenceRadius: 225 },
+  silverstone: { mode: 'permanent', paddock: 'xlarge',  carParks: 4, surface: 'grass',  camping: true,  banks: 4, fence: 'mesh',     fenceRadius: 300 },
+  spa:         { mode: 'permanent', paddock: 'large',   carParks: 4, surface: 'grass',  camping: true,  banks: 6, fence: 'mesh',     fenceRadius: 285 },
+  hungaroring: { mode: 'permanent', paddock: 'medium',  carParks: 3, surface: 'grass',  camping: true,  banks: 5, fence: 'mesh',     fenceRadius: 220 },
+  zandvoort:   { mode: 'permanent', paddock: 'medium',  carParks: 3, surface: 'gravel', camping: true,  banks: 5, fence: 'mesh',     fenceRadius: 215 },
+  monza:       { mode: 'permanent', paddock: 'large',   carParks: 4, surface: 'grass',  camping: true,  banks: 5, fence: 'mesh',     fenceRadius: 275 },
+  madrid:      { mode: 'street',    paddock: 'compact', carParks: 0, surface: 'none',   camping: false, banks: 0, fence: 'hoarding', fenceRadius: 96,  staging: 1 },
+  baku:        { mode: 'street',    paddock: 'compact', carParks: 0, surface: 'none',   camping: false, banks: 0, fence: 'hoarding', fenceRadius: 78,  staging: 1 },
+  singapore:   { mode: 'street',    paddock: 'compact', carParks: 0, surface: 'none',   camping: false, banks: 0, fence: 'hoarding', fenceRadius: 82,  staging: 1 },
+  austin:      { mode: 'permanent', paddock: 'large',   carParks: 4, surface: 'grass',  camping: true,  banks: 6, fence: 'mesh',     fenceRadius: 275 },
+  mexico:      { mode: 'permanent', paddock: 'large',   carParks: 3, surface: 'gravel', camping: false, banks: 4, fence: 'mesh',     fenceRadius: 240 },
+  interlagos:  { mode: 'permanent', paddock: 'medium',  carParks: 3, surface: 'grass',  camping: false, banks: 5, fence: 'mesh',     fenceRadius: 215 },
+  lasvegas:    { mode: 'street',    paddock: 'compact', carParks: 0, surface: 'none',   camping: false, banks: 0, fence: 'hoarding', fenceRadius: 112, staging: 1 },
+  lusail:      { mode: 'permanent', paddock: 'large',   carParks: 3, surface: 'gravel', camping: false, banks: 3, fence: 'mesh',     fenceRadius: 290 },
+  yasmarina:   { mode: 'permanent', paddock: 'large',   carParks: 3, surface: 'gravel', camping: false, banks: 3, fence: 'mesh',     fenceRadius: 250 },
+};
+const INFRASTRUCTURE_PROFILE_DEFAULT = {
+  mode: 'permanent', paddock: 'medium', carParks: 2, surface: 'gravel',
+  camping: false, banks: 3, fence: 'mesh', fenceRadius: 230,
+};
+
 // Hard caps are independent of lap length. The forest wall may contain thousands
 // of cheap billboard instances, but the geometry-rich near layer and the broad
 // atmospheric cards stay fixed-cost on the largest venue.
@@ -113,6 +149,11 @@ const DEPTH_CAP = Object.freeze({
   trunks: 96, shrubs: 120, serviceBays: 8, serviceParts: 64,
   tyreStacks: 20, farMass: 36, cityNear: 96, citySkyline: 112, skylineCaps: 20,
   identityBatches: 3, identityInstances: 15, identityTriangles: 260,
+  infraPaddockAprons: 1, infraPaddockVehicleParts: 36, infraPaddockBuildingParts: 28,
+  infraPaddockTents: 4, infraPerimeterPosts: 384, infraPerimeterPanels: 384,
+  infraPerimeterGates: 8, infraParkingSurfaces: 4, infraParkedCarParts: 320,
+  infraAccessRoads: 260, infraSpectatorBanks: 6, infraSpectatorCrowds: 18,
+  infraSupportClutter: 40, infraCampingTents: 24,
 });
 // Classic circuits keep real gravel traps; the modern venues have paved,
 // painted run-off areas instead.
@@ -766,9 +807,9 @@ export function buildCircuit(trackId, def, scene) {
   // the vegetation cannot be scattered on top of it or in front of it. Filled in
   // as the furniture is placed; consumed by the treeline builder further down.
   const keepOut = [];
-  const addKeepOut = (p, fz, halfLen, halfDep) => {
+  const addKeepOut = (p, fz, halfLen, halfDep, tag = 'structure') => {
     const fx = new THREE.Vector3().crossVectors(UP, fz).normalize();
-    keepOut.push({ x: p.x, z: p.z, fx, fz: fz.clone().normalize(), halfLen, halfDep });
+    keepOut.push({ x: p.x, z: p.z, fx, fz: fz.clone().normalize(), halfLen, halfDep, tag });
   };
   const inKeepOut = (px, pz) => {
     for (const k of keepOut) {
@@ -2450,6 +2491,7 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
   // ---- 5. pit building on the main straight --------------------------------
   const PIT_LEN = 120, PIT_H = 12, PIT_DEP = 12;
   let pitBuilding = null;
+  let pitBuildingPlacement = null;
   {
     const side = stands.length ? -stands[0].side : 1;    // opposite the first stand
     const halfWin = stepOf(PIT_LEN / 2);
@@ -2547,6 +2589,10 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
       }
       group.add(b);
       pitBuilding = b;
+      pitBuildingPlacement = {
+        p: hit.p.clone(), i: hit.i, side,
+        fz: samples[hit.i].p.clone().sub(hit.p).setY(0).normalize(),
+      };
       // the pit complex and the whole pit lane in front of it stay clear of trees
       addKeepOut(hit.p, hit.p.clone().sub(samples[hit.i].p).setY(0).normalize().negate(),
         PIT_LEN / 2 + 16, PIT_DEP / 2 + 24);
@@ -3099,12 +3145,24 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
   // ---- 8. environment: trees / skyline / floodlights -----------------------
   {
     const depthProfile = VENUE_DEPTH[trackId] || VENUE_DEPTH_DEFAULT;
+    const infrastructureProfile = INFRASTRUCTURE_PROFILE[trackId] || INFRASTRUCTURE_PROFILE_DEFAULT;
     const depthStats = {
       profile: depthProfile.cue,
       near: { trunks: 0, shrubs: 0, serviceBays: 0, serviceParts: 0, tyreStacks: 0, cityBlocks: 0 },
       mid: { trees: 0, clusters: 0 },
       far: { trees: 0, masses: 0, skyline: 0, skylineCaps: 0 },
       identity: { feature: null, batches: 0, instances: 0, boxes: 0, canopies: 0, towers: 0, triangles: 0 },
+      infrastructure: {
+        mode: infrastructureProfile.mode,
+        paddockClass: infrastructureProfile.paddock,
+        parkingSurface: infrastructureProfile.surface,
+        campingPresent: infrastructureProfile.camping,
+        fenceStyle: infrastructureProfile.fence,
+        paddockAprons: 0, paddockVehicleParts: 0, paddockBuildingParts: 0,
+        paddockTents: 0, perimeterPosts: 0, perimeterPanels: 0, perimeterGates: 0,
+        parkingSurfaces: 0, parkedCarParts: 0, accessRoads: 0,
+        spectatorBanks: 0, spectatorCrowds: 0, supportClutter: 0, campingTents: 0,
+      },
       caps: { ...DEPTH_CAP },
     };
     group.userData.sceneryDepth = depthStats;
@@ -3186,6 +3244,26 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
       const ok = obbTrackClearance(px, pz, fx, fz, halfLen, halfDep) >= SCENERY_MARGIN;
       if (ok) depthStats.checkedFootprints++;
       return ok;
+    };
+    // SAT box-vs-box clearance. `ignore` is used only for intentional overlaps:
+    // an access road is allowed to enter its destination apron/parking court,
+    // and a perimeter gate is allowed to span that road.
+    const keepOutClear = (px, pz, fx, fz, halfLen, halfDep, ignore = null) => {
+      for (const k of keepOut) {
+        if (ignore?.(k)) continue;
+        const dx = px - k.x, dz = pz - k.z;
+        let separated = false;
+        for (const axis of [fx, fz, k.fx, k.fz]) {
+          const distance = Math.abs(dx * axis.x + dz * axis.z);
+          const radiusA = halfLen * Math.abs(fx.x * axis.x + fx.z * axis.z)
+            + halfDep * Math.abs(fz.x * axis.x + fz.z * axis.z);
+          const radiusB = k.halfLen * Math.abs(k.fx.x * axis.x + k.fx.z * axis.z)
+            + k.halfDep * Math.abs(k.fz.x * axis.x + k.fz.z * axis.z);
+          if (distance > radiusA + radiusB) { separated = true; break; }
+        }
+        if (!separated) return false;
+      }
+      return true;
     };
     depthStats.trackEnvelope = TRACK_ENVELOPE;
     depthStats.minimumMargin = SCENERY_MARGIN;
@@ -3325,26 +3403,6 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
       const HALF_LEN = 28;
       const HALF_DEP = 15;
 
-      // SAT overlap against previously registered architecture. This keeps the
-      // complete cluster clear of grandstands, pit buildings and the TV wall;
-      // checking only its centre would allow a 56m compound to clip their edges.
-      const keepOutClear = (px, pz, fx, fz, halfLen, halfDep) => {
-        for (const k of keepOut) {
-          const dx = px - k.x, dz = pz - k.z;
-          let separated = false;
-          for (const axis of [fx, fz, k.fx, k.fz]) {
-            const distance = Math.abs(dx * axis.x + dz * axis.z);
-            const radiusA = halfLen * Math.abs(fx.x * axis.x + fx.z * axis.z)
-              + halfDep * Math.abs(fz.x * axis.x + fz.z * axis.z);
-            const radiusB = k.halfLen * Math.abs(k.fx.x * axis.x + k.fx.z * axis.z)
-              + k.halfDep * Math.abs(k.fz.x * axis.x + k.fz.z * axis.z);
-            if (distance > radiusA + radiusB) { separated = true; break; }
-          }
-          if (!separated) return false;
-        }
-        return true;
-      };
-
       // Prefer the side opposite the pit complex, then move outward before
       // moving the landmark farther down the straight. This ordering keeps the
       // cluster prominent in the grid/chase-camera evidence while every fallback
@@ -3457,6 +3515,399 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
           offset: anchor.offset,
         };
       }
+    }
+
+    // ---- 8a.2 venue infrastructure placement plan -------------------------
+    // Everything here is a pure positional-hash plan: no rnd() calls. The plan
+    // registers all compound/road/fence keep-outs before vegetation is built;
+    // its InstancedMeshes are intentionally emitted after section 8c so the
+    // established scenery random stream is byte-for-byte unchanged.
+    const infrastructurePlan = {
+      paddockAprons: [], paddockVehicles: [], paddockBuildings: [], paddockTents: [],
+      perimeterPosts: [], perimeterPanels: [], perimeterGates: [],
+      parkingSurfaces: [], parkedCars: [], accessRoads: [],
+      spectatorBanks: [], spectatorCrowds: [], supportClutter: [], campingTents: [],
+    };
+    {
+      const infra = infrastructureProfile;
+      const infraStats = depthStats.infrastructure;
+      const sizeByClass = {
+        compact: { len: 82, dep: 38, transporters: 4, hospitality: 2, tents: 2 },
+        medium:  { len: 136, dep: 66, transporters: 10, hospitality: 3, tents: 3 },
+        large:   { len: 160, dep: 76, transporters: 14, hospitality: 4, tents: 3 },
+        xlarge:  { len: 184, dep: 84, transporters: 18, hospitality: 5, tents: 4 },
+      };
+      const desiredPaddock = sizeByClass[infra.paddock] || sizeByClass.medium;
+      const insideSky = (px, pz, radius, height = 0) => Math.hypot(px, pz) + radius < SKY_R - 18
+        && Math.hypot(px, pz, terrainAt(px, pz) + height) < SKY_R - 8;
+      const frameAt = (i, side, offset) => {
+        const s = samples[idxAt(i)];
+        const p = s.p.clone().addScaledVector(s.n, side * offset);
+        const fz = s.n.clone().multiplyScalar(-side).setY(0).normalize();
+        const fx = new THREE.Vector3().crossVectors(UP, fz).normalize();
+        p.y = terrainAt(p.x, p.z);
+        return { p, fx, fz, yaw: Math.atan2(fz.x, fz.z), i: idxAt(i), side, offset };
+      };
+      const worldAt = (frame, x, z, lift = 0) => new THREE.Vector3(
+        frame.p.x + frame.fx.x * x + frame.fz.x * z,
+        terrainAt(frame.p.x + frame.fx.x * x + frame.fz.x * z,
+          frame.p.z + frame.fx.z * x + frame.fz.z * z) + lift,
+        frame.p.z + frame.fx.z * x + frame.fz.z * z,
+      );
+      const acceptLocalObb = (frame, x, z, halfLen, halfDep, height = 0) => {
+        const p = worldAt(frame, x, z);
+        return acceptObb(p.x, p.z, frame.fx, frame.fz, halfLen, halfDep)
+          && insideSky(p.x, p.z, Math.hypot(halfLen, halfDep), height);
+      };
+      const putPlanBox = (list, frame, x, z, len, height, dep, color, baseLift = 0) => {
+        if (!acceptLocalObb(frame, x, z, len / 2, dep / 2, height)) return false;
+        const p = worldAt(frame, x, z, baseLift + height / 2);
+        list.push({ p, yaw: frame.yaw, len, height, dep, color });
+        return true;
+      };
+
+      // Paddock apron: first choice is immediately behind the actual pit-building
+      // placement. Fallbacks retain the same main-straight side before searching
+      // the full lap, and only reduce the permanent footprint as a last resort.
+      let paddock = null;
+      const pitI = pitBuildingPlacement?.i ?? 0;
+      const pitSide = pitBuildingPlacement
+        ? (((pitBuildingPlacement.p.x - samples[pitI].p.x) * samples[pitI].n.x
+          + (pitBuildingPlacement.p.z - samples[pitI].p.z) * samples[pitI].n.z) < 0 ? -1 : 1)
+        : (positionHash(centre.x, centre.z, 701) < 0.5 ? -1 : 1);
+      const paddockSizes = [
+        desiredPaddock,
+        infra.mode === 'permanent'
+          ? { ...desiredPaddock, len: Math.max(116, desiredPaddock.len * 0.84), dep: Math.max(58, desiredPaddock.dep * 0.82) }
+          : desiredPaddock,
+      ];
+      for (const size of paddockSizes) {
+        const pitOuter = wallOff + 15 + PIT_DEP / 2 + 24;
+        for (const deltaM of [0, 55, -55, 110, -110, 180, -180]) {
+          const i = idxAt(pitI + stepOf(deltaM));
+          for (const side of [pitSide, -pitSide]) {
+            for (const gap of [5, 22, 42]) {
+              const frame = frameAt(i, side, pitOuter + size.dep / 2 + gap);
+              if (!acceptObb(frame.p.x, frame.p.z, frame.fx, frame.fz, size.len / 2, size.dep / 2)) continue;
+              if (!keepOutClear(frame.p.x, frame.p.z, frame.fx, frame.fz, size.len / 2, size.dep / 2)) continue;
+              if (!insideSky(frame.p.x, frame.p.z, Math.hypot(size.len, size.dep) / 2, 12)) continue;
+              paddock = { ...frame, ...size };
+              break;
+            }
+            if (paddock) break;
+          }
+          if (paddock) break;
+        }
+        if (paddock) break;
+      }
+      if (!paddock) {
+        for (let a = 0; a < 96 && !paddock; a++) {
+          const i = idxAt(Math.round(a * N / 96));
+          for (const side of [pitSide, -pitSide]) {
+            for (const offset of [wallOff + 100, wallOff + 145, wallOff + 195, wallOff + 245, wallOff + 315]) {
+              const frame = frameAt(i, side, offset);
+              const size = paddockSizes[paddockSizes.length - 1];
+              if (!acceptObb(frame.p.x, frame.p.z, frame.fx, frame.fz, size.len / 2, size.dep / 2)) continue;
+              if (!keepOutClear(frame.p.x, frame.p.z, frame.fx, frame.fz, size.len / 2, size.dep / 2)) continue;
+              if (!insideSky(frame.p.x, frame.p.z, Math.hypot(size.len, size.dep) / 2, 12)) continue;
+              paddock = { ...frame, ...size };
+              break;
+            }
+            if (paddock) break;
+          }
+        }
+      }
+
+      if (paddock) {
+        infrastructurePlan.paddockAprons.push({
+          p: worldAt(paddock, 0, 0, 0.026), yaw: paddock.yaw, len: paddock.len, dep: paddock.dep,
+        });
+        const teamColors = [0xe7e8eb, 0xbd3036, 0x315f9f, 0xd0a83a, 0x4b8b68, 0x8b5aa6, 0xd66f35, 0x67717f];
+        const perRank = Math.ceil(paddock.transporters / 2);
+        const pitch = Math.min(18.4, (paddock.len - 18) / Math.max(1, perRank));
+        let transporter = 0;
+        for (let row = 0; row < 2; row++) {
+          for (let k = 0; k < perRank && transporter < paddock.transporters; k++, transporter++) {
+            const x = (k - (perRank - 1) / 2) * pitch;
+            const z = (row ? 1 : -1) * paddock.dep * 0.17 + paddock.dep * 0.09;
+            const c = teamColors[(transporter + Math.floor(positionHash(paddock.p.x, paddock.p.z, 711) * 8)) % teamColors.length];
+            putPlanBox(infrastructurePlan.paddockVehicles, paddock, x - 1.65, z, 12.2, 3.65, 2.85, c);
+            putPlanBox(infrastructurePlan.paddockVehicles, paddock, x + 6.05, z, 3.2, 3.05, 2.65,
+              new THREE.Color(c).multiplyScalar(0.82).getHex());
+            const shade = worldAt(paddock, x, z);
+            addStructureShade(shade.x, shade.z, paddock.yaw, 15.4, 2.9, 3.7, 0.10, 0.13);
+          }
+        }
+        const hospitalityPitch = paddock.len / (paddock.hospitality + 0.35);
+        for (let k = 0; k < paddock.hospitality; k++) {
+          const x = (k - (paddock.hospitality - 1) / 2) * hospitalityPitch;
+          const z = -paddock.dep * 0.34;
+          const len = Math.min(24, hospitalityPitch - 3.2);
+          putPlanBox(infrastructurePlan.paddockBuildings, paddock, x, z, len, 8.2, 10.5,
+            k % 2 ? 0xd8d9d8 : 0xbfc5c7);
+          putPlanBox(infrastructurePlan.paddockBuildings, paddock, x, z + 7.2, len - 1.2, 0.45, 4.2, 0x69717a, 8.0);
+          const shade = worldAt(paddock, x, z);
+          addStructureShade(shade.x, shade.z, paddock.yaw, len, 14.7, 8.4, 0.16, 0.21);
+        }
+        for (let k = 0; k < paddock.tents; k++) {
+          const x = (k - (paddock.tents - 1) / 2) * 13;
+          const z = paddock.dep * 0.39;
+          if (!acceptLocalObb(paddock, x, z, 5, 5, 5.8)) continue;
+          const p = worldAt(paddock, x, z, 4.7);
+          infrastructurePlan.paddockTents.push({ p, yaw: paddock.yaw + Math.PI / 4, sx: 6.8, sy: 3.0, sz: 6.8,
+            color: k % 2 ? 0xf0eee6 : depthProfile.accent });
+          for (const sx of [-4.5, 4.5]) for (const sz of [-4.5, 4.5]) {
+            putPlanBox(infrastructurePlan.paddockBuildings, paddock, x + sx, z + sz, 0.22, 3.3, 0.22, 0x6d7278);
+          }
+          const shade = worldAt(paddock, x, z);
+          addStructureShade(shade.x, shade.z, paddock.yaw, 10, 10, 6.2, 0.12, 0.16);
+        }
+        addKeepOut(paddock.p, paddock.fz, paddock.len / 2 + 4, paddock.dep / 2 + 4, 'infra-paddock');
+      }
+
+      // Spectator parking on permanent circuits; one compact asphalt mobility /
+      // logistics court is the street-circuit equivalent (never an open field).
+      const parkingWant = infra.carParks || infra.staging || 1;
+      const parkingAnchors = [];
+      const parkingDims = infra.mode === 'street' ? { len: 54, dep: 28 } : { len: 92, dep: 54 };
+      const parkingPhase = Math.floor(positionHash(centre.x, centre.z, 721) * N);
+      for (let k = 0; k < parkingWant; k++) {
+        let anchor = null;
+        for (let attempt = 0; attempt < 72 && !anchor; attempt++) {
+          const i = idxAt(parkingPhase + Math.round((k + 1) * N / (parkingWant + 1)) + attempt * stepOf(55));
+          const sides = paddock ? [paddock.side, -paddock.side] : [1, -1];
+          for (const side of sides) {
+            const base = infra.mode === 'street' ? wallOff + 58 : Math.max(wallOff + 105, infra.fenceRadius * 0.54);
+            const offset = base + (attempt % 4) * 34;
+            const frame = frameAt(i, side, offset);
+            if (!acceptObb(frame.p.x, frame.p.z, frame.fx, frame.fz, parkingDims.len / 2, parkingDims.dep / 2)) continue;
+            if (!keepOutClear(frame.p.x, frame.p.z, frame.fx, frame.fz, parkingDims.len / 2, parkingDims.dep / 2)) continue;
+            if (!insideSky(frame.p.x, frame.p.z, Math.hypot(parkingDims.len, parkingDims.dep) / 2, 4)) continue;
+            anchor = { ...frame, ...parkingDims };
+            break;
+          }
+        }
+        if (!anchor) continue;
+        parkingAnchors.push(anchor);
+        infrastructurePlan.parkingSurfaces.push({
+          p: worldAt(anchor, 0, 0, 0.024), yaw: anchor.yaw, len: anchor.len, dep: anchor.dep,
+          surface: infra.mode === 'street' ? 'asphalt' : infra.surface,
+        });
+        const rows = infra.mode === 'street' ? 2 : 3;
+        const cols = infra.mode === 'street' ? 6 : 10;
+        const carPalette = [0xdddddc, 0x2e4057, 0x8d3134, 0xc0a04a, 0x426f58, 0x55565b, 0x8a6d93, 0xb86b3a];
+        for (let row = 0; row < rows; row++) {
+          const aisle = row > 1 ? 5.5 : 0;
+          const z = (row - (rows - 1) / 2) * 5.4 + aisle;
+          for (let col = 0; col < cols; col++) {
+            const x = (col - (cols - 1) / 2) * 6.8;
+            const bodyColor = carPalette[Math.floor(positionHash(anchor.p.x + x, anchor.p.z + z, 727) * carPalette.length) % carPalette.length];
+            putPlanBox(infrastructurePlan.parkedCars, anchor, x, z, 4.5, 1.05, 1.9, bodyColor);
+            putPlanBox(infrastructurePlan.parkedCars, anchor, x - 0.15, z, 2.35, 0.72, 1.55,
+              new THREE.Color(bodyColor).lerp(new THREE.Color(0xbcc7d0), 0.48).getHex(), 0.88);
+            const shade = worldAt(anchor, x, z);
+            addStructureShade(shade.x, shade.z, anchor.yaw, 4.7, 2.1, 1.8, 0.07, 0.08);
+          }
+        }
+        addKeepOut(anchor.p, anchor.fz, anchor.len / 2 + 3, anchor.dep / 2 + 3, 'infra-parking');
+      }
+
+      if (infra.camping && parkingAnchors.length) {
+        const camp = parkingAnchors[0];
+        const tentCount = Math.min(DEPTH_CAP.infraCampingTents, Math.max(10, infra.carParks * 4));
+        for (let k = 0; k < tentCount; k++) {
+          const row = (k / 8) | 0, col = k % 8;
+          const x = (col - 3.5) * 6.2;
+          const z = -camp.dep * 0.36 - row * 5.8;
+          if (!acceptLocalObb(camp, x, z, 2.3, 2.3, 3.6)) continue;
+          const p = worldAt(camp, x, z, 2.4);
+          infrastructurePlan.campingTents.push({ p, yaw: camp.yaw + Math.PI / 4, sx: 3.3, sy: 2.4, sz: 3.3,
+            color: k % 3 === 0 ? 0xb56d45 : k % 3 === 1 ? 0x657c68 : 0xc2b080 });
+          addStructureShade(p.x, p.z, camp.yaw, 4.8, 4.8, 3.6, 0.08, 0.10);
+        }
+      }
+
+      // Grass spectator berms target the outside of real corner runs and use the
+      // same SAT furniture rejection as the paddock, so no grandstand can share
+      // their footprint. Street profiles deliberately request zero or one.
+      const bankAnchors = [];
+      for (let pass = 0; pass < 4 && bankAnchors.length < infra.banks; pass++) {
+        for (let r = 0; r < cornerRuns.length && bankAnchors.length < infra.banks; r++) {
+          const run = cornerRuns[(r + pass * 3) % cornerRuns.length];
+          const i = idxAt(run.mid + pass * stepOf(18));
+          const side = -run.inside;
+          const frame = frameAt(i, side, wallOff + 48 + pass * 28);
+          const len = 58, dep = 19;
+          if (bankAnchors.some(b => b.p.distanceToSquared(frame.p) < 95 * 95)) continue;
+          if (!acceptObb(frame.p.x, frame.p.z, frame.fx, frame.fz, len / 2, dep / 2)) continue;
+          if (!keepOutClear(frame.p.x, frame.p.z, frame.fx, frame.fz, len / 2, dep / 2)) continue;
+          if (!insideSky(frame.p.x, frame.p.z, Math.hypot(len, dep) / 2, 6)) continue;
+          const bank = { ...frame, len, dep, height: 3.8 };
+          bankAnchors.push(bank);
+          infrastructurePlan.spectatorBanks.push({ p: worldAt(bank, 0, 0), yaw: bank.yaw, len, dep, height: bank.height });
+          for (const x of [-18, 0, 18]) {
+            if (!acceptLocalObb(bank, x, 0.8, 7.5, 0.2, 8)) continue;
+            infrastructurePlan.spectatorCrowds.push({
+              p: worldAt(bank, x, 0.8, bank.height + 2.25), yaw: bank.yaw,
+              width: 15, height: 4.5,
+            });
+          }
+          addStructureShade(bank.p.x, bank.p.z, bank.yaw, len, dep, bank.height + 4.5, 0.11, 0.14);
+          addKeepOut(bank.p, bank.fz, len / 2 + 3, dep / 2 + 5, 'infra-bank');
+        }
+      }
+
+      // Support clutter grows in compact groups immediately behind the existing
+      // service shelters. Each footprint is checked separately before the group
+      // keep-outs are registered.
+      const clutterShapes = [
+        { x: -3.4, z: -9.0, len: 5.8, dep: 2.45, height: 2.55, color: 0x9c493d },
+        { x: 3.5,  z: -9.2, len: 5.4, dep: 2.75, height: 2.85, color: 0xc7c4b8 },
+        { x: -2.5, z: -13.0, len: 2.8, dep: 1.75, height: 1.45, color: 0x505963 },
+        { x: 2.2,  z: -13.1, len: 2.3, dep: 1.8,  height: 1.25, color: 0x8b7653 },
+      ];
+      for (const an of serviceAnchors) {
+        const frame = { p: an.p.clone(), fz: an.fz.clone(), fx: new THREE.Vector3().crossVectors(UP, an.fz).normalize(), yaw: an.yaw };
+        const accepted = [];
+        for (const shape of clutterShapes) {
+          const p = worldAt(frame, shape.x, shape.z);
+          if (!acceptObb(p.x, p.z, frame.fx, frame.fz, shape.len / 2, shape.dep / 2)) continue;
+          if (!keepOutClear(p.x, p.z, frame.fx, frame.fz, shape.len / 2, shape.dep / 2)) continue;
+          if (!insideSky(p.x, p.z, Math.hypot(shape.len, shape.dep) / 2, shape.height)) continue;
+          accepted.push({ ...shape, p: worldAt(frame, shape.x, shape.z, shape.height / 2), yaw: frame.yaw });
+        }
+        for (const item of accepted) {
+          infrastructurePlan.supportClutter.push(item);
+          const base = item.p.clone(); base.y = terrainAt(base.x, base.z);
+          addStructureShade(base.x, base.z, item.yaw, item.len, item.dep, item.height, 0.10, 0.13);
+          addKeepOut(base, frame.fz, item.len / 2 + 0.6, item.dep / 2 + 0.6, 'infra-clutter');
+        }
+      }
+
+      // Asphalt ribbons: one terrain-sampled service ring plus radial spurs from
+      // the paddock and each parking/staging court to the venue edge. Every short
+      // segment is an independently checked instance, so a folded-back piece of
+      // circuit creates a clean break instead of being paved over.
+      const planRoadSegment = (a, b, width = 6.2) => {
+        if (infrastructurePlan.accessRoads.length >= DEPTH_CAP.infraAccessRoads) return;
+        const dx = b.x - a.x, dz = b.z - a.z, len = Math.hypot(dx, dz);
+        if (len < 2) return;
+        const fx = new THREE.Vector3(dx / len, 0, dz / len);
+        const fz = new THREE.Vector3(-fx.z, 0, fx.x);
+        const px = (a.x + b.x) / 2, pz = (a.z + b.z) / 2;
+        if (!acceptObb(px, pz, fx, fz, len / 2, width / 2)) return;
+        if (!keepOutClear(px, pz, fx, fz, len / 2, width / 2,
+          k => k.tag === 'infra-paddock' || k.tag === 'infra-parking')) return;
+        if (!insideSky(px, pz, Math.hypot(len, width) / 2, 0.2)) return;
+        const p = new THREE.Vector3(px, terrainAt(px, pz) + 0.032, pz);
+        infrastructurePlan.accessRoads.push({ p, yaw: Math.atan2(fz.x, fz.z), len, width });
+        addKeepOut(p, fz, len / 2, width / 2, 'infra-road');
+      };
+      const ringStep = Math.max(1, stepOf(46));
+      const ringSide = paddock?.side ?? pitSide;
+      const ringOffset = infra.mode === 'street' ? wallOff + 34 : Math.max(wallOff + 42, 68);
+      for (let i = 0; i < N && infrastructurePlan.accessRoads.length < DEPTH_CAP.infraAccessRoads; i += ringStep) {
+        const a = samples[i].p.clone().addScaledVector(samples[i].n, ringSide * ringOffset);
+        const j = idxAt(i + ringStep);
+        const b = samples[j].p.clone().addScaledVector(samples[j].n, ringSide * ringOffset);
+        planRoadSegment(a, b, 6.4);
+      }
+      const spurTargets = [];
+      if (paddock) spurTargets.push({ i: paddock.i, side: paddock.side, outer: Math.max(paddock.offset + paddock.dep / 2, infra.fenceRadius + 18) });
+      for (const park of parkingAnchors) spurTargets.push({ i: park.i, side: park.side, outer: Math.max(park.offset + park.dep / 2, infra.fenceRadius + 18) });
+      for (const target of spurTargets) {
+        const s = samples[target.i];
+        const start = wallOff + 31;
+        for (let off = start; off < Math.min(450, target.outer); off += 18) {
+          const next = Math.min(Math.min(450, target.outer), off + 18);
+          const a = s.p.clone().addScaledVector(s.n, target.side * off);
+          const b = s.p.clone().addScaledVector(s.n, target.side * next);
+          planRoadSegment(a, b, 7.0);
+        }
+      }
+
+      // Boundary follows the lap on both sides. Permanent venues use alpha-cut
+      // mesh panels; street profiles use the same continuous placement as solid
+      // city-edge hoarding. Road overlaps become explicit overhead gate bars.
+      const fenceStep = Math.max(1, stepOf(42));
+      const gateCentres = [];
+      for (const side of [1, -1]) {
+        for (let i = 0; i < N && infrastructurePlan.perimeterPanels.length < DEPTH_CAP.infraPerimeterPanels; i += fenceStep) {
+          const j = idxAt(i + fenceStep);
+          let panel = null;
+          for (const extra of [0, 24, 48, 76, 108]) {
+            const off = Math.min(450, Math.max(wallOff + 32, infra.fenceRadius + extra));
+            const a = samples[i].p.clone().addScaledVector(samples[i].n, side * off);
+            const b = samples[j].p.clone().addScaledVector(samples[j].n, side * off);
+            const dx = b.x - a.x, dz = b.z - a.z, len = Math.hypot(dx, dz);
+            if (len < 3) continue;
+            const fx = new THREE.Vector3(dx / len, 0, dz / len);
+            const fz = new THREE.Vector3(-fx.z, 0, fx.x);
+            const px = (a.x + b.x) / 2, pz = (a.z + b.z) / 2;
+            const dep = infra.fence === 'mesh' ? 0.18 : 0.48;
+            if (!acceptObb(px, pz, fx, fz, len / 2, dep / 2)) continue;
+            if (!insideSky(px, pz, len / 2 + 1, infra.fence === 'mesh' ? 3.2 : 4.2)) continue;
+            if (!keepOutClear(px, pz, fx, fz, len / 2, dep / 2,
+              k => k.tag === 'infra-road' || k.tag === 'infra-fence')) continue;
+            panel = { a, b, p: new THREE.Vector3(px, terrainAt(px, pz), pz), fx, fz, len, dep,
+              yaw: Math.atan2(fz.x, fz.z), height: infra.fence === 'mesh' ? 3.2 : 4.2 };
+            break;
+          }
+          if (!panel) continue;
+          const roadOverlap = !keepOutClear(panel.p.x, panel.p.z, panel.fx, panel.fz,
+            panel.len / 2, 4.0, k => k.tag !== 'infra-road');
+          if (roadOverlap) {
+            if (infrastructurePlan.perimeterGates.length < DEPTH_CAP.infraPerimeterGates
+              && gateCentres.every(p => p.distanceToSquared(panel.p) > 32 * 32)
+              && acceptObb(panel.p.x, panel.p.z, panel.fx, panel.fz, Math.min(11, panel.len * 0.42) / 2, 0.21)) {
+              gateCentres.push(panel.p.clone());
+              infrastructurePlan.perimeterGates.push({
+                p: new THREE.Vector3(panel.p.x, terrainAt(panel.p.x, panel.p.z) + 4.4, panel.p.z),
+                yaw: panel.yaw, len: Math.min(11, panel.len * 0.42), height: 0.42, dep: 0.42,
+              });
+              for (const dir of [-1, 1]) {
+                const qx = panel.p.x + panel.fx.x * dir * 5.4;
+                const qz = panel.p.z + panel.fx.z * dir * 5.4;
+                if (acceptCircle(qx, qz, 0.24)) infrastructurePlan.perimeterPosts.push({
+                  p: new THREE.Vector3(qx, terrainAt(qx, qz) + 2.2, qz), height: 4.4,
+                });
+              }
+              addStructureShade(panel.p.x, panel.p.z, panel.yaw, 11, 0.8, 4.8, 0.05, 0.06);
+              addKeepOut(panel.p, panel.fz, 6, 1.0, 'infra-fence');
+            }
+            continue;
+          }
+          infrastructurePlan.perimeterPanels.push({
+            p: new THREE.Vector3(panel.p.x, panel.p.y + panel.height / 2, panel.p.z),
+            yaw: panel.yaw, len: panel.len, height: panel.height, dep: panel.dep,
+          });
+          if (infrastructurePlan.perimeterPosts.length < DEPTH_CAP.infraPerimeterPosts
+            && acceptCircle(panel.a.x, panel.a.z, 0.24)) {
+            infrastructurePlan.perimeterPosts.push({
+              p: new THREE.Vector3(panel.a.x, terrainAt(panel.a.x, panel.a.z) + panel.height / 2, panel.a.z),
+              height: panel.height,
+            });
+          }
+          addStructureShade(panel.p.x, panel.p.z, panel.yaw, panel.len, panel.dep,
+            panel.height, 0.045, 0.055);
+          addKeepOut(panel.p, panel.fz, panel.len / 2, Math.max(0.4, panel.dep), 'infra-fence');
+        }
+      }
+
+      infraStats.paddockAprons = infrastructurePlan.paddockAprons.length;
+      infraStats.paddockVehicleParts = infrastructurePlan.paddockVehicles.length;
+      infraStats.paddockBuildingParts = infrastructurePlan.paddockBuildings.length;
+      infraStats.paddockTents = infrastructurePlan.paddockTents.length;
+      infraStats.perimeterPosts = infrastructurePlan.perimeterPosts.length;
+      infraStats.perimeterPanels = infrastructurePlan.perimeterPanels.length;
+      infraStats.perimeterGates = infrastructurePlan.perimeterGates.length;
+      infraStats.parkingSurfaces = infrastructurePlan.parkingSurfaces.length;
+      infraStats.parkedCarParts = infrastructurePlan.parkedCars.length;
+      infraStats.accessRoads = infrastructurePlan.accessRoads.length;
+      infraStats.spectatorBanks = infrastructurePlan.spectatorBanks.length;
+      infraStats.spectatorCrowds = infrastructurePlan.spectatorCrowds.length;
+      infraStats.supportClutter = infrastructurePlan.supportClutter.length;
+      infraStats.campingTents = infrastructurePlan.campingTents.length;
     }
 
     // ---- 8b. billboard vegetation ----------------------------------------
@@ -4158,6 +4609,190 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
           depthStats.far.skylineCaps = capItems.length;
         }
       }
+    }
+
+    // ---- 8d. instanced venue infrastructure --------------------------------
+    // Placement and keep-outs were fixed before vegetation in 8a.2. Constructing
+    // the batches here, after every rnd()-using scenery system, preserves the
+    // historical seeded stream while filling the barrier-to-horizon mid-ground.
+    {
+      const plan = infrastructurePlan;
+      const unitBox = new THREE.BoxGeometry(1, 1, 1);
+      const unitGround = new THREE.BufferGeometry();
+      unitGround.setAttribute('position', new THREE.Float32BufferAttribute([
+        -0.5, 0, -0.5, 0.5, 0, -0.5, 0.5, 0, 0.5, -0.5, 0, 0.5,
+      ], 3));
+      unitGround.setAttribute('uv', new THREE.Float32BufferAttribute([0, 0, 1, 0, 1, 1, 0, 1], 2));
+      unitGround.setIndex([0, 2, 1, 0, 3, 2]);
+      unitGround.computeVertexNormals();
+      const unitPlane = new THREE.PlaneGeometry(1, 1);
+      const unitTent = new THREE.ConeGeometry(1, 1, 4, 1, false);
+      const bankGeo = new THREE.BufferGeometry();
+      bankGeo.setAttribute('position', new THREE.Float32BufferAttribute([
+        -0.5, 0, -0.5, 0.5, 0, -0.5, -0.5, 0, 0.5, 0.5, 0, 0.5,
+        -0.5, 1, -0.18, 0.5, 1, -0.18, -0.5, 1, 0.18, 0.5, 1, 0.18,
+      ], 3));
+      bankGeo.setIndex([
+        0, 1, 3, 0, 3, 2,
+        0, 4, 5, 0, 5, 1,
+        2, 3, 7, 2, 7, 6,
+        0, 2, 6, 0, 6, 4,
+        1, 5, 7, 1, 7, 3,
+        4, 6, 7, 4, 7, 5,
+      ]);
+      bankGeo.computeVertexNormals();
+      const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), scale = new THREE.Vector3();
+      const color = new THREE.Color();
+      const buildBoxes = (items, name, material) => {
+        if (!items.length) return null;
+        const mesh = new THREE.InstancedMesh(unitBox, material, items.length);
+        mesh.name = name;
+        items.forEach((it, i) => {
+          q.setFromAxisAngle(UP, it.yaw || 0);
+          scale.set(it.len, it.height, it.dep);
+          m4.compose(it.p, q, scale);
+          mesh.setMatrixAt(i, m4);
+          if (it.color !== undefined) { color.setHex(it.color); mesh.setColorAt(i, color); }
+        });
+        if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+        group.add(mesh);
+        return mesh;
+      };
+      const buildGround = (items, name, material) => {
+        if (!items.length) return null;
+        const mesh = new THREE.InstancedMesh(unitGround, material, items.length);
+        mesh.name = name;
+        items.forEach((it, i) => {
+          q.setFromAxisAngle(UP, it.yaw || 0);
+          scale.set(it.len, 1, it.dep ?? it.width);
+          m4.compose(it.p, q, scale);
+          mesh.setMatrixAt(i, m4);
+        });
+        group.add(mesh);
+        return mesh;
+      };
+      const buildTents = (items, name, material) => {
+        if (!items.length) return null;
+        const mesh = new THREE.InstancedMesh(unitTent, material, items.length);
+        mesh.name = name;
+        items.forEach((it, i) => {
+          q.setFromAxisAngle(UP, it.yaw || 0);
+          scale.set(it.sx, it.sy, it.sz);
+          m4.compose(it.p, q, scale);
+          mesh.setMatrixAt(i, m4);
+          color.setHex(it.color); mesh.setColorAt(i, color);
+        });
+        if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+        group.add(mesh);
+        return mesh;
+      };
+
+      const asphalt = surfaceSet('asphalt', { aniso: 8, repeat: [1, 1] });
+      buildGround(plan.paddockAprons, 'infra-paddock-aprons', std({
+        color: theme.night ? 0x24272c : 0x303237, roughness: 0.94,
+        ...surfaceProps(asphalt, 0.28),
+      }));
+      buildBoxes(plan.paddockVehicles, 'infra-paddock-vehicle-parts',
+        std({ color: 0xffffff, roughness: 0.68 }));
+      buildBoxes(plan.paddockBuildings, 'infra-paddock-building-parts',
+        std({ color: 0xffffff, roughness: 0.76 }));
+      buildTents(plan.paddockTents, 'infra-paddock-tents',
+        std({ color: 0xffffff, roughness: 0.86 }));
+
+      if (plan.perimeterPosts.length) {
+        const posts = new THREE.InstancedMesh(unitBox,
+          std({ color: infrastructureProfile.fence === 'mesh' ? 0x707780 : 0x4f545c, roughness: 0.64 }),
+          plan.perimeterPosts.length);
+        posts.name = 'infra-perimeter-posts';
+        plan.perimeterPosts.forEach((it, i) => {
+          m4.compose(it.p, new THREE.Quaternion(), scale.set(0.32, it.height, 0.32));
+          posts.setMatrixAt(i, m4);
+        });
+        group.add(posts);
+      }
+      if (plan.perimeterPanels.length) {
+        let fenceGeo, fenceMat;
+        if (infrastructureProfile.fence === 'mesh') {
+          fenceGeo = unitPlane;
+          const fenceTex = ctex(draw(TEX.catchFence, [512, 256], 'rgba(55,59,66,0.86)'),
+            { repeat: [10, 1], aniso: 16 });
+          fenceMat = std({ map: fenceTex, color: 0xb7bdc3, side: THREE.DoubleSide,
+            alphaTest: 0.18, transparent: false, depthWrite: true, roughness: 0.72 });
+        } else {
+          fenceGeo = unitBox;
+          fenceMat = std({ color: theme.night ? 0x444b58 : 0x686e76, roughness: 0.78 });
+        }
+        const panels = new THREE.InstancedMesh(fenceGeo, fenceMat, plan.perimeterPanels.length);
+        panels.name = 'infra-perimeter-panels';
+        plan.perimeterPanels.forEach((it, i) => {
+          q.setFromAxisAngle(UP, it.yaw);
+          scale.set(it.len, it.height, infrastructureProfile.fence === 'mesh' ? 1 : it.dep);
+          m4.compose(it.p, q, scale);
+          panels.setMatrixAt(i, m4);
+        });
+        if (infrastructureProfile.fence === 'mesh') keepOutOfAO(panels);
+        group.add(panels);
+      }
+      buildBoxes(plan.perimeterGates, 'infra-perimeter-gates',
+        std({ color: 0xc4c7c9, roughness: 0.6 }));
+
+      if (plan.parkingSurfaces.length) {
+        const parkingKind = plan.parkingSurfaces[0].surface;
+        const surface = surfaceSet(parkingKind, { aniso: 8, repeat: [1, 1] });
+        const tint = parkingKind === 'grass' ? 0x879879 : parkingKind === 'gravel' ? 0xa69b88 : 0x45474b;
+        buildGround(plan.parkingSurfaces, 'infra-parking-surfaces', std({
+          color: tint, roughness: 0.96, ...surfaceProps(surface, parkingKind === 'asphalt' ? 0.26 : 0.42),
+        }));
+      }
+      buildBoxes(plan.parkedCars, 'infra-parked-car-parts',
+        std({ color: 0xffffff, roughness: 0.66 }));
+      buildGround(plan.accessRoads, 'infra-access-roads', std({
+        color: theme.night ? 0x2c2f34 : 0x3b3d40, roughness: 0.93,
+        ...surfaceProps(asphalt, 0.26),
+      }));
+
+      if (plan.spectatorBanks.length) {
+        const grass = surfaceSet('grass', { aniso: 8, repeat: [1, 1] });
+        const banks = new THREE.InstancedMesh(bankGeo, std({
+          color: 0x71855f, roughness: 0.98, ...surfaceProps(grass, 0.44),
+        }), plan.spectatorBanks.length);
+        banks.name = 'infra-spectator-banks';
+        plan.spectatorBanks.forEach((it, i) => {
+          q.setFromAxisAngle(UP, it.yaw);
+          scale.set(it.len, it.height, it.dep);
+          m4.compose(it.p, q, scale);
+          banks.setMatrixAt(i, m4);
+        });
+        group.add(banks);
+      }
+      if (plan.spectatorCrowds.length) {
+        const crowdCardArt = () => {
+          const c = document.createElement('canvas');
+          c.width = 1024; c.height = 320;
+          const g = c.getContext('2d');
+          g.clearRect(0, 0, c.width, c.height);
+          const crowd = draw(TEX.crowd, [1024, 256], '#1d1d24');
+          g.drawImage(crowd, 0, 64, 1024, 256);
+          return c;
+        };
+        const crowdTex = ctex(draw(crowdCardArt, [], 'rgba(0,0,0,0)'), { aniso: 16 });
+        const crowds = new THREE.InstancedMesh(unitPlane,
+          flatLit(crowdTex, K_FACADE, { side: THREE.DoubleSide, alphaTest: 0.08,
+            transparent: false, depthWrite: true, roughness: 0.9 }), plan.spectatorCrowds.length);
+        crowds.name = 'infra-spectator-crowds';
+        plan.spectatorCrowds.forEach((it, i) => {
+          q.setFromAxisAngle(UP, it.yaw);
+          scale.set(it.width, it.height, 1);
+          m4.compose(it.p, q, scale);
+          crowds.setMatrixAt(i, m4);
+        });
+        keepOutOfAO(crowds);
+        group.add(crowds);
+      }
+      buildBoxes(plan.supportClutter, 'infra-support-clutter',
+        std({ color: 0xffffff, roughness: 0.82 }));
+      buildTents(plan.campingTents, 'infra-camping-tents',
+        std({ color: 0xffffff, roughness: 0.9 }));
     }
 
     // ---- 9. floodlights + additive glow heads (night only) ----------------

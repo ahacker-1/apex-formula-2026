@@ -53,6 +53,11 @@ const NEW_NAMES = new Set([
   'vegetation-near-trunks', 'vegetation-near-shrubs',
   'city-near', 'city-skyline', 'city-skyline-caps',
   'bahrain-paddock-boxes', 'bahrain-paddock-canopies', 'bahrain-paddock-towers',
+  'infra-paddock-aprons', 'infra-paddock-vehicle-parts', 'infra-paddock-building-parts',
+  'infra-paddock-tents', 'infra-perimeter-posts', 'infra-perimeter-panels',
+  'infra-perimeter-gates', 'infra-parking-surfaces', 'infra-parked-car-parts',
+  'infra-access-roads', 'infra-spectator-banks', 'infra-spectator-crowds',
+  'infra-support-clutter', 'infra-camping-tents',
 ]);
 const isNewMesh = name => NEW_NAMES.has(name) || name.startsWith('vegetation-far-mass-v');
 
@@ -190,6 +195,8 @@ let worstMargin = { value: Infinity, track: '', mesh: '', index: -1 };
 let minBatches = Infinity, maxBatches = 0, minTriangles = Infinity, maxTriangles = 0;
 let minServices = Infinity, maxSkyRadius = 0;
 let bahrainIdentity = null;
+const infrastructureRows = [];
+const STREET = new Set(['monaco', 'baku', 'singapore', 'jeddah', 'lasvegas', 'miami', 'montreal', 'madrid']);
 
 for (const trackId of Object.keys(TRACKS)) {
   const first = buildCircuit(trackId, TRACKS[trackId], new THREE.Scene());
@@ -216,6 +223,20 @@ for (const trackId of Object.keys(TRACKS)) {
     identityBoxes: countNamed(meshes, 'bahrain-paddock-boxes'),
     identityCanopies: countNamed(meshes, 'bahrain-paddock-canopies'),
     identityTowers: countNamed(meshes, 'bahrain-paddock-towers'),
+    infraPaddockAprons: countNamed(meshes, 'infra-paddock-aprons'),
+    infraPaddockVehicleParts: countNamed(meshes, 'infra-paddock-vehicle-parts'),
+    infraPaddockBuildingParts: countNamed(meshes, 'infra-paddock-building-parts'),
+    infraPaddockTents: countNamed(meshes, 'infra-paddock-tents'),
+    infraPerimeterPosts: countNamed(meshes, 'infra-perimeter-posts'),
+    infraPerimeterPanels: countNamed(meshes, 'infra-perimeter-panels'),
+    infraPerimeterGates: countNamed(meshes, 'infra-perimeter-gates'),
+    infraParkingSurfaces: countNamed(meshes, 'infra-parking-surfaces'),
+    infraParkedCarParts: countNamed(meshes, 'infra-parked-car-parts'),
+    infraAccessRoads: countNamed(meshes, 'infra-access-roads'),
+    infraSpectatorBanks: countNamed(meshes, 'infra-spectator-banks'),
+    infraSpectatorCrowds: countNamed(meshes, 'infra-spectator-crowds'),
+    infraSupportClutter: countNamed(meshes, 'infra-support-clutter'),
+    infraCampingTents: countNamed(meshes, 'infra-camping-tents'),
   };
   const caps = stats.caps;
   assert(actual.trunks <= caps.trunks, `${trackId}: near-trunk cap`, `[${actual.trunks}/${caps.trunks}]`);
@@ -227,6 +248,22 @@ for (const trackId of Object.keys(TRACKS)) {
   assert(actual.cityNear <= caps.cityNear, `${trackId}: near-city cap`, `[${actual.cityNear}/${caps.cityNear}]`);
   assert(actual.citySkyline <= caps.citySkyline, `${trackId}: skyline cap`, `[${actual.citySkyline}/${caps.citySkyline}]`);
   assert(actual.skylineCaps <= caps.skylineCaps, `${trackId}: skyline-roof cap`, `[${actual.skylineCaps}/${caps.skylineCaps}]`);
+  for (const [actualKey, capKey, label] of [
+    ['infraPaddockAprons', 'infraPaddockAprons', 'paddock-apron'],
+    ['infraPaddockVehicleParts', 'infraPaddockVehicleParts', 'paddock-vehicle-part'],
+    ['infraPaddockBuildingParts', 'infraPaddockBuildingParts', 'paddock-building-part'],
+    ['infraPaddockTents', 'infraPaddockTents', 'paddock-tent'],
+    ['infraPerimeterPosts', 'infraPerimeterPosts', 'perimeter-post'],
+    ['infraPerimeterPanels', 'infraPerimeterPanels', 'perimeter-panel'],
+    ['infraPerimeterGates', 'infraPerimeterGates', 'perimeter-gate'],
+    ['infraParkingSurfaces', 'infraParkingSurfaces', 'parking-surface'],
+    ['infraParkedCarParts', 'infraParkedCarParts', 'parked-car-part'],
+    ['infraAccessRoads', 'infraAccessRoads', 'access-road'],
+    ['infraSpectatorBanks', 'infraSpectatorBanks', 'spectator-bank'],
+    ['infraSpectatorCrowds', 'infraSpectatorCrowds', 'spectator-crowd'],
+    ['infraSupportClutter', 'infraSupportClutter', 'support-clutter'],
+    ['infraCampingTents', 'infraCampingTents', 'camping-tent'],
+  ]) assert(actual[actualKey] <= caps[capKey], `${trackId}: ${label} cap`, `[${actual[actualKey]}/${caps[capKey]}]`);
   assert(actual.serviceParts === stats.near.serviceParts && actual.tyreStacks === stats.near.tyreStacks
     && actual.trunks === stats.near.trunks && actual.shrubs === stats.near.shrubs
     && actual.cityNear === stats.near.cityBlocks && actual.farMass === stats.far.masses
@@ -236,7 +273,58 @@ for (const trackId of Object.keys(TRACKS)) {
     `${trackId}: guaranteed service-bay minimum`, `[${stats.near.serviceBays}/${stats.minimums.serviceBays}]`);
   minServices = Math.min(minServices, stats.near.serviceBays);
 
+  const infrastructure = stats.infrastructure;
+  assert(infrastructure && typeof infrastructure === 'object', `${trackId}: infrastructure metrics are published`);
+  assert(actual.infraPaddockAprons === infrastructure.paddockAprons
+    && actual.infraPaddockVehicleParts === infrastructure.paddockVehicleParts
+    && actual.infraPaddockBuildingParts === infrastructure.paddockBuildingParts
+    && actual.infraPaddockTents === infrastructure.paddockTents
+    && actual.infraPerimeterPosts === infrastructure.perimeterPosts
+    && actual.infraPerimeterPanels === infrastructure.perimeterPanels
+    && actual.infraPerimeterGates === infrastructure.perimeterGates
+    && actual.infraParkingSurfaces === infrastructure.parkingSurfaces
+    && actual.infraParkedCarParts === infrastructure.parkedCarParts
+    && actual.infraAccessRoads === infrastructure.accessRoads
+    && actual.infraSpectatorBanks === infrastructure.spectatorBanks
+    && actual.infraSpectatorCrowds === infrastructure.spectatorCrowds
+    && actual.infraSupportClutter === infrastructure.supportClutter
+    && actual.infraCampingTents === infrastructure.campingTents,
+  `${trackId}: published infrastructure counts match instantiated mesh.count values`);
+  assert(actual.infraPaddockAprons === 1 && actual.infraPaddockVehicleParts > 0
+    && actual.infraPaddockBuildingParts > 0 && actual.infraPaddockTents > 0,
+  `${trackId}: paddock minimum cannot silently fail`,
+  `[aprons=${actual.infraPaddockAprons} vehicles=${actual.infraPaddockVehicleParts} buildings=${actual.infraPaddockBuildingParts} tents=${actual.infraPaddockTents}]`);
+  assert(actual.infraPerimeterPosts >= 24 && actual.infraPerimeterPanels >= 24,
+    `${trackId}: continuous perimeter minimum cannot silently fail`,
+    `[posts=${actual.infraPerimeterPosts} panels=${actual.infraPerimeterPanels}]`);
+  assert(actual.infraParkingSurfaces >= 1 && actual.infraParkedCarParts >= 12,
+    `${trackId}: car park or street staging equivalent cannot silently fail`,
+    `[surfaces=${actual.infraParkingSurfaces} car parts=${actual.infraParkedCarParts}]`);
+  assert(actual.infraAccessRoads > 0 && actual.infraSupportClutter > 0,
+    `${trackId}: access roads and support compounds are both populated`,
+    `[roads=${actual.infraAccessRoads} clutter=${actual.infraSupportClutter}]`);
+  assert(actual.infraSpectatorCrowds === actual.infraSpectatorBanks * 3,
+    `${trackId}: every spectator bank receives three crowd cards`,
+    `[banks=${actual.infraSpectatorBanks} crowds=${actual.infraSpectatorCrowds}]`);
+  assert(infrastructure.campingPresent ? actual.infraCampingTents > 0 : actual.infraCampingTents === 0,
+    `${trackId}: camping presence follows the venue profile`,
+    `[configured=${infrastructure.campingPresent} tents=${actual.infraCampingTents}]`);
+  assert(actual.infraPerimeterGates >= 2,
+    `${trackId}: access roads create multiple explicit perimeter gates`,
+    `[gates=${actual.infraPerimeterGates}]`);
+  if (STREET.has(trackId)) {
+    assert(infrastructure.mode === 'street' && actual.infraParkingSurfaces === 1
+      && infrastructure.parkingSurface === 'none' && infrastructure.campingPresent === false
+      && infrastructure.fenceStyle === 'hoarding',
+    `${trackId}: street venue uses compact staging and a solid city-block edge`);
+  } else {
+    assert(infrastructure.mode === 'permanent' && actual.infraParkingSurfaces >= 2
+      && actual.infraParkingSurfaces <= 4 && infrastructure.fenceStyle === 'mesh',
+    `${trackId}: permanent venue uses open parking and mesh perimeter fencing`);
+  }
+
   const identityMeshes = meshes.filter(mesh => mesh.name.startsWith('bahrain-paddock-'));
+  const infrastructureMeshes = meshes.filter(mesh => mesh.name.startsWith('infra-'));
   const identityInstances = actual.identityBoxes + actual.identityCanopies + actual.identityTowers;
   if (trackId === 'bahrain') {
     assert(stats.identity?.feature === 'bahrain-desert-paddock',
@@ -261,13 +349,50 @@ for (const trackId of Object.keys(TRACKS)) {
   }
 
   let batches = 0, triangles = 0;
-  let identityTriangles = 0;
+  let identityTriangles = 0, infrastructureTriangles = 0;
   for (const mesh of meshes) {
     batches++;
     const primitiveTriangles = mesh.geometry.index
       ? mesh.geometry.index.count / 3 : mesh.geometry.attributes.position.count / 3;
     triangles += primitiveTriangles * mesh.count;
     if (mesh.name.startsWith('bahrain-paddock-')) identityTriangles += primitiveTriangles * mesh.count;
+    if (mesh.name.startsWith('infra-')) infrastructureTriangles += primitiveTriangles * mesh.count;
+
+    if (mesh.name === 'infra-perimeter-panels') {
+      const material = mesh.material;
+      assert(material.isMeshStandardMaterial,
+        `${trackId}: perimeter fence/hoarding uses a lit standard material`);
+      if (infrastructure.fenceStyle === 'mesh') {
+        assert(material.map?.isCanvasTexture && material.alphaTest >= 0.1
+          && material.side === THREE.DoubleSide && material.transparent === false,
+        `${trackId}: permanent perimeter uses alpha-cut two-sided mesh panels`);
+        const liveCount = mesh.count;
+        const normalMaterial = new THREE.MeshNormalMaterial();
+        mesh.onBeforeRender(null, null, null, mesh.geometry, normalMaterial);
+        const suppressed = mesh.count === 0;
+        mesh.onAfterRender(null, null, null, mesh.geometry, normalMaterial);
+        assert(suppressed && mesh.count === liveCount,
+          `${trackId}: alpha-cut perimeter panels opt out of AO and restore`);
+        normalMaterial.dispose();
+      } else {
+        assert(mesh.geometry.type === 'BoxGeometry' && !material.map,
+          `${trackId}: street boundary is solid hoarding rather than an open mesh field`);
+      }
+    }
+    if (mesh.name === 'infra-spectator-crowds') {
+      const material = mesh.material;
+      assert(material.isMeshStandardMaterial && material.map?.isCanvasTexture
+        && material.alphaTest >= 0.05 && material.side === THREE.DoubleSide,
+      `${trackId}: spectator-bank crowd cards reuse lit alpha-cut crowd art`);
+      const liveCount = mesh.count;
+      const normalMaterial = new THREE.MeshNormalMaterial();
+      mesh.onBeforeRender(null, null, null, mesh.geometry, normalMaterial);
+      const suppressed = mesh.count === 0;
+      mesh.onAfterRender(null, null, null, mesh.geometry, normalMaterial);
+      assert(suppressed && mesh.count === liveCount,
+        `${trackId}: spectator crowd cards opt out of AO and restore`);
+      normalMaterial.dispose();
+    }
 
     if (mesh.name.startsWith('vegetation-far-mass-v')) {
       const material = mesh.material;
@@ -328,10 +453,10 @@ for (const trackId of Object.keys(TRACKS)) {
   }
   minBatches = Math.min(minBatches, batches); maxBatches = Math.max(maxBatches, batches);
   minTriangles = Math.min(minTriangles, triangles); maxTriangles = Math.max(maxTriangles, triangles);
-  const baseBatches = batches - identityMeshes.length;
-  const baseTriangles = triangles - identityTriangles;
+  const baseBatches = batches - identityMeshes.length - infrastructureMeshes.length;
+  const baseTriangles = triangles - identityTriangles - infrastructureTriangles;
   assert(baseBatches >= 7 && baseBatches <= 10,
-    `${trackId}: base scenery stays within 7-10 batches`, `[${baseBatches}]`);
+    `${trackId}: legacy base scenery stays within 7-10 batches`, `[${baseBatches}]`);
   // f8cb011 used 5,700-12,500: the untextured detail-1 icosahedron shrubs cost
   // 80 triangles each. c1fb4df moved this to 3,400-6,000 when alpha-cut shrubs
   // dropped to 12 triangles while the richer far-mass run rose from 8 to 20.
@@ -339,9 +464,21 @@ for (const trackId of Object.keys(TRACKS)) {
   // shrub, removing a further 4 * 25..104 = 100..416 triangles per venue.
   assert(baseTriangles >= 3000 && baseTriangles <= 5600,
     `${trackId}: base scenery triangle cost stays within the foliage-card band`, `[${Math.round(baseTriangles)}]`);
-  assert(batches <= 13 && triangles <= 5840,
-    `${trackId}: total scenery including identity stays within bounded render cost`,
-    `[batches=${batches}/13 triangles=${Math.round(triangles)}/5840]`);
+  // Before infrastructure (543c8db), the live total was 7-12 batches and
+  // 3,404-5,340 triangles. The 14 possible mid-ground batches deliberately move
+  // the measured all-venue range to 18-25 batches / 8,480-14,144 triangles.
+  assert(infrastructureMeshes.length >= 11 && infrastructureMeshes.length <= 14,
+    `${trackId}: infrastructure stays within 11-14 instanced batches`, `[${infrastructureMeshes.length}]`);
+  assert(batches >= 18 && batches <= 25 && triangles >= 8480 && triangles <= 14144,
+    `${trackId}: total scenery including infrastructure stays within bounded render cost`,
+    `[batches=${batches}/25 triangles=${Math.round(triangles)}/14144]`);
+  infrastructureRows.push({
+    trackId,
+    batches: infrastructureMeshes.length,
+    triangles: Math.round(infrastructureTriangles),
+    totalBatches: batches,
+    totalTriangles: Math.round(triangles),
+  });
 
   first.dispose();
   second.dispose();
@@ -354,5 +491,6 @@ console.log(`VENUE DEPTH: ${checks - failures}/${checks} checks passed across ${
 console.log(`worst footprint margin: ${worstMargin.value.toFixed(3)}m (${worstMargin.track}/${worstMargin.mesh}#${worstMargin.index})`);
 console.log(`service bays: minimum ${minServices}; batches ${minBatches}-${maxBatches}; triangles ${Math.round(minTriangles)}-${Math.round(maxTriangles)}`);
 console.log(`Bahrain identity: ${bahrainIdentity?.batches || 0} batches, ${bahrainIdentity?.instances || 0} instances, ${bahrainIdentity?.triangles || 0} triangles; sample ${bahrainIdentity?.sample ?? 'missing'}, side ${bahrainIdentity?.side ?? 'missing'}, offset ${bahrainIdentity?.offset ?? 'missing'}m`);
+for (const row of infrastructureRows) console.log(`infrastructure ${row.trackId}: ${row.batches} batches, ${row.triangles} triangles; total ${row.totalBatches} batches, ${row.totalTriangles} triangles`);
 console.log(`furthest venue vertex: ${maxSkyRadius.toFixed(1)}m of ${SKY_R}m sky radius`);
 process.exit(failures ? 1 : 0);
