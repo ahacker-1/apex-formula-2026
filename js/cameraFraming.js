@@ -31,17 +31,16 @@ export const CAMERA_PROFILES = Object.freeze({
   }),
 });
 
-export function resolveChaseCamera(profileName, speedMps, boosting = false) {
+export function resolveChaseCamera(profileName, speedMps, boosting = false, output = {}) {
   const profile = CAMERA_PROFILES[profileName] || CAMERA_PROFILES.broadcast;
   const finiteSpeed = Number.isFinite(speedMps) ? speedMps : 0;
   const framingSpeed = Math.min(CAMERA_FRAMING.speedEffectCapMps, Math.max(0, finiteSpeed));
-  return Object.freeze({
-    back: profile.back + framingSpeed * profile.pull,
-    height: profile.height + framingSpeed * profile.rise,
-    look: profile.look,
-    fov: profile.fov + framingSpeed * profile.fovSpeed +
-      (boosting ? CAMERA_FRAMING.boostFovDegrees : 0),
-  });
+  output.back = profile.back + framingSpeed * profile.pull;
+  output.height = profile.height + framingSpeed * profile.rise;
+  output.look = profile.look;
+  output.fov = profile.fov + framingSpeed * profile.fovSpeed +
+    (boosting ? CAMERA_FRAMING.boostFovDegrees : 0);
+  return output;
 }
 
 // A stable composition proxy: the fraction of viewport height occupied by the

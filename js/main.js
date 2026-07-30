@@ -136,6 +136,7 @@ class Game {
     this._camPlayerPos = new THREE.Vector3();
     this._camTargetPos = new THREE.Vector3();
     this._camTargetLook = new THREE.Vector3();
+    this._camFraming = { back: 0, height: 0, look: 0, fov: 0 };
 
     this.hud = new HUD(document.getElementById('hud'));
     this.audio = new AudioEngine();
@@ -1085,7 +1086,9 @@ class Game {
     const speed = pose?.v ?? p.v;
     const f = this._camForward.set(Math.sin(heading), 0, Math.cos(heading));
     if (this.camMode === 0) {
-      const framing = resolveChaseCamera(this.ui.settings.cameraProfile, speed, p.boosting);
+      const framing = resolveChaseCamera(
+        this.ui.settings.cameraProfile, speed, p.boosting, this._camFraming,
+      );
       const aheadSample = this.circuit.samples[(p.sampleIdx + Math.round(framing.look / this.circuit.ds)) % this.circuit.N];
       const aim = this._camAhead.set(aheadSample.t.x, 0, aheadSample.t.z);
       this._camPos.copy(pos).addScaledVector(f, -framing.back).setY(ry + framing.height);
@@ -1127,7 +1130,9 @@ class Game {
       targetPos.copy(this._camPos);
       targetLook.copy(this._camLook);
     } else if (this.camMode === 0) {
-      const framing = resolveChaseCamera(this.ui.settings.cameraProfile, speed, p.boosting);
+      const framing = resolveChaseCamera(
+        this.ui.settings.cameraProfile, speed, p.boosting, this._camFraming,
+      );
       const aheadSample = this.circuit.samples[(p.sampleIdx + Math.round(framing.look / this.circuit.ds)) % this.circuit.N];
       const aim = this._camAhead.set(aheadSample.t.x, 0, aheadSample.t.z);
       targetPos.copy(pos).addScaledVector(f, -framing.back).setY(ry + framing.height);
