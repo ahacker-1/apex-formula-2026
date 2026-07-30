@@ -2748,6 +2748,13 @@ function run(trackId) {
       assert(m.blending === THREE.AdditiveBlending && m.depthWrite === false,
         'glow sprites are additive and do not write depth',
         `[blending=${m.blending} depthWrite=${m.depthWrite}]`);
+      assert(m.opacity >= 0.3 && m.opacity <= 0.45 && m.fog === true,
+        'glow sprites stay restrained and participate in distance fog',
+        `[opacity=${m.opacity} fog=${m.fog}]`);
+      const glowWidths = glows.map(g => g.scale.x);
+      assert(Math.max(...glowWidths) <= 5.5 && Math.min(...glowWidths) >= 4.5,
+        'glow sprites stay fixture-sized instead of merging into floodlight halos',
+        `[scale=${Math.min(...glowWidths).toFixed(2)}..${Math.max(...glowWidths).toFixed(2)}m]`);
       // Round 2: "the dark pole is still drawn ON TOP of its own glow, cutting a
       // black slash straight through the bright core". The sprite is centred on the
       // pole axis, so half of it always fails a depth test against the pole. Depth
@@ -2763,9 +2770,9 @@ function run(trackId) {
         assert(lampsIM.count === heads.count * 4, 'four lamp faces per fixture',
           `[lamps=${lampsIM.count} heads=${heads.count}]`);
         const lm = lampsIM.material;
-        assert(lm.isMeshStandardMaterial && lm.emissiveIntensity > 1
+        assert(lm.isMeshStandardMaterial && lm.emissiveIntensity > 1 && lm.emissiveIntensity <= 1.6
           && lm.emissive.getHex() !== 0x000000,
-          'the lamp faces are emissive, and the housing around them is not',
+          'the lamp faces are visibly emissive without overpowering the housing',
           `[emissive #${lm.emissive.getHexString()} x${lm.emissiveIntensity}]`);
         const hm = heads.material;
         assert(hm.isMeshStandardMaterial && (!hm.emissive || hm.emissive.getHex() === 0x000000),
@@ -2794,6 +2801,9 @@ function run(trackId) {
           && pm.depthWrite === false && pm.polygonOffset === true,
           'light pools are additive, offset decals that do not write depth',
           `[blending=${pm.blending} depthWrite=${pm.depthWrite} offset=${pm.polygonOffsetFactor}]`);
+        assert(pm.opacity >= 0.18 && pm.opacity <= 0.25 && pm.fog === true,
+          'light pools preserve asphalt contrast and fade into venue fog',
+          `[opacity=${pm.opacity} fog=${pm.fog}]`);
         assert(pool.userData.pools === heads.count, 'one light pool per floodlight',
           `[pools=${pool.userData.pools} floodlights=${heads.count}]`);
         // the pool has to land ON the road, under the tower

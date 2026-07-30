@@ -189,6 +189,10 @@ for (const venue of VENUES) {
         skyVisible: game.sky?.visible === true,
         themeIsNight: game.circuit.theme.night === true,
         themeSunIntensity: game.circuit.theme.sunI,
+        toneMappingExposure: game.renderer.toneMappingExposure,
+        bloomStrength: game.bloom.strength,
+        bloomRadius: game.bloom.radius,
+        bloomThreshold: game.bloom.threshold,
       };
     });
 
@@ -211,10 +215,18 @@ for (const venue of VENUES) {
       expect(state.themeIsNight).toBe(true);
       expect(state.backgroundIsEnvironment, 'night uses the photographic HDR as the visible sky').toBe(true);
       expect(state.skyVisible, 'night hides the procedural sky dome').toBe(false);
+      expect(state.toneMappingExposure, 'night uses a dedicated restrained exposure').toBeCloseTo(0.92, 6);
+      expect(state.bloomStrength, 'night bloom strength stays restrained').toBeCloseTo(0.22, 6);
+      expect(state.bloomRadius, 'night bloom stays tight around fixture cores').toBeCloseTo(0.36, 6);
+      expect(state.bloomThreshold, 'night bloom excludes road paint and bodywork').toBeCloseTo(0.92, 6);
     } else {
       expect(state.themeIsNight).toBe(false);
       expect(state.backgroundIsNull, `${venue.environment} leaves the HDR lighting-only`).toBe(true);
       expect(state.skyVisible, `${venue.environment} keeps the procedural sky visible`).toBe(true);
+      expect(state.toneMappingExposure, `${venue.environment} keeps the established exposure`).toBeCloseTo(1.05, 6);
+      expect(state.bloomStrength, `${venue.environment} keeps the established bloom strength`).toBeCloseTo(0.18, 6);
+      expect(state.bloomRadius, `${venue.environment} keeps the established bloom radius`).toBeCloseTo(0.55, 6);
+      expect(state.bloomThreshold, `${venue.environment} keeps the established bloom threshold`).toBeCloseTo(0.86, 6);
       if (venue.environment === 'dusk') expect(state.themeSunIntensity).toBeLessThan(2.2);
       else expect(state.themeSunIntensity).toBeGreaterThanOrEqual(2.2);
     }
@@ -256,6 +268,22 @@ for (const venue of VENUES) {
       screenshot: screenshotMetrics,
     };
     console.log(`[venue-smoke] ${JSON.stringify(metrics)}`);
+
+    if (venue.environment === 'night') {
+      const recovery = await page.evaluate(() => {
+        const game = window.__game;
+        game.renderer.toneMappingExposure = 0.01;
+        game.renderer.domElement.dispatchEvent(new Event('webglcontextrestored'));
+        const restoredExposure = game.renderer.toneMappingExposure;
+        game.teardownSession();
+        return {
+          restoredExposure,
+          teardownExposure: game.renderer.toneMappingExposure,
+        };
+      });
+      expect(recovery.restoredExposure, 'WebGL recovery reapplies the active night exposure').toBeCloseTo(0.92, 6);
+      expect(recovery.teardownExposure, 'night exposure cannot leak into the menu or next venue').toBeCloseTo(1.05, 6);
+    }
 
     expect(errors.console, 'console errors').toEqual([]);
     expect(errors.page, 'uncaught page errors').toEqual([]);

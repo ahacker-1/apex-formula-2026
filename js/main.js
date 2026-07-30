@@ -101,6 +101,10 @@ import { TRACKS } from './tracks.js';
 import { CALENDAR, DRIVERS } from './data.js';
 
 const RETRY_SESSION_KEY = 'apexf1_retry_session_v1';
+const RENDER_LOOK = Object.freeze({
+  day: Object.freeze({ exposure: 1.05, bloomStrength: 0.18, bloomRadius: 0.55, bloomThreshold: 0.86 }),
+  night: Object.freeze({ exposure: 0.92, bloomStrength: 0.22, bloomRadius: 0.36, bloomThreshold: 0.92 }),
+});
 
 class Game {
   constructor() {
@@ -120,7 +124,7 @@ class Game {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.05;
+    this.renderer.toneMappingExposure = RENDER_LOOK.day.exposure;
     document.getElementById('app').appendChild(this.renderer.domElement);
 
     this.scene = null;
@@ -242,8 +246,12 @@ class Game {
       this._graphicsContextLost = false;
       this._graphicsContextRestores++;
       // Three preserves this flag internally, but reassert the aggregate mode
-      // so recovery remains correct if renderer internals change.
+      // and the active venue look so recovery remains correct if renderer
+      // internals change.
       this.renderer.info.autoReset = false;
+      this.renderer.toneMappingExposure = this.circuit?.theme.night
+        ? RENDER_LOOK.night.exposure
+        : RENDER_LOOK.day.exposure;
       this.quality.apply(true);
       this.showGraphicsRecovery('', '');
       if (this.session) this.hud.message('GRAPHICS RESTORED');
@@ -696,6 +704,10 @@ class Game {
     }
     this.hemi = null;
     this.scene = null;
+    // Do not let a completed night session tint the menu or the next venue while
+    // its scene is being assembled. setupEnvironment() reapplies the selected
+    // venue's look once the new circuit exists.
+    this.renderer.toneMappingExposure = RENDER_LOOK.day.exposure;
     this.hud.hide();
     this.audio.stopEngine();
     if (this.audio.crowdAmbience) this.audio.crowdAmbience(0);
@@ -710,6 +722,11 @@ class Game {
   setupEnvironment(effectsRandom = () => Math.random(), environmentKey) {
     this._celestialObjects = [];
     const th = this.circuit.theme;
+    const renderLook = th.night ? RENDER_LOOK.night : RENDER_LOOK.day;
+    // The photographic night HDR and dozens of track fixtures already supply
+    // strong highlights. A dedicated night exposure keeps asphalt, cars and
+    // buildings separated instead of lifting the entire frame toward white.
+    this.renderer.toneMappingExposure = renderLook.exposure;
     this.scene.fog = new THREE.Fog(th.fog, 300, 1600);
     // sky dome: gradient + soft clouds BAKED into the texture (day/dusk).
     // Clouds must never be separate transparent quads again -- sprites read as
@@ -881,12 +898,11 @@ class Game {
     this.composer.addPass(this.gtao);
     this.bloom = new UnrealBloomPass(
       new THREE.Vector2(innerWidth, innerHeight),
-      // Night fixtures should glow without turning white bodywork and the
-      // racing line into a single clipped shape.  A higher threshold keeps the
-      // effect on emissive lamps while preserving paint and asphalt detail.
-      th.night ? 0.34 : 0.18,  // strength
-      0.55,                    // radius
-      th.night ? 0.72 : 0.86   // threshold
+      // Night bloom stays tight and selective: fixture cores still read as hot,
+      // but their halos no longer merge down a straight or bleach road detail.
+      renderLook.bloomStrength,
+      renderLook.bloomRadius,
+      renderLook.bloomThreshold
     );
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());

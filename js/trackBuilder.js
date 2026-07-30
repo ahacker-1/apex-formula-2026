@@ -650,9 +650,9 @@ export function buildCircuit(trackId, def, scene) {
   const K_FOLIAGE = theme.night ? 0.5 : 0.62;
   // How much of the foliage floor is real EMISSION rather than a diffuse pull-down.
   //
-  // On the night circuits the two have to come apart. main.js drops the bloom
-  // threshold to 0.6 and raises its strength to 0.5 after dark, and a canopy
-  // carrying emission worth half its own albedo clears that threshold on its own:
+  // On the night circuits the two have to come apart. Even with main.js's
+  // selective night bloom, a canopy carrying emission worth half its own albedo
+  // can seed a halo around its silhouette:
   // the palms rendered as pale self-luminous shapes with a glow spilling into the
   // sky around every frond. Measured on the Singapore night framing, on the band
   // 3-5px outside the canopy silhouettes: the worst sky pixel sat 49.4% above the
@@ -3615,7 +3615,7 @@ export function buildCircuit(trackId, def, scene) {
       const LAMPS_PER = 4;
       const lampG = new THREE.PlaneGeometry(0.72, 0.86);
       const lamps = new THREE.InstancedMesh(lampG, new THREE.MeshStandardMaterial({
-        color: 0x2b3240, emissive: 0xe8eeff, emissiveIntensity: 2.6,
+        color: 0x2b3240, emissive: 0xe8eeff, emissiveIntensity: 1.45,
         roughness: 0.4, metalness: 0, side: THREE.DoubleSide,
       }), cnt * LAMPS_PER);
       lamps.name = 'floodlight-lamps';
@@ -3626,12 +3626,15 @@ export function buildCircuit(trackId, def, scene) {
         color: 0xbfd4ff,
         blending: THREE.AdditiveBlending,
         transparent: true,
+        opacity: 0.38,
         depthWrite: false,
         // depthTest off + a positive renderOrder is what stops the pole from
         // slashing a black line through the middle of its own glow: the sprite is
         // centred ON the pole axis, so half of it always fails a depth test.
         depthTest: false,
-        fog: false,
+        // Fog attenuation prevents distant rows from accumulating into a stack
+        // of equally bright white discs at the vanishing point.
+        fog: true,
       });
       // ---- baked light pools on the asphalt -----------------------------------
       // One merged additive decal per tower, an ellipse on the road under the
@@ -3662,7 +3665,7 @@ export function buildCircuit(trackId, def, scene) {
         const glow = new THREE.Sprite(glowMat);
         glow.name = 'floodlight-glow';
         glow.position.set(p.x, headY + 0.1, p.z);
-        glow.scale.set(9.5, 9.5, 1);
+        glow.scale.set(5.25, 5.25, 1);
         glow.renderOrder = 4;
         group.add(glow);
         // Pool: a strip that FOLLOWS the samples rather than the tangent, so its
@@ -3707,14 +3710,14 @@ export function buildCircuit(trackId, def, scene) {
           blending: THREE.AdditiveBlending,
           transparent: true,
           depthWrite: false,
-          // The decal is illumination, not a painted white strip.  Keeping it
-          // below half opacity preserves the asphalt, grid and car silhouettes
-          // through overlapping pools on a packed starting grid.
-          opacity: 0.46,
+          // The pool is a low-energy illumination cue, not a painted white
+          // strip. Asphalt, grid markings and car silhouettes remain visible
+          // through adjacent pools on a packed starting grid.
+          opacity: 0.22,
           polygonOffset: true,
           polygonOffsetFactor: -5,
           polygonOffsetUnits: -5,
-          fog: false,
+          fog: true,
         }));
         pool.name = 'floodlight-pools';
         pool.userData.pools = pools;
