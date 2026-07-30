@@ -582,7 +582,7 @@ function makeSrc(c) {
 // the point falls in and interpolate it. This is the only honest way to ask "does
 // the verge meet the road" -- comparing vertices would let a coarse mesh pass on
 // the strength of vertices that happen to sit in the right place.
-function groundSampler(c, mesh) {
+function groundSampler(c, mesh, extraPad = 0) {
   const pos = mesh.geometry.attributes.position, index = mesh.geometry.index;
   const ox = mesh.position.x, oy = mesh.position.y, oz = mesh.position.z;
   // Only the triangles that can possibly be near the circuit get indexed; the
@@ -593,7 +593,7 @@ function groundSampler(c, mesh) {
     if (x < bx0) bx0 = x; if (x > bx1) bx1 = x;
     if (z < bz0) bz0 = z; if (z > bz1) bz1 = z;
   }
-  const pad = 4 * c.wallOff + 80;
+  const pad = Math.max(4 * c.wallOff + 80, extraPad);
   bx0 -= pad; bx1 += pad; bz0 -= pad; bz1 += pad;
   const CELL = 48;
   const key = (a, b) => (a + 16384) * 65536 + (b + 16384);
@@ -2400,19 +2400,83 @@ function run(trackId) {
         `${trackId}: backdrop has one visible matte mesh per non-none layer`,
         `[${meshes.length}/${expectedVisible.length}]`);
       let vertexCount = 0, maxSky = 0, maxAngle = 0, minMargin = Infinity;
+      const layerTable = [];
       for (let layerIndex = 0; layerIndex < meshes.length; layerIndex++) {
         const mesh = meshes[layerIndex];
         const authored = expectedVisible[layerIndex];
         assert(mesh.userData.kind === authored.kind
           && JSON.stringify(mesh.userData.authored) === JSON.stringify(authored),
         `${trackId}/${authored.kind}: backdrop metadata matches its VENUE layer`);
+        const isBuilt = authored.kind === 'city-cluster' || authored.kind === 'city-sprawl'
+          || authored.kind === 'industry';
+        const softCrest = !isBuilt;
         assert(mesh.material.isMeshBasicMaterial && mesh.material.fog === false
-          && mesh.material.transparent === false && mesh.userData.fogIndependent === true,
-        `${trackId}/${authored.kind}: backdrop is an opaque, pre-tinted, fog-independent matte`);
+          && mesh.material.toneMapped === false && mesh.material.transparent === softCrest
+          && mesh.userData.fogIndependent === true,
+        `${trackId}/${authored.kind}: backdrop is a pre-tinted, fog-independent matte`,
+        `[transparent=${mesh.material.transparent}, toneMapped=${mesh.material.toneMapped}, soft crest=${softCrest}]`);
+        assert(!softCrest || (mesh.material.alphaMap?.isCanvasTexture === true
+          && mesh.material.alphaTest >= 0.015 && mesh.userData.softCrest === true),
+        `${trackId}/${authored.kind}: natural crest dissolves through the shared height alpha ramp`,
+        `[alphaMap=${!!mesh.material.alphaMap} alphaTest=${mesh.material.alphaTest}]`);
+        if (softCrest) {
+          const before = { ...mesh.geometry.drawRange };
+          mesh.onBeforeRender(null, null, null, mesh.geometry, { isMeshNormalMaterial: true });
+          const suppressed = mesh.geometry.drawRange.count === 0 && mesh.userData.aoSuppressed === true;
+          mesh.onAfterRender();
+          const restored = mesh.geometry.drawRange.start === before.start
+            && mesh.geometry.drawRange.count === before.count && mesh.userData.aoSuppressed === false;
+          assert(suppressed && restored,
+            `${trackId}/${authored.kind}: alpha skirt stays out of GTAO and returns for colour`,
+            `[suppressed=${suppressed} restored=${restored}]`);
+        }
         const position = mesh.geometry.attributes.position;
         assert(!!position && position.count >= 8,
           `${trackId}/${authored.kind}: backdrop layer has real silhouette geometry`,
           `[vertices=${position?.count || 0}]`);
+        if (softCrest) {
+          const uv = mesh.geometry.attributes.uv;
+          let uvLo = Infinity, uvHi = -Infinity;
+          for (let v = 0; uv && v < uv.count; v++) {
+            uvLo = Math.min(uvLo, uv.getY(v)); uvHi = Math.max(uvHi, uv.getY(v));
+          }
+          assert(!!uv && uvLo < 1e-6 && uvHi > 1 - 1e-6,
+            `${trackId}/${authored.kind}: crest ramp spans opaque body to transparent top`,
+            `[v=${uvLo.toFixed(3)}..${uvHi.toFixed(3)}]`);
+        }
+        assert(typeof authored.tint === 'number' && authored.dist > 0,
+          `${trackId}/${authored.kind}: VENUE declares a local tint and researched distance`,
+          `[tint=#${Number(authored.tint).toString(16).padStart(6, '0')} dist=${authored.dist}m]`);
+        const distanceT = THREE.MathUtils.clamp((authored.dist - 1500) / 23500, 0, 1);
+        const distanceFade = distanceT * distanceT * (3 - 2 * distanceT);
+        const expectedFade = authored.nightCutout ? 0
+          : c.theme.night ? 0.05 + distanceFade * 0.15
+            : 0.08 + distanceFade * 0.87;
+        const expectedColour = new THREE.Color(authored.tint).lerp(new THREE.Color(c.theme.fog), expectedFade);
+        const colourDistance = (a, b) => Math.hypot(a.r - b.r, a.g - b.g, a.b - b.b);
+        const colourError = colourDistance(mesh.material.color, expectedColour);
+        assert(colourError < 1e-7 && Math.abs(mesh.userData.atmosphereFade - expectedFade) < 1e-9,
+          `${trackId}/${authored.kind}: material tint realises its distance fade toward theme fog`,
+          `[dist=${authored.dist}m fade=${expectedFade.toFixed(3)} error=${colourError.toExponential(1)}]`);
+        const finalHex = mesh.material.color.getHex();
+        if (!c.theme.night) {
+          const r = (finalHex >> 16) & 255, g = (finalHex >> 8) & 255, b = finalHex & 255;
+          const srgbLuma = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+          assert(srgbLuma >= 0.30,
+            `${trackId}/${authored.kind}: daylight backdrop stays above the near-black floor`,
+            `[#${finalHex.toString(16).padStart(6, '0')} sRGB luma=${srgbLuma.toFixed(3)}]`);
+          if (authored.dist > 20000) {
+            const fogDistance = colourDistance(mesh.material.color, new THREE.Color(c.theme.fog));
+            assert(fogDistance <= 0.10,
+              `${trackId}/${authored.kind}: layer beyond 20 km is very close to theme fog`,
+              `[dist=${authored.dist}m linear-RGB distance=${fogDistance.toFixed(4)}]`);
+          }
+        }
+        if (trackId === 'lasvegas' && authored.kind === 'mountain') {
+          assert(finalHex === 0x000000 && authored.nightCutout === true,
+            'lasvegas: researched night ridge remains the explicit pure-black exception');
+        }
+        layerTable.push(`${authored.kind}@${(authored.dist / 1000).toFixed(1)}km #${finalHex.toString(16).padStart(6, '0')} base=${mesh.userData.baseY.toFixed(0)}m`);
         mesh.updateWorldMatrix(true, false);
         const world = new THREE.Vector3();
         for (let v = 0; v < position.count; v++) {
@@ -2428,6 +2492,60 @@ function run(trackId) {
             maxAngle = Math.max(maxAngle, angle);
           }
         }
+      }
+      if (c.theme.night && meshes.length) {
+        assert(expectedVisible.every(layer => typeof layer.tint === 'number'),
+          `${trackId}: night theme is explicitly exempt from the daylight tint floor`,
+          `[layers=${meshes.length}, fog=#${new THREE.Color(c.theme.fog).getHexString()}]`);
+      }
+
+      // The old check only bounded backdrop vertices in a sphere; an 18m skirt
+      // could pass it while hanging above the actual horizon. This projects each
+      // sampled skirt edge from 16 chase eyes and independently samples the real
+      // ground mesh along that azimuth. The terrain silhouette must be above the
+      // backdrop base, leaving no angular interval in which sky can leak under it.
+      let minSkirtClearance = Infinity, projectedChecks = 0;
+      if (meshes.length) {
+        const ground = named('ground');
+        const terrainHeight = groundSampler(c, ground, 650);
+        const eye = new THREE.Vector3(), base = new THREE.Vector3();
+        for (let eyeStep = 0; eyeStep < 16; eyeStep++) {
+          const sampleIndex = Math.floor(eyeStep * N / 16) % N;
+          eye.set(samples[sampleIndex].p.x, c.heights[sampleIndex] + 2.6,
+            samples[sampleIndex].p.z);
+          for (const mesh of meshes) {
+            const position = mesh.geometry.attributes.position;
+            const baseIndices = [];
+            for (let v = 0; v < position.count; v++) {
+              if (Math.abs(position.getY(v) - mesh.userData.baseY) < 1e-4) baseIndices.push(v);
+            }
+            assert(baseIndices.length >= 4,
+              `${trackId}/${mesh.userData.kind}: backdrop publishes a continuous deep skirt`,
+              `[base vertices=${baseIndices.length} y=${mesh.userData.baseY.toFixed(1)}m]`);
+            const stride = Math.max(1, Math.ceil(baseIndices.length / 28));
+            for (let k = 0; k < baseIndices.length; k += stride) {
+              base.fromBufferAttribute(position, baseIndices[k]).applyMatrix4(mesh.matrixWorld);
+              const dx = base.x - eye.x, dz = base.z - eye.z;
+              const plan = Math.hypot(dx, dz);
+              if (plan < 1) continue;
+              const probeReach = Math.min(600, plan * 0.72);
+              let terrainAngle = -Infinity;
+              for (let probe = 1; probe <= 16; probe++) {
+                const d = probeReach * probe / 16;
+                const y = terrainHeight(eye.x + dx / plan * d, eye.z + dz / plan * d);
+                if (y === null) continue;
+                terrainAngle = Math.max(terrainAngle, Math.atan2(y - eye.y, d));
+              }
+              if (!Number.isFinite(terrainAngle)) continue;
+              const baseAngle = Math.atan2(base.y - eye.y, plan);
+              minSkirtClearance = Math.min(minSkirtClearance, terrainAngle - baseAngle);
+              projectedChecks++;
+            }
+          }
+        }
+        assert(projectedChecks >= meshes.length * 16 * 4 && minSkirtClearance > 0,
+          `${trackId}: no sky fits below any sampled backdrop edge from a chase eye`,
+          `[${projectedChecks} projections, minimum terrain-over-base clearance=${(minSkirtClearance * 180 / Math.PI).toFixed(2)}deg]`);
       }
       const maxAngleDeg = maxAngle * 180 / Math.PI;
       if (maxAngle > steepestBackdropAngle.angle) {
@@ -2446,7 +2564,7 @@ function run(trackId) {
       assert(noneIds.has(trackId) ? expectedKinds.length === 1 && expectedKinds[0] === 'none'
         && meshes.length === 0 : !expectedKinds.includes('none'),
       `${trackId}: none is realised only for the four intentionally empty horizons`);
-      backdropRows.push(`${trackId}: ${expectedKinds.join(' > ')}; layers=${meshes.length}; vertices=${vertexCount}; max=${maxSky.toFixed(1)}m/${maxAngleDeg.toFixed(2)}deg`);
+      backdropRows.push(`${trackId}: ${layerTable.join(' | ') || 'none'}; layers=${meshes.length}; vertices=${vertexCount}; max=${maxSky.toFixed(1)}m/${maxAngleDeg.toFixed(2)}deg`);
     }
   }
 

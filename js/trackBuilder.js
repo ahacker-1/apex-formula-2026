@@ -120,8 +120,8 @@ export const VENUE = Object.freeze({
       { to: Infinity, surface: 'open-parkland', tint: 0x66865b },
     ], landform: 'flat',
     backdrop: [
-      { kind: 'city-sprawl', dist: 900, height: 20, spread: 2200 },
-      { kind: 'city-cluster', dist: 1900, height: 112, spread: 420 },
+      { kind: 'city-sprawl', dist: 1800, height: 20, spread: 2200, tint: 0x9aa9b6 },
+      { kind: 'city-cluster', dist: 3000, height: 112, spread: 420, tint: 0x8fa3b8 },
     ],
   },
   shanghai: {
@@ -130,7 +130,7 @@ export const VENUE = Object.freeze({
       { to: 92, surface: 'humid-mown-grass', tint: 0x72865a },
       { to: Infinity, surface: 'reed-fringed-marsh', tint: 0x69775a },
     ], landform: 'flat',
-    backdrop: [{ kind: 'industry', dist: 900, height: 34, spread: 2600 }],
+    backdrop: [{ kind: 'industry', dist: 1500, height: 34, spread: 2600, tint: 0x89979f }],
   },
   suzuka: {
     ground: [
@@ -139,8 +139,9 @@ export const VENUE = Object.freeze({
       { to: Infinity, surface: 'damp-forest-floor', tint: 0x4e5944 },
     ], landform: 'cut-bank',
     backdrop: [
-      { kind: 'ridge-forest', dist: 1500, height: 76, spread: 4200 },
-      { kind: 'mountain', dist: 2200, height: 138, spread: 3600 },
+      { kind: 'ridge-forest', dist: 3000, height: 76, spread: 4200, tint: 0x587064 },
+      { kind: 'mountain', dist: 15000, height: 122, spread: 3600, tint: 0x7e93a0 },
+      { kind: 'mountain', dist: 25000, height: 138, spread: 3300, tint: 0x94a6b0 },
     ],
   },
   bahrain: {
@@ -149,7 +150,7 @@ export const VENUE = Object.freeze({
       { to: 96, surface: 'raked-sand-berm', tint: 0xbda06d },
       { to: Infinity, surface: 'desert-pavement', tint: 0x9e8a68 },
     ], landform: 'flat',
-    backdrop: [{ kind: 'ridge-bare', dist: 2100, height: 42, spread: 3400 }],
+    backdrop: [{ kind: 'ridge-bare', dist: 6000, height: 42, spread: 3400, tint: 0xa79579 }],
   },
   jeddah: {
     ground: [
@@ -158,9 +159,9 @@ export const VENUE = Object.freeze({
       { to: Infinity, surface: 'coastal-rubble', tint: 0x9f9a8e },
     ], landform: 'flat',
     backdrop: [
-      { kind: 'city-sprawl', dist: 700, height: 68, spread: 1800 },
-      { kind: 'industry', dist: 1100, height: 46, spread: 1300 },
-      { kind: 'sea', dist: 1800, height: 8, spread: 4200 },
+      { kind: 'city-sprawl', dist: 700, height: 68, spread: 1800, tint: 0x313849 },
+      { kind: 'industry', dist: 1200, height: 46, spread: 1300, tint: 0x2d3034 },
+      { kind: 'sea', dist: 2500, height: 8, spread: 4200, tint: 0x142334 },
     ],
   },
   miami: {
@@ -169,7 +170,7 @@ export const VENUE = Object.freeze({
       { to: 94, surface: 'artificial-turf-bed', tint: 0x638c62 },
       { to: Infinity, surface: 'mulch-island', tint: 0x795e4d },
     ], landform: 'flat',
-    backdrop: [{ kind: 'city-sprawl', dist: 1200, height: 18, spread: 3000 }],
+    backdrop: [{ kind: 'city-sprawl', dist: 1800, height: 18, spread: 3000, tint: 0x93a6b2 }],
   },
   montreal: {
     ground: [
@@ -178,8 +179,8 @@ export const VENUE = Object.freeze({
       { to: Infinity, surface: 'riprap-bank', tint: 0x777a72 },
     ], landform: 'flat',
     backdrop: [
-      { kind: 'ridge-forest', dist: 1050, height: 52, spread: 1200 },
-      { kind: 'city-cluster', dist: 1850, height: 96, spread: 760 },
+      { kind: 'ridge-forest', dist: 1200, height: 52, spread: 1200, tint: 0x6f8875 },
+      { kind: 'city-cluster', dist: 3000, height: 96, spread: 760, tint: 0x8fa3b8 },
     ],
   },
   monaco: {
@@ -189,9 +190,9 @@ export const VENUE = Object.freeze({
       { to: Infinity, surface: 'stone-retaining-wall', tint: 0x9c8e7d },
     ], landform: 'terrace',
     backdrop: [
-      { kind: 'city-sprawl', dist: 620, height: 72, spread: 2500 },
-      { kind: 'ridge-bare', dist: 1450, height: 118, spread: 1900 },
-      { kind: 'sea', dist: 1900, height: 8, spread: 2200 },
+      { kind: 'city-sprawl', dist: 500, height: 72, spread: 2500, tint: 0x8799a9 },
+      { kind: 'ridge-bare', dist: 1500, height: 118, spread: 1900, tint: 0x8b95a1 },
+      { kind: 'sea', dist: 2500, height: 8, spread: 2200, tint: 0x85a8bd },
     ],
   },
   barcelona: {
@@ -201,9 +202,9 @@ export const VENUE = Object.freeze({
       { to: Infinity, surface: 'catalan-dusty-earth', tint: 0x98745a },
     ], landform: 'hillside',
     backdrop: [
-      { kind: 'industry', dist: 700, height: 30, spread: 1300 },
-      { kind: 'ridge-forest', dist: 1700, height: 64, spread: 3600 },
-      { kind: 'mountain', dist: 2250, height: 112, spread: 2600 },
+      { kind: 'industry', dist: 500, height: 30, spread: 1300, tint: 0x8b9294 },
+      { kind: 'ridge-forest', dist: 10000, height: 64, spread: 3600, tint: 0x6e7e79 },
+      { kind: 'mountain', dist: 25000, height: 112, spread: 2600, tint: 0x7c8ca0 },
     ],
   },
   spielberg: {
@@ -213,8 +214,9 @@ export const VENUE = Object.freeze({
       { to: Infinity, surface: 'black-spruce-floor', tint: 0x414f3e },
     ], landform: 'hillside',
     backdrop: [
-      { kind: 'ridge-forest', dist: 1350, height: 94, spread: 5000 },
-      { kind: 'mountain', dist: 2150, height: 152, spread: 5200 },
+      { kind: 'ridge-forest', dist: 3000, height: 94, spread: 5000, tint: 0x3f5a4b },
+      { kind: 'mountain', dist: 12000, height: 132, spread: 5200, tint: 0x6e8496 },
+      { kind: 'mountain', dist: 30000, height: 152, spread: 4800, tint: 0x9daec1 },
     ],
   },
   silverstone: {
@@ -231,7 +233,11 @@ export const VENUE = Object.freeze({
       { to: 98, surface: 'wet-upland-grass', tint: 0x607957 },
       { to: Infinity, surface: 'ardennes-forest-floor', tint: 0x404a3d },
     ], landform: 'cut-bank',
-    backdrop: [{ kind: 'ridge-forest', dist: 1500, height: 112, spread: 5200 }],
+    backdrop: [
+      { kind: 'ridge-forest', dist: 2000, height: 88, spread: 5200, tint: 0x3f5a4b },
+      { kind: 'ridge-forest', dist: 4000, height: 102, spread: 5000, tint: 0x6e8496 },
+      { kind: 'ridge-forest', dist: 6000, height: 112, spread: 4700, tint: 0x9daec1 },
+    ],
   },
   hungaroring: {
     ground: [
@@ -239,7 +245,7 @@ export const VENUE = Object.freeze({
       { to: 104, surface: 'burnt-straw-grass', tint: 0xa29359 },
       { to: Infinity, surface: 'bare-sandy-soil', tint: 0x9a7659 },
     ], landform: 'bowl',
-    backdrop: [{ kind: 'ridge-bare', dist: 1750, height: 72, spread: 4600 }],
+    backdrop: [{ kind: 'ridge-bare', dist: 4000, height: 72, spread: 4600, tint: 0x9a8b70 }],
   },
   zandvoort: {
     ground: [
@@ -248,9 +254,9 @@ export const VENUE = Object.freeze({
       { to: Infinity, surface: 'bare-drifting-sand', tint: 0xc0af82 },
     ], landform: 'dune',
     backdrop: [
-      { kind: 'city-sprawl', dist: 850, height: 28, spread: 700 },
-      { kind: 'dune-ridge', dist: 1250, height: 44, spread: 3600 },
-      { kind: 'sea', dist: 2050, height: 7, spread: 4200 },
+      { kind: 'city-sprawl', dist: 1000, height: 28, spread: 700, tint: 0x96a3aa },
+      { kind: 'dune-ridge', dist: 1200, height: 44, spread: 3600, tint: 0xada88e },
+      { kind: 'sea', dist: 3000, height: 7, spread: 4200, tint: 0x8fa9b8 },
     ],
   },
   monza: {
@@ -268,9 +274,9 @@ export const VENUE = Object.freeze({
       { to: Infinity, surface: 'grid-planted-mulch', tint: 0x6f5949 },
     ], landform: 'terrace',
     backdrop: [
-      { kind: 'industry', dist: 620, height: 38, spread: 1800 },
-      { kind: 'city-cluster', dist: 2050, height: 92, spread: 620 },
-      { kind: 'mountain', dist: 2350, height: 82, spread: 2200 },
+      { kind: 'industry', dist: 500, height: 38, spread: 1800, tint: 0x87949d },
+      { kind: 'city-cluster', dist: 17000, height: 92, spread: 620, tint: 0x8d9fb1 },
+      { kind: 'mountain', dist: 50000, height: 82, spread: 2200, tint: 0xa1adba },
     ],
   },
   baku: {
@@ -280,10 +286,10 @@ export const VENUE = Object.freeze({
       { to: Infinity, surface: 'seaward-irrigated-lawn', tint: 0x698361 },
     ], landform: 'terrace',
     backdrop: [
-      { kind: 'city-sprawl', dist: 560, height: 64, spread: 2200 },
-      { kind: 'city-cluster', dist: 1250, height: 118, spread: 520 },
-      { kind: 'ridge-bare', dist: 1900, height: 70, spread: 3000 },
-      { kind: 'sea', dist: 2200, height: 7, spread: 2500 },
+      { kind: 'city-sprawl', dist: 400, height: 64, spread: 2200, tint: 0x85949f },
+      { kind: 'city-cluster', dist: 1200, height: 118, spread: 520, tint: 0x74899d },
+      { kind: 'ridge-bare', dist: 9000, height: 70, spread: 3000, tint: 0xa28f76 },
+      { kind: 'sea', dist: 3000, height: 7, spread: 2500, tint: 0x7f9fb0 },
     ],
   },
   singapore: {
@@ -293,8 +299,8 @@ export const VENUE = Object.freeze({
       { to: Infinity, surface: 'padang-turf', tint: 0x4f7955 },
     ], landform: 'flat',
     backdrop: [
-      { kind: 'city-sprawl', dist: 720, height: 54, spread: 1500 },
-      { kind: 'city-cluster', dist: 1100, height: 104, spread: 2300 },
+      { kind: 'city-sprawl', dist: 700, height: 54, spread: 1500, tint: 0x2b3342 },
+      { kind: 'city-cluster', dist: 1100, height: 104, spread: 2300, tint: 0x354154 },
     ],
   },
   austin: {
@@ -312,8 +318,8 @@ export const VENUE = Object.freeze({
       { to: Infinity, surface: 'bare-lakebed-clay', tint: 0x8d705f },
     ], landform: 'flat',
     backdrop: [
-      { kind: 'city-sprawl', dist: 850, height: 52, spread: 5600 },
-      { kind: 'mountain', dist: 2350, height: 102, spread: 1800 },
+      { kind: 'city-sprawl', dist: 2000, height: 52, spread: 5600, tint: 0x9c928a },
+      { kind: 'mountain', dist: 70000, height: 102, spread: 1800, tint: 0xaab2bd },
     ],
   },
   interlagos: {
@@ -323,8 +329,8 @@ export const VENUE = Object.freeze({
       { to: Infinity, surface: 'dense-secondary-forest', tint: 0x3f5742 },
     ], landform: 'bowl',
     backdrop: [
-      { kind: 'city-sprawl', dist: 700, height: 58, spread: 3000 },
-      { kind: 'city-cluster', dist: 1750, height: 82, spread: 1800 },
+      { kind: 'city-sprawl', dist: 1000, height: 58, spread: 3000, tint: 0x758077 },
+      { kind: 'city-cluster', dist: 10000, height: 82, spread: 1800, tint: 0x8898a5 },
     ],
   },
   lasvegas: {
@@ -334,9 +340,10 @@ export const VENUE = Object.freeze({
       { to: Infinity, surface: 'gravel-mulch-bed', tint: 0x75685f },
     ], landform: 'flat',
     backdrop: [
-      { kind: 'city-sprawl', dist: 620, height: 34, spread: 3400 },
-      { kind: 'city-cluster', dist: 980, height: 142, spread: 2700 },
-      { kind: 'mountain', dist: 2200, height: 92, spread: 3000 },
+      { kind: 'city-sprawl', dist: 600, height: 34, spread: 3400, tint: 0x252b39 },
+      { kind: 'city-cluster', dist: 1000, height: 142, spread: 2700, tint: 0x313846 },
+      { kind: 'mountain', dist: 18000, height: 92, spread: 3000, tint: 0x000000,
+        nightCutout: true },
     ],
   },
   lusail: {
@@ -345,7 +352,7 @@ export const VENUE = Object.freeze({
       { to: 86, surface: 'pale-gravel-hardpan', tint: 0xb4aa92 },
       { to: Infinity, surface: 'flat-stony-desert', tint: 0x938976 },
     ], landform: 'flat',
-    backdrop: [{ kind: 'city-cluster', dist: 2200, height: 48, spread: 420 }],
+    backdrop: [{ kind: 'city-cluster', dist: 12000, height: 48, spread: 420, tint: 0x232d3e }],
   },
   yasmarina: {
     ground: [
@@ -5263,7 +5270,7 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
       backdropGroup.userData.kinds = [...realisedKinds];
       backdropGroup.userData.themeIndependent = true;
       backdropGroup.userData.venue = trackId;
-      const backdropColour = (kind, layerIndex) => {
+      const backdropColour = (layer) => {
         const day = {
           'ridge-forest': 0x617269, 'ridge-bare': 0x8c8375, mountain: 0x78818c,
           'dune-ridge': 0xaa9b78, 'city-cluster': 0x77828b, 'city-sprawl': 0x828783,
@@ -5275,8 +5282,21 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
           industry: 0x191e23, sea: 0x111b2b,
         };
         const palette = theme.night ? night : day;
-        return new THREE.Color(palette[kind] || theme.fog)
-          .lerp(new THREE.Color(theme.fog), theme.night ? 0.08 : 0.18 + layerIndex * 0.04);
+        // `dist` is the researched real-world distance, not the compressed
+        // rendering radius below. The matte therefore receives the aerial
+        // perspective that scene fog cannot supply: at 20 km it is already
+        // close to the theme fog, and at 25 km it retains only 5% of its local
+        // tint. Near layers keep the place-specific colours in VENUE. Night
+        // layers recede much less; Las Vegas's serrated ridge is deliberately
+        // the one pure-black cutout called for by the venue brief.
+        const distanceT = THREE.MathUtils.clamp((layer.dist - 1500) / 23500, 0, 1);
+        const distanceFade = distanceT * distanceT * (3 - 2 * distanceT);
+        const fade = layer.nightCutout ? 0
+          : theme.night ? 0.05 + distanceFade * 0.15
+            : 0.08 + distanceFade * 0.87;
+        const color = new THREE.Color(layer.tint ?? palette[layer.kind] ?? theme.fog)
+          .lerp(new THREE.Color(theme.fog), fade);
+        return { color, fade };
       };
       const appendBox = (pos, idx, cx, cz, tangent, radial, width, depth, bottom, top) => {
         const base = pos.length / 3;
@@ -5294,6 +5314,10 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
         );
       };
       let backdropTriangles = 0;
+      // A backdrop is a matte curtain, not a freestanding wall. Sink every
+      // curtain well below the lowest visible terrain so the real ground and
+      // horizon-haze cylinder always occlude its join from any lap eye.
+      const BACKDROP_SKIRT_Y = -160;
       venue.backdrop.forEach((layer, layerIndex) => {
         if (layer.kind === 'none') return;
         const maxRadius = SKY_R - 220 - centre.length();
@@ -5305,6 +5329,7 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
         const isBuilt = layer.kind === 'city-cluster' || layer.kind === 'city-sprawl'
           || layer.kind === 'industry';
         const pos = [], idx = [];
+        let backdropUv = null;
         if (isBuilt) {
           const count = Math.max(12, Math.min(56, Math.round(layer.spread / (layer.kind === 'city-cluster' ? 34 : 52))));
           for (let q = 0; q < count; q++) {
@@ -5315,7 +5340,7 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
             const jitter = (positionHash(q, layerIndex, kindSeed + 19) - 0.5) * 10;
             const cx = centre.x + radial.x * (radius + jitter);
             const cz = centre.z + radial.z * (radius + jitter);
-            const groundY = terrainAt(cx, cz) - 3;
+            const groundY = terrainAt(cx, cz);
             let heightFactor = 0.34 + positionHash(cx, cz, kindSeed + 31) * 0.50;
             if (layer.kind === 'city-cluster' && (q === Math.floor(count * 0.38)
               || q === Math.floor(count * 0.64))) heightFactor = 1;
@@ -5324,9 +5349,11 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
             const pitch = radius * spanAngle / Math.max(1, count - 1);
             const width = Math.max(8, pitch * (0.55 + positionHash(q, kindSeed, 47) * 0.24));
             const depth = layer.kind === 'industry' ? 28 : 12 + positionHash(q, layerIndex, 53) * 14;
-            appendBox(pos, idx, cx, cz, tangent, radial, width, depth, groundY, groundY + height);
+            appendBox(pos, idx, cx, cz, tangent, radial, width, depth,
+              BACKDROP_SKIRT_Y, groundY + height);
           }
         } else {
+          backdropUv = [];
           const segments = Math.max(28, Math.min(96, Math.round(layer.spread / 48)));
           for (let q = 0; q <= segments; q++) {
             const u = q / segments;
@@ -5339,19 +5366,40 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
             if (layer.kind === 'mountain') profile += 0.18 * Math.abs(Math.sin(q * 0.31 + 0.8));
             if (layer.kind === 'sea') profile = 1;
             const top = groundY + Math.max(2, layer.height * profile);
-            pos.push(x, groundY - (layer.kind === 'sea' ? 10 : 18), z, x, top, z);
+            const fadeDepth = Math.min(8, Math.max(1.5, layer.height * 0.08));
+            const bodyTop = Math.max(BACKDROP_SKIRT_Y + 2, top - fadeDepth);
+            // fadeCanvas is opaque at v=0 and clear at v=1. Two stacked ribbon
+            // cells keep the whole skirt/body solid, then dissolve only the last
+            // few metres of crest into the sky instead of cutting a 1px edge.
+            pos.push(x, BACKDROP_SKIRT_Y, z, x, bodyTop, z, x, top, z);
+            backdropUv.push(0.5, 0, 0.5, 0, 0.5, 1);
             if (q < segments) {
-              const base = q * 2;
-              idx.push(base, base + 3, base + 1, base, base + 2, base + 3);
+              const base = q * 3;
+              idx.push(
+                base, base + 3, base + 1, base + 1, base + 3, base + 4,
+                base + 1, base + 4, base + 2, base + 2, base + 4, base + 5,
+              );
             }
           }
         }
         const geometry = new THREE.BufferGeometry();
         geometry.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+        if (backdropUv) {
+          geometry.setAttribute('uv', new THREE.Float32BufferAttribute(backdropUv, 2));
+        }
         geometry.setIndex(idx);
+        const atmospheric = backdropColour(layer);
+        const softCrest = !isBuilt;
         const material = new THREE.MeshBasicMaterial({
-          color: backdropColour(layer.kind, layerIndex), side: THREE.DoubleSide,
-          fog: false, depthWrite: true, transparent: false,
+          color: atmospheric.color, side: THREE.DoubleSide,
+          // These are output-referred matte colours. Passing them through ACES
+          // again turns the dark end of an atmospheric palette back into the
+          // near-black strip the pre-tint was designed to avoid.
+          fog: false, toneMapped: false, depthWrite: true, transparent: softCrest,
+          alphaMap: softCrest
+            ? ctex(fadeCanvas(), { wrapS: THREE.ClampToEdgeWrapping, wrapT: THREE.ClampToEdgeWrapping })
+            : null,
+          alphaTest: softCrest ? 0.02 : 0,
         });
         const mesh = new THREE.Mesh(geometry, material);
         mesh.name = `backdrop-${layer.kind}-${layerIndex}`;
@@ -5360,6 +5408,18 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
         mesh.userData.layerIndex = layerIndex;
         mesh.userData.authored = { ...layer };
         mesh.userData.fogIndependent = true;
+        mesh.userData.baseY = BACKDROP_SKIRT_Y;
+        mesh.userData.atmosphereFade = atmospheric.fade;
+        mesh.userData.atmosphereTint = atmospheric.color.getHex();
+        mesh.userData.softCrest = softCrest;
+        if (softCrest) {
+          mesh.renderOrder = -4 - layerIndex * 0.01;
+          // GTAO's override material cannot see this mesh's alphaMap. Without
+          // the same colour-pass-only guard used by foliage cards, the deep
+          // skirt enters the normal buffer as a solid rectangle and AO paints a
+          // near-black horizontal strip through every foreground tree.
+          keepOutOfAO(mesh);
+        }
         backdropTriangles += idx.length / 3;
         backdropGroup.add(mesh);
       });
