@@ -143,6 +143,7 @@ class Game {
     this.champ = new Championship();
     this.ui = new UI((action, payload) => this.onUI(action, payload));
     this.quality = new QualityController(this.renderer, (tier, automatic) => {
+      this.effects?.setQualityTier?.(tier);
       if (this.session) this.hud.message(`GRAPHICS: ${tier.toUpperCase()}${automatic ? ' · AUTO' : ''}`);
     });
     this.quality.setMode(this.ui.settings.graphicsQuality);
@@ -822,6 +823,9 @@ class Game {
     }
 
     this.effects = new Effects(this.scene, effectsRandom);
+    // The controller selects its initial tier before a session owns an Effects
+    // instance, so apply it once here as well as in the live tier callback.
+    this.effects.setQualityTier(this.quality.tier);
 
     // Lighting: photographic HDRI sky + true IBL when loaded; PMREM-from-dome
     // fallback renders immediately while only this session's theme downloads.
