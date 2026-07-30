@@ -80,7 +80,7 @@ const SPECIES_H = {
 // Every circuit gets a distinct combination even when it shares a climate.
 const VENUE_DEPTH = {
   melbourne:   { cue: 'park-workshop',    mass: 'park',     accent: 0x4f8c78 },
-  shanghai:    { cue: 'garden-service',   mass: 'park',     accent: 0xb75b3e },
+  shanghai:    { cue: 'river-garden-post', mass: 'park',     accent: 0xb75b3e },
   suzuka:      { cue: 'hillside-post',    mass: 'alpine',   accent: 0xd06a43 },
   bahrain:     { cue: 'desert-canopy',    mass: 'arid',     accent: 0xc18a48, skyline: 'low' },
   jeddah:      { cue: 'coastal-service',  mass: 'tropical', accent: 0x4a9ca6, skyline: 'needle' },
@@ -96,8 +96,13 @@ const VENUE_DEPTH = {
   monza:       { cue: 'park-pavilion',    mass: 'woodland', accent: 0xa57642 },
   madrid:      { cue: 'expo-courtyard',   mass: 'park',     accent: 0xc2734c, skyline: 'slab' },
   baku:        { cue: 'stone-workshop',   mass: 'arid',     accent: 0xb28d5c, skyline: 'slender' },
-  singapore:   { cue: 'garden-service',   mass: 'tropical', accent: 0x4ba89a, skyline: 'vertical' },
+  singapore:   { cue: 'night-garden-post', mass: 'tropical', accent: 0x4ba89a, skyline: 'vertical' },
   austin:      { cue: 'scrub-lookout',    mass: 'arid',     accent: 0x8c658f },
+  mexico:      { cue: 'highland-courtyard', mass: 'park',     accent: 0x8d7651 },
+  interlagos:  { cue: 'hillside-workshop',  mass: 'tropical', accent: 0x568064 },
+  lasvegas:    { cue: 'desert-night-depot', mass: 'arid',     accent: 0x8b70b1, skyline: 'vertical' },
+  lusail:      { cue: 'dune-light-post',     mass: 'arid',     accent: 0x5c83a8, skyline: 'low' },
+  yasmarina:   { cue: 'marina-service',      mass: 'tropical', accent: 0x4d9ca3, skyline: 'terrace' },
 };
 const VENUE_DEPTH_DEFAULT = { cue: 'circuit-service', mass: 'woodland', accent: 0x687b71, skyline: 'mixed' };
 
@@ -2814,20 +2819,94 @@ export function buildCircuit(trackId, def, scene) {
     const depthProfile = VENUE_DEPTH[trackId] || VENUE_DEPTH_DEFAULT;
     const depthStats = {
       profile: depthProfile.cue,
-      near: { trunks: 0, shrubs: 0, serviceBays: 0, serviceParts: 0, tyreStacks: 0 },
+      near: { trunks: 0, shrubs: 0, serviceBays: 0, serviceParts: 0, tyreStacks: 0, cityBlocks: 0 },
       mid: { trees: 0, clusters: 0 },
       far: { trees: 0, masses: 0, skyline: 0, skylineCaps: 0 },
       caps: { ...DEPTH_CAP },
     };
     group.userData.sceneryDepth = depthStats;
-    // reject a scenery position that would sit on any part of the circuit
-    const clearOfTrack = (px, pz, margin) => {
-      for (let j = 0; j < N; j += 6) {
-        const dx = px - samples[j].p.x, dz = pz - samples[j].p.z;
-        if (dx * dx + dz * dz < margin * margin) return false;
-      }
-      return true;
+    // Every new scenery footprint stays at least this far beyond the outer kerb.
+    // It is deliberately independent of wallOff: a street barrier can be close
+    // to the road, but a building still may not cover the drivable envelope.
+    const SCENERY_MARGIN = 1.0;
+    const TRACK_ENVELOPE = halfWidth + KERB_W;
+
+    // Exact 2D segment maths. Sampling every sixth centreline point was safe only
+    // for object CENTRES; after a large box was scaled and rotated its nearest
+    // corner could reach several metres farther in and cover the racing surface.
+    const pointSegD2 = (px, pz, ax, az, bx, bz) => {
+      const vx = bx - ax, vz = bz - az;
+      const l2 = vx * vx + vz * vz;
+      const t = l2 > 1e-12 ? Math.max(0, Math.min(1, ((px - ax) * vx + (pz - az) * vz) / l2)) : 0;
+      const dx = px - (ax + vx * t), dz = pz - (az + vz * t);
+      return dx * dx + dz * dz;
     };
+    const orient2 = (ax, az, bx, bz, cx, cz) => (bx - ax) * (cz - az) - (bz - az) * (cx - ax);
+    const onSeg = (ax, az, bx, bz, px, pz) => px >= Math.min(ax, bx) - 1e-9
+      && px <= Math.max(ax, bx) + 1e-9 && pz >= Math.min(az, bz) - 1e-9
+      && pz <= Math.max(az, bz) + 1e-9;
+    const segIntersects = (ax, az, bx, bz, cx, cz, dx, dz) => {
+      const o1 = orient2(ax, az, bx, bz, cx, cz), o2 = orient2(ax, az, bx, bz, dx, dz);
+      const o3 = orient2(cx, cz, dx, dz, ax, az), o4 = orient2(cx, cz, dx, dz, bx, bz);
+      if (((o1 > 1e-9 && o2 < -1e-9) || (o1 < -1e-9 && o2 > 1e-9))
+        && ((o3 > 1e-9 && o4 < -1e-9) || (o3 < -1e-9 && o4 > 1e-9))) return true;
+      return (Math.abs(o1) <= 1e-9 && onSeg(ax, az, bx, bz, cx, cz))
+        || (Math.abs(o2) <= 1e-9 && onSeg(ax, az, bx, bz, dx, dz))
+        || (Math.abs(o3) <= 1e-9 && onSeg(cx, cz, dx, dz, ax, az))
+        || (Math.abs(o4) <= 1e-9 && onSeg(cx, cz, dx, dz, bx, bz));
+    };
+    const segSegD2 = (ax, az, bx, bz, cx, cz, dx, dz) => {
+      if (segIntersects(ax, az, bx, bz, cx, cz, dx, dz)) return 0;
+      return Math.min(pointSegD2(ax, az, cx, cz, dx, dz), pointSegD2(bx, bz, cx, cz, dx, dz),
+        pointSegD2(cx, cz, ax, az, bx, bz), pointSegD2(dx, dz, ax, az, bx, bz));
+    };
+    const trackPointDistance = (px, pz) => {
+      let best = Infinity;
+      for (let j = 0; j < N; j++) {
+        const a = samples[j].p, b = samples[(j + 1) % N].p;
+        best = Math.min(best, pointSegD2(px, pz, a.x, a.z, b.x, b.z));
+      }
+      return Math.sqrt(best);
+    };
+    const circleTrackClearance = (px, pz, radius) => trackPointDistance(px, pz) - radius - TRACK_ENVELOPE;
+    const obbTrackClearance = (px, pz, fx, fz, halfLen, halfDep) => {
+      const corners = [
+        [px - fx.x * halfLen - fz.x * halfDep, pz - fx.z * halfLen - fz.z * halfDep],
+        [px + fx.x * halfLen - fz.x * halfDep, pz + fx.z * halfLen - fz.z * halfDep],
+        [px + fx.x * halfLen + fz.x * halfDep, pz + fx.z * halfLen + fz.z * halfDep],
+        [px - fx.x * halfLen + fz.x * halfDep, pz - fx.z * halfLen + fz.z * halfDep],
+      ];
+      let best = Infinity;
+      for (let j = 0; j < N; j++) {
+        const a = samples[j].p, b = samples[(j + 1) % N].p;
+        const adx = a.x - px, adz = a.z - pz, bdx = b.x - px, bdz = b.z - pz;
+        const aInside = Math.abs(adx * fx.x + adz * fx.z) <= halfLen
+          && Math.abs(adx * fz.x + adz * fz.z) <= halfDep;
+        const bInside = Math.abs(bdx * fx.x + bdz * fx.z) <= halfLen
+          && Math.abs(bdx * fz.x + bdz * fz.z) <= halfDep;
+        if (aInside || bInside) return -TRACK_ENVELOPE;
+        for (let e = 0; e < 4; e++) {
+          const c = corners[e], d = corners[(e + 1) % 4];
+          best = Math.min(best, segSegD2(a.x, a.z, b.x, b.z, c[0], c[1], d[0], d[1]));
+          if (best <= 0) return -TRACK_ENVELOPE;
+        }
+      }
+      return Math.sqrt(best) - TRACK_ENVELOPE;
+    };
+    const clearOfTrack = (px, pz, margin) => trackPointDistance(px, pz) >= margin;
+    const acceptCircle = (px, pz, radius) => {
+      const ok = circleTrackClearance(px, pz, radius) >= SCENERY_MARGIN;
+      if (ok) depthStats.checkedFootprints++;
+      return ok;
+    };
+    const acceptObb = (px, pz, fx, fz, halfLen, halfDep) => {
+      const ok = obbTrackClearance(px, pz, fx, fz, halfLen, halfDep) >= SCENERY_MARGIN;
+      if (ok) depthStats.checkedFootprints++;
+      return ok;
+    };
+    depthStats.trackEnvelope = TRACK_ENVELOPE;
+    depthStats.minimumMargin = SCENERY_MARGIN;
+    depthStats.checkedFootprints = 0;
     // scatter helper: picks samples, sides and distances, returns placements
     const scatter = (want, minD, maxD, margin, guardMul = 22) => {
       const out = [];
@@ -2853,25 +2932,34 @@ export function buildCircuit(trackId, def, scene) {
     // object per shed. The anchors use a jittered sequence, not an even lap pitch.
     const serviceAnchors = [];
     {
-      const wanted = Math.min(DEPTH_CAP.serviceBays, Math.max(4, Math.round(length / 1050)));
+      const SERVICE_MIN = 4;
+      const wanted = Math.min(DEPTH_CAP.serviceBays, Math.max(SERVICE_MIN, Math.round(length / 1050)));
       const stride = N / wanted;
       const phase = rnd() * N;
       for (let k = 0; k < wanted; k++) {
-        const i = idxAt(Math.round(phase + k * stride + (rnd() - 0.5) * stride * 0.52));
-        const s = samples[i];
-        const side = rnd() < 0.5 ? 1 : -1;
-        const d = wallOff + 10 + rnd() * 13;
-        const px = s.p.x + s.n.x * side * d;
-        const pz = s.p.z + s.n.z * side * d;
-        if (!clearOfTrack(px, pz, halfWidth + 2.5) || inKeepOut(px, pz)) continue;
-        const fz = s.p.clone().sub(new THREE.Vector3(px, 0, pz)).setY(0).normalize();
-        const fx = new THREE.Vector3().crossVectors(UP, fz).normalize();
-        if (!trackClear(px, pz, fx, fz, 3.8, 2.6)) continue;
-        const p = new THREE.Vector3(px, terrainAt(px, pz), pz);
-        serviceAnchors.push({ p, s, side, fz, yaw: Math.atan2(fz.x, fz.z) });
-        // Keep the near shrubs and tree cards from swallowing the small shelter.
-        addKeepOut(p, fz, 5.5, 4.2);
+        // Retry each arc sector rather than silently dropping a bay when the
+        // first random side happens to hit a grandstand or a folded-back road.
+        // The loop is bounded, deterministic and normally succeeds in 1-2 tries.
+        for (let attempt = 0; attempt < 24; attempt++) {
+          const i = idxAt(Math.round(phase + k * stride + (rnd() - 0.5) * stride * 0.72));
+          const s = samples[i];
+          const side = rnd() < 0.5 ? 1 : -1;
+          const d = wallOff + 10 + rnd() * 16;
+          const px = s.p.x + s.n.x * side * d;
+          const pz = s.p.z + s.n.z * side * d;
+          if (inKeepOut(px, pz)) continue;
+          const fz = s.p.clone().sub(new THREE.Vector3(px, 0, pz)).setY(0).normalize();
+          const fx = new THREE.Vector3().crossVectors(UP, fz).normalize();
+          // 3.1 x 2.45 encloses the roof and the two tyre trolleys.
+          if (!acceptObb(px, pz, fx, fz, 3.1, 2.45)) continue;
+          const p = new THREE.Vector3(px, terrainAt(px, pz), pz);
+          serviceAnchors.push({ p, s, side, fz, yaw: Math.atan2(fz.x, fz.z) });
+          // Keep the near shrubs and tree cards from swallowing the small shelter.
+          addKeepOut(p, fz, 5.5, 4.2);
+          break;
+        }
       }
+      depthStats.minimums = { serviceBays: SERVICE_MIN };
 
       if (serviceAnchors.length) {
         const partGeo = new THREE.BoxGeometry(1, 1, 1);
@@ -3225,19 +3313,24 @@ export function buildCircuit(trackId, def, scene) {
       // distant fill, while these low-poly cylinders create actual parallax and
       // contact at racing-camera distance for one bounded draw call.
       const trunkCandidates = placements.filter(t => t.layer === 'near' && t.sp !== 'scrub');
-      const trunkCount = Math.min(DEPTH_CAP.trunks, trunkCandidates.length);
-      if (trunkCount) {
+      const trunkTarget = Math.min(DEPTH_CAP.trunks, trunkCandidates.length);
+      const trunkItems = [];
+      for (let k = 0; k < trunkTarget; k++) {
+        const t = trunkCandidates[Math.min(trunkCandidates.length - 1,
+          Math.floor((k + 0.35) * trunkCandidates.length / trunkTarget))];
+        const f = t.sp === 'palm' ? 0.68 : t.sp === 'pine' ? 0.72 : t.sp === 'poplar' ? 0.58 : 0.54;
+        const th = Math.max(1.1, t.h * f);
+        const r = Math.max(0.10, Math.min(0.42, t.h * (t.sp === 'palm' ? 0.022 : 0.028)));
+        if (acceptCircle(t.px, t.pz, r)) trunkItems.push({ t, th, r });
+      }
+      if (trunkItems.length) {
         const trunks = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.72, 1, 1, 7, 1, false),
-          std({ color: 0xffffff, roughness: 0.96 }), trunkCount);
+          std({ color: 0xffffff, roughness: 0.96 }), trunkItems.length);
         trunks.name = 'vegetation-near-trunks';
         const mm = new THREE.Matrix4();
         const col = new THREE.Color();
-        for (let k = 0; k < trunkCount; k++) {
-          const t = trunkCandidates[Math.min(trunkCandidates.length - 1,
-            Math.floor((k + 0.35) * trunkCandidates.length / trunkCount))];
-          const f = t.sp === 'palm' ? 0.68 : t.sp === 'pine' ? 0.72 : t.sp === 'poplar' ? 0.58 : 0.54;
-          const th = Math.max(1.1, t.h * f);
-          const r = Math.max(0.10, Math.min(0.42, t.h * (t.sp === 'palm' ? 0.022 : 0.028)));
+        for (let k = 0; k < trunkItems.length; k++) {
+          const { t, th, r } = trunkItems[k];
           mm.makeScale(r, th, r).setPosition(t.px, terrainAt(t.px, t.pz) + th / 2 - 0.05, t.pz);
           trunks.setMatrixAt(k, mm);
           col.setHex(t.sp === 'palm' ? 0x8a7656 : t.sp === 'pine' ? 0x51402f : 0x70583b);
@@ -3246,7 +3339,7 @@ export function buildCircuit(trackId, def, scene) {
         }
         if (trunks.instanceColor) trunks.instanceColor.needsUpdate = true;
         group.add(trunks);
-        depthStats.near.trunks = trunkCount;
+        depthStats.near.trunks = trunkItems.length;
       }
 
       // --- near clustered 3D shrubs -----------------------------------------
@@ -3263,9 +3356,12 @@ export function buildCircuit(trackId, def, scene) {
           const d = centreD + (rnd() - 0.5) * 5;
           const px = s.p.x + s.n.x * side * d + s.t.x * along;
           const pz = s.p.z + s.n.z * side * d + s.t.z * along;
-          if (!clearOfTrack(px, pz, halfWidth + 2.2) || inKeepOut(px, pz)) continue;
-          shrubItems.push({ px, pz, sx: 0.75 + rnd() * 1.55, sy: 0.55 + rnd() * 0.8,
-            sz: 0.7 + rnd() * 1.4, rot: rnd() * Math.PI });
+          if (inKeepOut(px, pz)) continue;
+          const item = { px, pz, sx: 0.75 + rnd() * 1.55, sy: 0.55 + rnd() * 0.8,
+            sz: 0.7 + rnd() * 1.4, rot: rnd() * Math.PI };
+          // The projected icosahedron is contained by this circle at every yaw.
+          if (!acceptCircle(px, pz, Math.max(item.sx, item.sz))) continue;
+          shrubItems.push(item);
         }
       }
       if (shrubItems.length) {
@@ -3301,7 +3397,15 @@ export function buildCircuit(trackId, def, scene) {
       // The selected centreline normal can point across another loop of track;
       // retain only positions whose ACTUAL nearest section is still far away.
       const massPlaces = scatter(massWant, 270, 475, wallOff + 70, 24)
-        .filter(p => distTo(p.px, p.pz).d > 220);
+        .filter(p => distTo(p.px, p.pz).d > 220)
+        .map(p => ({ ...p,
+          h: architecturalFar ? 5 + rnd() * 6 : 12 + rnd() * 14,
+          w: architecturalFar ? 64 + rnd() * 58 : 78 + rnd() * 72,
+          rot: (rnd() - 0.5) * Math.PI,
+        }))
+        // The crossed cards extend w/2 along two axes; their bounding circle is
+        // exact for every rotation and keeps even the atmospheric geometry away.
+        .filter(p => acceptCircle(p.px, p.pz, p.w / 2));
       for (let v = 0; v < 3; v++) {
         const items = massPlaces.filter((_, k) => k % 3 === v);
         if (!items.length) continue;
@@ -3317,10 +3421,8 @@ export function buildCircuit(trackId, def, scene) {
         const pp = new THREE.Vector3(), col = new THREE.Color();
         const fogCol = new THREE.Color(theme.fog);
         items.forEach((it, k) => {
-          const h = architecturalFar ? 5 + rnd() * 6 : 12 + rnd() * 14;
-          const w = architecturalFar ? 64 + rnd() * 58 : 78 + rnd() * 72;
-          qq.setFromAxisAngle(UP, (rnd() - 0.5) * Math.PI);
-          sc2.set(w, h, w);
+          qq.setFromAxisAngle(UP, it.rot);
+          sc2.set(it.w, it.h, it.w);
           pp.set(it.px, terrainAt(it.px, it.pz) - 0.3, it.pz);
           mm.compose(pp, qq, sc2);
           masses.setMatrixAt(k, mm);
@@ -3389,21 +3491,29 @@ export function buildCircuit(trackId, def, scene) {
         { repeat: [0.9, 1.7], aniso: 16 });
       const bmat = flatLit(facadeTex, K_FACADE, { roughness: 0.62 });
       const nearWant = Math.min(DEPTH_CAP.cityNear, isCity ? 88 : 44);
-      const near = clusterScatter(nearWant, wallOff + 28, wallOff + 126, wallOff + 16, 3, 5);
+      const nearCandidates = clusterScatter(nearWant, wallOff + 28, wallOff + 126, wallOff + 16, 3, 5);
+      const near = [];
+      nearCandidates.forEach((b, k) => {
+        let w = 13 + rnd() * 22, h = isCity ? 18 + rnd() * 48 : 9 + rnd() * 16, dpt = 13 + rnd() * 20;
+        if (cityForm === 'low') { w *= 1.35; dpt *= 1.22; h *= 0.58; }
+        else if (cityForm === 'terrace') h *= 0.66 + (b.family + 1) / b.familySize * 0.62;
+        else if (cityForm === 'needle' || cityForm === 'slender') { w *= 0.78; dpt *= 0.8; h *= 1.22; }
+        else if (cityForm === 'vertical') h *= 1.05 + (k % 4) * 0.11;
+        const yaw = Math.atan2(b.s.t.x, b.s.t.z) + (rnd() - 0.5) * 0.32;
+        const fx = { x: Math.cos(yaw), z: -Math.sin(yaw) };
+        const fz = { x: Math.sin(yaw), z: Math.cos(yaw) };
+        if (!acceptObb(b.px, b.pz, fx, fz, w / 2, dpt / 2)) return;
+        near.push({ ...b, w, h, dpt, yaw });
+      });
       if (near.length) {
         const buildings = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), bmat, near.length);
         buildings.name = 'city-near';
         const m4 = new THREE.Matrix4(), qq = new THREE.Quaternion(), sc2 = new THREE.Vector3();
         const pp = new THREE.Vector3(), col = new THREE.Color();
         near.forEach((b, k) => {
-          let w = 13 + rnd() * 22, h = isCity ? 18 + rnd() * 48 : 9 + rnd() * 16, dpt = 13 + rnd() * 20;
-          if (cityForm === 'low') { w *= 1.35; dpt *= 1.22; h *= 0.58; }
-          else if (cityForm === 'terrace') h *= 0.66 + (b.family + 1) / b.familySize * 0.62;
-          else if (cityForm === 'needle' || cityForm === 'slender') { w *= 0.78; dpt *= 0.8; h *= 1.22; }
-          else if (cityForm === 'vertical') h *= 1.05 + (k % 4) * 0.11;
-          qq.setFromAxisAngle(UP, Math.atan2(b.s.t.x, b.s.t.z) + (rnd() - 0.5) * 0.32);
-          sc2.set(w, h, dpt);
-          pp.set(b.px, terrainAt(b.px, b.pz) + h / 2 - 0.1, b.pz);
+          qq.setFromAxisAngle(UP, b.yaw);
+          sc2.set(b.w, b.h, b.dpt);
+          pp.set(b.px, terrainAt(b.px, b.pz) + b.h / 2 - 0.1, b.pz);
           m4.compose(pp, qq, sc2);
           buildings.setMatrixAt(k, m4);
           col.setHex(tints[(b.family + k) % tints.length]).lerp(new THREE.Color(0xffffff), rnd() * 0.12);
@@ -3411,6 +3521,7 @@ export function buildCircuit(trackId, def, scene) {
         });
         if (buildings.instanceColor) buildings.instanceColor.needsUpdate = true;
         group.add(buildings);
+        depthStats.near.cityBlocks = near.length;
       }
 
       // far skyline, clustered inside 200-500m and much taller
@@ -3418,7 +3529,22 @@ export function buildCircuit(trackId, def, scene) {
         { repeat: [1.1, 3], aniso: 16 });
       const fmat = flatLit(farTex, K_FACADE, { roughness: 0.62 });
       const farWant = Math.min(DEPTH_CAP.citySkyline, isCity ? 110 : 58);
-      const far = clusterScatter(farWant, 225, 445, wallOff + 60, 3, 6);
+      const farCandidates = clusterScatter(farWant, 225, 445, wallOff + 60, 3, 6);
+      const far = [];
+      farCandidates.forEach((b, k) => {
+        let w = 22 + rnd() * 38, h = isCity ? 42 + rnd() * 96 : 18 + rnd() * 40, dpt = 22 + rnd() * 36;
+        if (cityForm === 'low') { w *= 1.38; dpt *= 1.25; h *= 0.46; }
+        else if (cityForm === 'needle') { w *= 0.58; dpt *= 0.62; h *= 1.28 + (k % 5) * 0.09; }
+        else if (cityForm === 'terrace') h *= 0.54 + (b.family + 1) / b.familySize * 0.82;
+        else if (cityForm === 'slender') { w *= 0.68; dpt *= 0.72; h *= 1.12; }
+        else if (cityForm === 'slab') { w *= 1.18; dpt *= 0.72; h *= 0.82 + (k % 3) * 0.12; }
+        else if (cityForm === 'vertical') { w *= 0.72; dpt *= 0.76; h *= 1.12 + (k % 6) * 0.07; }
+        const yaw = Math.atan2(b.s.t.x, b.s.t.z) + (rnd() - 0.5) * 0.28;
+        const fx = { x: Math.cos(yaw), z: -Math.sin(yaw) };
+        const fz = { x: Math.sin(yaw), z: Math.cos(yaw) };
+        if (!acceptObb(b.px, b.pz, fx, fz, w / 2, dpt / 2)) return;
+        far.push({ ...b, w, h, dpt, yaw });
+      });
       if (far.length) {
         const sky = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), fmat, far.length);
         sky.name = 'city-skyline';
@@ -3426,26 +3552,18 @@ export function buildCircuit(trackId, def, scene) {
         const pp = new THREE.Vector3(), col = new THREE.Color();
         const capItems = [];
         far.forEach((b, k) => {
-          let w = 22 + rnd() * 38, h = isCity ? 42 + rnd() * 96 : 18 + rnd() * 40, dpt = 22 + rnd() * 36;
-          if (cityForm === 'low') { w *= 1.38; dpt *= 1.25; h *= 0.46; }
-          else if (cityForm === 'needle') { w *= 0.58; dpt *= 0.62; h *= 1.28 + (k % 5) * 0.09; }
-          else if (cityForm === 'terrace') h *= 0.54 + (b.family + 1) / b.familySize * 0.82;
-          else if (cityForm === 'slender') { w *= 0.68; dpt *= 0.72; h *= 1.12; }
-          else if (cityForm === 'slab') { w *= 1.18; dpt *= 0.72; h *= 0.82 + (k % 3) * 0.12; }
-          else if (cityForm === 'vertical') { w *= 0.72; dpt *= 0.76; h *= 1.12 + (k % 6) * 0.07; }
-          const yaw = Math.atan2(b.s.t.x, b.s.t.z) + (rnd() - 0.5) * 0.28;
-          qq.setFromAxisAngle(UP, yaw);
-          sc2.set(w, h, dpt);
+          qq.setFromAxisAngle(UP, b.yaw);
+          sc2.set(b.w, b.h, b.dpt);
           const groundY = terrainAt(b.px, b.pz);
-          pp.set(b.px, groundY + h / 2 - 0.1, b.pz);
+          pp.set(b.px, groundY + b.h / 2 - 0.1, b.pz);
           m4.compose(pp, qq, sc2);
           sky.setMatrixAt(k, m4);
           col.setHex(tints[(b.family * 2 + k) % tints.length]).lerp(new THREE.Color(theme.fog), 0.05 + rnd() * 0.13);
           sky.setColorAt(k, col);
           const cappedForm = cityForm === 'needle' || cityForm === 'vertical' || cityForm === 'slender';
           if (cappedForm && capItems.length < DEPTH_CAP.skylineCaps && k % (cityForm === 'needle' ? 4 : 6) === 0) {
-            capItems.push({ x: b.px, z: b.pz, y: groundY + h, r: Math.min(w, dpt) * 0.22,
-              h: 4 + rnd() * 9, yaw, color: col.clone() });
+            capItems.push({ x: b.px, z: b.pz, y: groundY + b.h, r: Math.min(b.w, b.dpt) * 0.22,
+              h: 4 + rnd() * 9, yaw: b.yaw, color: col.clone() });
           }
         });
         if (sky.instanceColor) sky.instanceColor.needsUpdate = true;
