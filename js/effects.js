@@ -11,6 +11,18 @@ export const EFFECT_POOL_LIMITS = Object.freeze({
   skidSegments: 700,
 });
 
+export const EFFECT_QUALITY_SCALES = Object.freeze({
+  low: 0.45,
+  medium: 0.72,
+  high: 1,
+});
+
+export const EFFECT_QUALITY_DUST_LIMITS = Object.freeze({
+  low: 18,
+  medium: 32,
+  high: EFFECT_POOL_LIMITS.dust,
+});
+
 const SPARK_POOL = EFFECT_POOL_LIMITS.sparks;
 const SMOKE_POOL = EFFECT_POOL_LIMITS.smoke;
 const DUST_POOL = EFFECT_POOL_LIMITS.dust;
@@ -49,10 +61,17 @@ export class Effects {
   constructor(scene, random = () => Math.random(), options = {}) {
     this.scene = scene;
     this.random = random;
-    this.motionScale = defaultMotionScale(options);
+    this.preferenceScale = defaultMotionScale(options);
+    this.qualityTier = 'high';
+    this.motionScale = this.preferenceScale;
+    // Lifetime diagnostics are monotonic, unlike ring-buffer cursors. They are
+    // intentionally tiny and make density changes observable without exposing
+    // or reallocating effect storage.
+    this.emissionCounts = { sparks: 0, smoke: 0, dust: 0, debris: 0, gravel: 0, rubber: 0 };
     this._f = new THREE.Vector3();
     this._l = new THREE.Vector3();
     this._entryState = new WeakMap();
+    this.setQualityTier(options.qualityTier);
 
     // ---- sparks (Points, additive) ----
     this.sparkData = [];
@@ -165,6 +184,24 @@ export class Effects {
     for (let i = 0; i < kpos2.length; i += 3) kpos2[i + 1] = -50;
   }
 
+  // Called by the renderer's existing tier-change callback. Kept as a small
+  // public hook so main.js can wire it independently of this effects commit.
+  // Updating a tier never replaces a pool, texture, material, or typed buffer.
+  setQualityTier(tier) {
+    const next = Object.hasOwn(EFFECT_QUALITY_SCALES, tier) ? tier : 'high';
+    this.qualityTier = next;
+    this.motionScale = this.preferenceScale * EFFECT_QUALITY_SCALES[next];
+    this.dustLimit = EFFECT_QUALITY_DUST_LIMITS[next];
+    if (this.dust) {
+      this._dustCursor %= this.dustLimit;
+      for (let i = this.dustLimit; i < this.dust.length; i++) {
+        this.dust[i].life = 0;
+        this.dust[i].sprite.visible = false;
+      }
+    }
+    return this.motionScale;
+  }
+
   _emitSpark(x, y, z, heading, v, floor = 0) {
     const i = this._sparkCursor;
     this._sparkCursor = (i + 1) % SPARK_POOL;
@@ -179,6 +216,7 @@ export class Effects {
       1.2 + this.random() * 2.4,
       -Math.cos(heading) * v * 0.55 + (this.random() - 0.5) * 7
     );
+    this.emissionCounts.sparks++;
   }
 
   _emitSmoke(x, y, z, heading = 0, speed = 0, strength = 1) {
@@ -196,11 +234,12 @@ export class Effects {
       0.38 + this.random() * 0.32,
       -Math.cos(heading) * Math.abs(speed) * 0.035 + (this.random() - 0.5) * 0.7
     );
+    this.emissionCounts.smoke++;
   }
 
   _emitDust(x, y, z, heading, speed, strength = 1) {
     const d = this.dust[this._dustCursor];
-    this._dustCursor = (this._dustCursor + 1) % DUST_POOL;
+    this._dustCursor = (this._dustCursor + 1) % this.dustLimit;
     d.life = d.maxLife = 0.85 + this.random() * 0.65;
     d.strength = clamp01(strength);
     d.startScale = 0.9 + this.random() * 0.7;
@@ -213,6 +252,7 @@ export class Effects {
       0.14 + this.random() * 0.22,
       -Math.cos(heading) * Math.abs(speed) * 0.045 + (this.random() - 0.5) * 1.2
     );
+    this.emissionCounts.dust++;
   }
 
   _emitDebris(x, y, z, heading, speed, floor = 0, rubber = false) {
@@ -247,6 +287,8 @@ export class Effects {
     }
     p.needsUpdate = true;
     c.needsUpdate = true;
+    this.emissionCounts.debris++;
+    this.emissionCounts[rubber ? 'rubber' : 'gravel']++;
   }
 
   _stateFor(entry) {
@@ -443,7 +485,7 @@ export class Effects {
       // contact signal remaining high across adjacent render frames.
       if (p.wallHit > 0.35 && state.wallCooldown <= 0) {
         state.wallCooldown = 0.32;
-        const burst = 2 + Math.floor(p.wallHit * 4 * this.motionScale);
+        const burst = Math.min(6, Math.ceil((2 + p.wallHit * 4) * this.motionScale));
         for (let n = 0; n < burst; n++) {
           const side = p.lat < 0 ? -1 : 1;
           this._emitSpark(p.pos.x + left.x * side * 0.9, ry + 0.35,

@@ -23,7 +23,9 @@ globalThis.document = {
 
 const THREE = await import('../lib/three.module.js');
 const { GTAOPass } = await import('../lib/postprocessing/GTAOPass.js');
-const { Effects, EFFECT_POOL_LIMITS } = await import('../js/effects.js');
+const {
+  Effects, EFFECT_POOL_LIMITS, EFFECT_QUALITY_SCALES, EFFECT_QUALITY_DUST_LIMITS,
+} = await import('../js/effects.js');
 
 let checks = 0;
 const ok = (condition, message) => {
@@ -99,6 +101,7 @@ function effectDigest(value) {
   const debrisPos = value.debris.geometry.attributes.position.array;
   return JSON.stringify({
     cursors: [value._sparkCursor, value._smokeCursor, value._dustCursor, value._debrisCursor],
+    emissions: value.emissionCounts,
     sparkPos: Array.from(sparkPos.slice(0, 36)),
     sparkLife: value.sparkData.slice(0, 12).map(item => item.life),
     smoke: value.smoke.slice(0, 8).map(item => [item.life, item.sprite.position.toArray()]),
@@ -138,23 +141,75 @@ ok(poolRefs[0] === effects.sparkData && poolRefs[1] === effects.smoke &&
 ok([...effects.sparks.geometry.attributes.position.array,
   ...effects.debris.geometry.attributes.position.array].every(Number.isFinite),
   'particle positions remain finite after sustained mixed emissions');
+effects.setQualityTier('low');
+ok(effects.dust.length === EFFECT_POOL_LIMITS.dust &&
+  effects.dust.slice(EFFECT_QUALITY_DUST_LIMITS.low)
+    .every(item => item.life === 0 && item.sprite.visible === false),
+  'dropping to low parks excess dust sprites without shrinking the backing pool');
+effects.setQualityTier('high');
 
-const reducedScene = new THREE.Scene();
-const reduced = new Effects(reducedScene, seededRandom(26), { reducedMotion: true });
-const reducedEntry = makeEntry();
-for (let frame = 0; frame < 60; frame++) reduced.update(1 / 60, [reducedEntry]);
-ok(reduced.motionScale < effects.motionScale,
-  'prefers-reduced-motion mode lowers emission density without disabling cues');
-ok(reduced._dustCursor < effects._dustCursor || effects._dustCursor < 10,
-  'reduced-motion mode emits fewer dust plumes over the same interval');
+function densityRun(tier, options = {}) {
+  const scene = new THREE.Scene();
+  const value = new Effects(scene, seededRandom(26), options);
+  const entry = makeEntry();
+  entry.phys.wallHit = 0;
+  const refs = [
+    value.sparkData, value.smoke, value.dust, value.debrisData,
+    value.sparks.geometry.attributes.position.array,
+    value.debris.geometry.attributes.position.array,
+  ];
+  const children = scene.children.length;
+  const scale = value.setQualityTier(tier);
+  let midpoint = null;
+  for (let frame = 0; frame < 120; frame++) {
+    entry.phys.pos.z += entry.phys.v / 60;
+    value.update(1 / 60, [entry]);
+    if (frame === 59) midpoint = { ...value.emissionCounts };
+  }
+  const counts = { ...value.emissionCounts };
+  const reused = scene.children.length === children &&
+    refs[0] === value.sparkData && refs[1] === value.smoke &&
+    refs[2] === value.dust && refs[3] === value.debrisData &&
+    refs[4] === value.sparks.geometry.attributes.position.array &&
+    refs[5] === value.debris.geometry.attributes.position.array;
+  value.dispose();
+  return { counts, midpoint, reused, scale, dustLimit: value.dustLimit };
+}
+
+// Every run covers the same two seconds and identical seeded simulation input.
+// Lifetime totals, rather than modulo ring cursors, prove actual density.
+const high = densityRun('high');
+const medium = densityRun('medium');
+const low = densityRun('low');
+const reduced = densityRun('high', { reducedMotion: true });
+for (const key of ['sparks', 'smoke', 'dust', 'debris']) {
+  ok(high.counts[key] > medium.counts[key] && medium.counts[key] > low.counts[key] &&
+    low.counts[key] > 0,
+  `${key} emissions scale strictly high > medium > low over equal duration`);
+  ok(reduced.counts[key] > 0 && reduced.counts[key] < high.counts[key],
+    `${key} reduced-motion emissions are lower over the same duration while preserving cues`);
+  ok(high.counts[key] >= high.midpoint[key] && high.midpoint[key] > 0,
+    `${key} lifetime diagnostic is monotonic across the run`);
+}
+ok(high.scale === EFFECT_QUALITY_SCALES.high &&
+  medium.scale === EFFECT_QUALITY_SCALES.medium && low.scale === EFFECT_QUALITY_SCALES.low,
+  'quality hook applies the declared deterministic density multipliers');
+ok(high.dustLimit === EFFECT_QUALITY_DUST_LIMITS.high &&
+  medium.dustLimit === EFFECT_QUALITY_DUST_LIMITS.medium &&
+  low.dustLimit === EFFECT_QUALITY_DUST_LIMITS.low,
+  'quality hook caps active dust draws while retaining the fixed backing pool');
+ok(high.reused && medium.reused && low.reused && reduced.reused,
+  'quality and accessibility density changes preserve every pool and typed buffer');
+console.log(`[effects] equal 2s density high=${JSON.stringify(high.counts)} ` +
+  `medium=${JSON.stringify(medium.counts)} low=${JSON.stringify(low.counts)} ` +
+  `reduced=${JSON.stringify(reduced.counts)}`);
 
 effects.dispose();
 mirror.dispose();
-reduced.dispose();
 pass.dispose();
 for (const object of [solid, excluded, hidden]) {
   object.geometry.dispose();
   object.material.dispose();
 }
 
-console.log(`[effects] ${checks} GTAO exclusion checks passed`);
+console.log(`[effects] ${checks} pooling, density, determinism, and GTAO checks passed`);
