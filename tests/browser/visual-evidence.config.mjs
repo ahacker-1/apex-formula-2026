@@ -1,9 +1,23 @@
 import { defineConfig, devices } from '@playwright/test';
 import { fileURLToPath } from 'node:url';
+import { resolveEvidenceRoot } from './visual-evidence/support.mjs';
 
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
-const requestedPort = Number.parseInt(process.env.APEX_VISUAL_EVIDENCE_PORT || '', 10);
+const captureRoot = resolveEvidenceRoot({
+  configured: process.env.APEX_VISUAL_EVIDENCE_DIR,
+  legacy: process.env.APEX_CAPTURE_DIR,
+  repoRoot,
+});
+if (captureRoot) process.env.APEX_VISUAL_EVIDENCE_DIR = captureRoot;
+// Playwright re-imports the config in replacement worker processes after a
+// test failure. Resolve the derived port once in the coordinator and pass it
+// through the environment so every worker targets the one dedicated server.
+const requestedPort = Number.parseInt(
+  process.env.APEX_VISUAL_EVIDENCE_PORT || process.env.APEX_VISUAL_EVIDENCE_RESOLVED_PORT || '',
+  10,
+);
 const port = Number.isInteger(requestedPort) ? requestedPort : 30_000 + (process.pid % 20_000);
+process.env.APEX_VISUAL_EVIDENCE_RESOLVED_PORT = String(port);
 
 if (port < 1024 || port > 65_535) {
   throw new Error(`APEX_VISUAL_EVIDENCE_PORT must be between 1024 and 65535; received ${port}`);

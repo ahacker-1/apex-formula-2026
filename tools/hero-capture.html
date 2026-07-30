@@ -24,7 +24,7 @@
 // Boots the real game modules (buildCircuit + buildCarMesh + main.js's exact
 // lighting/composer), arranges Monza with a 22-car grid for shot 1 and a single
 // posed car for the action shots, renders five EXACT cameras at 2560x1440, and
-// POSTs the PNGs to the devserver /shot sink as r4-hero-01..05.
+// POSTs run-scoped PNGs to the devserver /shot sink for r4-hero-01..05.
 //
 // Every shot carries a FRAMING CONTRACT which is pixel-verified on the very
 // frame that was captured (occlusion-aware hide/show diff masks + a two-pass
@@ -49,6 +49,7 @@ import * as TEX from '../js/textures.js';
 import { TRACKS } from '../js/tracks.js';
 import { TEAMS, DRIVERS } from '../js/data.js';
 import { buildCarMesh, preloadCarModel } from '../js/car.js';
+import { createRendererNoiseRandom } from '../js/random.js';
 // The game grounds every car with this; the rig used to omit it entirely, so
 // the round-4 judge saw ungrounded cars ("decals pasted onto the asphalt") that
 // no player has ever seen. Same helper, same numbers as RaceSession.
@@ -57,15 +58,31 @@ import { makeContactShadow } from '../js/race.js';
 const W = 2560, H = 1440;
 const FRAME_PX = W * H;
 const RIG_SCHEMA = 'apex-formula.hero-capture/v1';
+const RIG_RUN_ID = `hero-${crypto.randomUUID()}`;
+const AUTHORITY_NAME = 'r4-hero-contracts';
+const requestedAssetTimeout = Number(new URLSearchParams(location.search).get('assetTimeoutMs'));
+const ASSET_TIMEOUT_MS = Number.isFinite(requestedAssetTimeout) && requestedAssetTimeout >= 100
+  ? Math.min(15_000, requestedAssetTimeout)
+  : 15_000;
 const CAPTURE_CONTRACT = Object.freeze({
   resolution: `${W}x${H}`,
   devicePixelRatio: 1,
   renderer: 'WebGLRenderer + ACES + half-resolution ScaledGTAO + bloom + OutputPass + FXAA',
   scene: 'seeded Monza circuit, fixed cars, fixed cameras, no gameplay loop',
-  repeatTolerance: { sampleStride: 211, meanAbsoluteDifferenceMax: 1.5, changedPixelRatioMax: 0.02 },
+  persistence: 'run-scoped images + server-owned atomic authority marker',
+  repeatTolerance: {
+    meanAbsoluteChannelDifferenceMax: 1.5,
+    maxAbsoluteChannelDifferenceMax: 8,
+    changedPixelRatioMax: 0.02,
+    changedPixelChannelThreshold: 2,
+  },
 });
 const logEl = document.getElementById('log');
-const results = { schema: RIG_SCHEMA, captureContract: CAPTURE_CONTRACT, shots: [], pass: true, failed: [], done: false, error: null };
+const results = {
+  schema: RIG_SCHEMA, runId: RIG_RUN_ID, captureContract: CAPTURE_CONTRACT,
+  authority: null, authorityAttempted: false, assetGate: null,
+  persistence: [], shots: [], pass: true, failed: [], done: false, error: null,
+};
 window.__RIG__ = results;
 
 const out = (cls, s) => {
@@ -77,20 +94,26 @@ const out = (cls, s) => {
 const head = (s) => out('h', '\n=== ' + s);
 
 // ---------------------------------------------------------------- renderer ---
-const renderer = new THREE.WebGLRenderer({
-  antialias: true, powerPreference: 'high-performance', preserveDrawingBuffer: true,
-});
-renderer.setPixelRatio(1);
-renderer.setSize(W, H);
-renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-renderer.toneMapping = THREE.ACESFilmicToneMapping;      // main.js
-renderer.toneMappingExposure = 1.05;                     // main.js
-document.getElementById('app').appendChild(renderer.domElement);
+let renderer = null;
+let readCanvas = null;
+let readCtx = null;
+function initRenderer() {
+  renderer = new THREE.WebGLRenderer({
+    antialias: true, powerPreference: 'high-performance', preserveDrawingBuffer: true,
+  });
+  renderer.setPixelRatio(1);
+  renderer.setSize(W, H);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;      // main.js
+  renderer.toneMappingExposure = 1.05;                     // main.js
+  document.getElementById('app').appendChild(renderer.domElement);
 
-const readCanvas = document.createElement('canvas');
-readCanvas.width = W; readCanvas.height = H;
-const readCtx = readCanvas.getContext('2d', { willReadFrequently: true });
+  readCanvas = document.createElement('canvas');
+  readCanvas.width = W; readCanvas.height = H;
+  readCtx = readCanvas.getContext('2d', { willReadFrequently: true });
+  if (!readCtx) throw new Error('Unable to create evidence readback canvas');
+}
 
 // ------------------------------------------------------------ asset preload ---
 const PHOTOS = {
@@ -100,26 +123,63 @@ const PHOTOS = {
   treePalm: 'tree-palm.png', scrub: 'scrub.png',
 };
 const HDRI = {};
+async function withTimeout(promise, label, timeoutMs = ASSET_TIMEOUT_MS) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function preload() {
-  await Promise.allSettled(Object.entries(PHOTOS).map(([k, f]) => new Promise((res, rej) => {
-    const img = new Image();
-    img.onload = () => { TEX.registerPhoto(k, img); res(); };
-    img.onerror = rej;
-    img.src = '../textures/' + f;
-  })));
+  const failures = [];
+  const photoResults = await Promise.allSettled(Object.entries(PHOTOS).map(([key, file]) => withTimeout(
+    new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => { TEX.registerPhoto(key, image); resolve(key); };
+      image.onerror = () => reject(new Error(`photo ${key} (${file})`));
+      image.src = `../textures/${file}`;
+    }),
+    `photo ${key} (${file})`,
+  )));
+  photoResults.forEach(result => {
+    if (result.status === 'rejected') failures.push(result.reason.message);
+  });
   const loader = new RGBELoader();
-  await Promise.allSettled(['day', 'dusk', 'night'].map(k => new Promise((res, rej) => {
-    loader.load(`../textures/hdri/${k}.hdr`, (t) => {
-      t.mapping = THREE.EquirectangularReflectionMapping;
-      HDRI[k] = t; res();
-    }, undefined, rej);
-  })));
-  // the sculpted GLB car; page lives in /tools so the asset is one level up.
-  // preloadCarModel resolves null on failure and buildCarMesh falls back to the
-  // primitive assembly — the rig works (and the contracts still bind) either way.
-  const tpl = await preloadCarModel('../assets/f1car-2026.glb');
-  out('h', `assets: HDRIs [${Object.keys(HDRI).join(',') || 'none'}], car template: `
-    + `${tpl ? 'sculpted GLB' : 'primitive fallback'}`);
+  const hdriResults = await Promise.allSettled(['day', 'dusk', 'night'].map(key => withTimeout(
+    new Promise((resolve, reject) => {
+      loader.load(`../textures/hdri/${key}.hdr`, texture => {
+        texture.mapping = THREE.EquirectangularReflectionMapping;
+        HDRI[key] = texture;
+        resolve(key);
+      }, undefined, () => reject(new Error(`HDRI ${key}`)));
+    }),
+    `HDRI ${key}`,
+  )));
+  hdriResults.forEach(result => {
+    if (result.status === 'rejected') failures.push(result.reason.message);
+  });
+
+  const template = await withTimeout(
+    preloadCarModel('../assets/f1car-2026.glb'),
+    'sculpted GLB assets/f1car-2026.glb',
+  );
+  if (!template) failures.push('sculpted GLB assets/f1car-2026.glb');
+  results.assetGate = {
+    pass: failures.length === 0,
+    requiredPhotos: Object.keys(PHOTOS),
+    requiredHdris: ['day', 'dusk', 'night'],
+    sculptedGlb: !!template,
+    failures,
+  };
+  if (failures.length) throw new Error(`Required visual assets unavailable: ${failures.join(', ')}`);
+  out('p', `required assets: ${Object.keys(PHOTOS).length} photos, day/dusk/night HDRIs, sculpted GLB`);
 }
 
 // --------------------------------------- main.js setupEnvironment, replicated ---
@@ -163,35 +223,26 @@ function buildScene(trackId) {
   scene.add(sun, sun.target);
   if (th.night) scene.add(new THREE.AmbientLight(0x8899cc, 0.5));
 
-  const hdr = HDRI[th.night ? 'night' : th.sunI < 2.2 ? 'dusk' : 'day'];
-  if (hdr) {
-    scene.environment = hdr;
-    scene.environmentIntensity = th.night ? 0.55 : 0.9;
-    if (th.night) {
-      scene.background = hdr;
-      scene.backgroundIntensity = 0.7;
-      sky.visible = false;
-    } else {
-      scene.background = null;
-      sky.visible = true;
-    }
+  const environmentKey = th.night ? 'night' : th.sunI < 2.2 ? 'dusk' : 'day';
+  const hdr = HDRI[environmentKey];
+  if (!hdr) throw new Error(`Required HDRI was not preloaded: ${environmentKey}`);
+  scene.environment = hdr;
+  scene.environmentIntensity = th.night ? 0.55 : 0.9;
+  if (th.night) {
+    scene.background = hdr;
+    scene.backgroundIntensity = 0.7;
+    sky.visible = false;
   } else {
-    const pmrem = new THREE.PMREMGenerator(renderer);
-    const envScene = new THREE.Scene();
-    envScene.add(sky.clone());
-    const disc = new THREE.Mesh(new THREE.CircleGeometry(2000, 24).rotateX(-Math.PI / 2),
-      new THREE.MeshBasicMaterial({ color: th.ground }));
-    disc.position.y = -2;
-    envScene.add(disc);
-    scene.environment = pmrem.fromScene(envScene, 0.04).texture;
-    scene.environmentIntensity = th.night ? 0.5 : 0.85;
-    pmrem.dispose();
+    scene.background = null;
+    sky.visible = true;
   }
 
   const camera = new THREE.PerspectiveCamera(45, W / H, 0.3, 6500);
   const composer = new EffectComposer(renderer);
   composer.addPass(new RenderPass(scene, camera));
-  const gtao = new ScaledGTAOPass(scene, camera, W, H, 0.5);
+  const gtao = new ScaledGTAOPass(scene, camera, W, H, 0.5, {
+    noiseRandom: createRendererNoiseRandom(),
+  });
   gtao.output = ScaledGTAOPass.OUTPUT.Default;
   gtao.blendIntensity = 0.72;                              // main.js
   composer.addPass(gtao);
@@ -288,41 +339,106 @@ const named = (S, name) => S.circuit.group.getObjectByName(name);
 const isDescendant = (o, root) => { let p = o; while (p) { if (p === root) return true; p = p.parent; } return false; };
 
 function repeatFrameStability(first, second) {
-  let total = 0, max = 0, changed = 0, count = 0;
-  // Sampling makes this read cheap while still covering every area of a frame.
-  for (let i = 0; i < W * H; i += CAPTURE_CONTRACT.repeatTolerance.sampleStride) {
+  let totalChannels = 0, maxChannel = 0, changed = 0, count = 0;
+  // Full-frame scan: maxAbsoluteChannelDifference is the true maximum rather
+  // than a sampled proxy, and the mean/ratio retain their unrounded values.
+  for (let i = 0; i < W * H; i++) {
     const j = i * 4;
-    const delta = (Math.abs(first.data[j] - second.data[j])
-      + Math.abs(first.data[j + 1] - second.data[j + 1])
-      + Math.abs(first.data[j + 2] - second.data[j + 2])) / 3;
-    total += delta;
-    max = Math.max(max, delta);
-    if (delta > 2) changed++;
+    const red = Math.abs(first.data[j] - second.data[j]);
+    const green = Math.abs(first.data[j + 1] - second.data[j + 1]);
+    const blue = Math.abs(first.data[j + 2] - second.data[j + 2]);
+    const pixelMax = Math.max(red, green, blue);
+    totalChannels += red + green + blue;
+    maxChannel = Math.max(maxChannel, pixelMax);
+    if (pixelMax > CAPTURE_CONTRACT.repeatTolerance.changedPixelChannelThreshold) changed++;
     count++;
   }
   return {
     sampleCount: count,
-    meanAbsoluteDifference: +(total / count).toFixed(4),
-    maxChannelDifference: +max.toFixed(4),
-    changedPixelRatio: +(changed / count).toFixed(5),
+    changedPixelChannelThreshold: CAPTURE_CONTRACT.repeatTolerance.changedPixelChannelThreshold,
+    meanAbsoluteChannelDifference: totalChannels / (count * 3),
+    maxAbsoluteChannelDifference: maxChannel,
+    changedPixelRatio: changed / count,
   };
 }
 
-async function shot(name, im, S, rec) {
-  readCtx.putImageData(new ImageData(im.data, W, H), 0, 0);
-  const blob = await new Promise(r => readCanvas.toBlob(r, 'image/png'));
-  try {
-    await fetch(`/shot?name=${encodeURIComponent(name)}`, { method: 'POST', body: blob });
-    out('h', `  shot -> tools/shots/${name}.png`);
-  } catch (e) { out('f', `  shot POST failed: ${e}`); }
-
+function verifyRepeatFrame(im, S, rec) {
   const stability = repeatFrameStability(im, renderFrame(S));
   metric(rec, 'repeatStability', stability);
   expect(rec,
-    stability.meanAbsoluteDifference <= CAPTURE_CONTRACT.repeatTolerance.meanAbsoluteDifferenceMax
+    stability.meanAbsoluteChannelDifference <= CAPTURE_CONTRACT.repeatTolerance.meanAbsoluteChannelDifferenceMax
+      && stability.maxAbsoluteChannelDifference <= CAPTURE_CONTRACT.repeatTolerance.maxAbsoluteChannelDifferenceMax
       && stability.changedPixelRatio <= CAPTURE_CONTRACT.repeatTolerance.changedPixelRatioMax,
     'repeat capture keeps the fixed frame stable',
-    `[mean abs=${stability.meanAbsoluteDifference}, changed=${(stability.changedPixelRatio * 100).toFixed(3)}%]`);
+    `[mean channel abs=${stability.meanAbsoluteChannelDifference.toFixed(4)}, max channel abs=${stability.maxAbsoluteChannelDifference}, changed=${(stability.changedPixelRatio * 100).toFixed(3)}%]`);
+}
+
+async function digestHex(bytes) {
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, '0')).join('');
+}
+
+async function fetchWithTimeout(url, options, timeoutMs = 15_000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (error?.name === 'AbortError') throw new Error(`Evidence request timed out for ${url}`);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function postEvidence(name, body, contentType, { record = true } = {}) {
+  const persistedName = name === AUTHORITY_NAME ? name : `${RIG_RUN_ID}-${name}`;
+  const bytes = typeof body === 'string'
+    ? new TextEncoder().encode(body)
+    : new Uint8Array(await body.arrayBuffer());
+  const expectedDigest = await digestHex(bytes);
+  const response = await fetchWithTimeout(
+    `/shot?name=${encodeURIComponent(persistedName)}&run=${encodeURIComponent(RIG_RUN_ID)}`,
+    {
+    method: 'POST',
+    headers: { 'Content-Type': contentType },
+    body,
+    },
+  );
+  if (!response.ok) {
+    const detail = (await response.text().catch(() => '')).slice(0, 160);
+    throw new Error(`Evidence persistence failed for ${name}: HTTP ${response.status}${detail ? ` ${detail}` : ''}`);
+  }
+
+  const persisted = await fetchWithTimeout(
+    `/tools/shots/${encodeURIComponent(persistedName)}.png?verify=${Date.now()}`,
+    { cache: 'no-store' },
+  );
+  if (!persisted.ok) throw new Error(`Evidence verification failed for ${name}: HTTP ${persisted.status}`);
+  const persistedBytes = new Uint8Array(await persisted.arrayBuffer());
+  const persistedDigest = await digestHex(persistedBytes);
+  if (persistedDigest !== expectedDigest) {
+    throw new Error(`Evidence verification failed for ${name}: persisted SHA-256 mismatch`);
+  }
+  const persistedRecord = {
+    name,
+    persistedName,
+    path: `tools/shots/${persistedName}.png`,
+    contentType,
+    bytes: bytes.byteLength,
+    sha256: expectedDigest,
+    verified: true,
+  };
+  if (record) results.persistence.push(persistedRecord);
+  return persistedRecord;
+}
+
+async function persistShot(name, im) {
+  readCtx.putImageData(new ImageData(im.data, W, H), 0, 0);
+  const blob = await new Promise(r => readCanvas.toBlob(r, 'image/png'));
+  if (!blob) throw new Error(`PNG encoding failed for ${name}`);
+  const persisted = await postEvidence(name, blob, 'image/png');
+  out('p', `  persisted + verified -> ${persisted.path}`);
 }
 
 // ------------------------------------------------------------------- cars ----
@@ -642,7 +758,7 @@ async function shot01(S) {
   recordCam(rec, S);
 
   const im = renderFrame(S);
-  await shot('r4-hero-01', im, S, rec);
+  verifyRepeatFrame(im, S, rec);
   metric(rec, 'frameMeanLum', frameMean(im));
   expect(rec, frameMean(im) > 25, 'frame is a real image (mean luminance > 25)');
 
@@ -697,6 +813,7 @@ async function shot01(S) {
   metric(rec, 'grandstandPx', sm.n);
   expect(rec, sm.n >= 10000, 'a grandstand is visible in the grid frame',
     `[pixels=${sm.n}, need >= 10000]`);
+  if (rec.pass) await persistShot('r4-hero-01', im);
   return rec;
 }
 
@@ -726,7 +843,7 @@ async function shot02(S) {
   recordCam(rec, S);
 
   const im = renderFrame(S);
-  await shot('r4-hero-02', im, S, rec);
+  verifyRepeatFrame(im, S, rec);
   metric(rec, 'frameMeanLum', frameMean(im));
   expect(rec, frameMean(im) > 25, 'frame is a real image (mean luminance > 25)');
 
@@ -762,6 +879,7 @@ async function shot02(S) {
   metric(rec, 'carPx', carMask.n);
   expect(rec, carMask.n >= 8000, 'the car is a real subject in the frame',
     `[car pixels=${carMask.n}, need >= 8000]`);
+  if (rec.pass) await persistShot('r4-hero-02', im);
   return rec;
 }
 
@@ -797,7 +915,7 @@ async function shot03(S) {
   recordCam(rec, S);
 
   const im = renderFrame(S);
-  await shot('r4-hero-03', im, S, rec);
+  verifyRepeatFrame(im, S, rec);
   metric(rec, 'frameMeanLum', frameMean(im));
   expect(rec, frameMean(im) > 25, 'frame is a real image (mean luminance > 25)');
 
@@ -829,6 +947,7 @@ async function shot03(S) {
     expect(rec, backed >= 0.6, 'the grandstand stands BEHIND the car (backs >= 60% of its columns)',
       `[${(backed * 100).toFixed(1)}% of ${car} car columns]`);
   }
+  if (rec.pass) await persistShot('r4-hero-03', im);
   return rec;
 }
 
@@ -857,7 +976,7 @@ async function shot04(S) {
     `[h=${P.camH}m]`);
 
   const im = renderFrame(S);
-  await shot('r4-hero-04', im, S, rec);
+  verifyRepeatFrame(im, S, rec);
   metric(rec, 'frameMeanLum', frameMean(im));
   expect(rec, frameMean(im) > 25, 'frame is a real image (mean luminance > 25)');
 
@@ -875,6 +994,7 @@ async function shot04(S) {
   expect(rec, gs.n >= 1200, 'the start gantry is ahead in frame', `[pixels=${gs.n}]`);
   expect(rec, gs.n > 0 && gs.cy < H * 0.6, 'the gantry sits in the upper part of the frame',
     `[centroid y=${(gs.cy / H * 100).toFixed(1)}%]`);
+  if (rec.pass) await persistShot('r4-hero-04', im);
   return rec;
 }
 
@@ -897,7 +1017,7 @@ async function shot05(S) {
     'the camera stands on a genuine long straight', '[|curv| < 1/900]');
 
   const im = renderFrame(S);
-  await shot('r4-hero-05', im, S, rec);
+  verifyRepeatFrame(im, S, rec);
   metric(rec, 'frameMeanLum', frameMean(im));
   expect(rec, frameMean(im) > 25, 'frame is a real image (mean luminance > 25)');
 
@@ -918,11 +1038,34 @@ async function shot05(S) {
   const tm = renderVisibleMask(S, o => isDescendant(o, tv));
   metric(rec, 'tvScreenPx', tm.n);
   expect(rec, tm.n >= 700, 'the TV screen is in frame', `[pixels=${tm.n}, need >= 700]`);
+  if (rec.pass) await persistShot('r4-hero-05', im);
   return rec;
 }
 
 // =============================================================================
 async function main() {
+  const runningMarker = {
+    schema: RIG_SCHEMA,
+    runId: RIG_RUN_ID,
+    rig: 'tools/hero-capture.html',
+    status: 'running',
+    pass: false,
+    complete: false,
+    done: false,
+    activeLock: 'tools/shots/.hero-capture.lock/owner.json',
+  };
+  // If the response is lost after the server acquires ownership, the catch
+  // path still attempts a run-matched failed marker to release that lock.
+  results.authorityAttempted = true;
+  const runningPersistence = await postEvidence(
+    AUTHORITY_NAME,
+    JSON.stringify(runningMarker, null, 2),
+    'application/json',
+    { record: false },
+  );
+  results.authority = { ...runningPersistence, status: 'running' };
+
+  initRenderer();
   await preload();
   head('building monza (main.js-parity scene) + 22-car grid + action car');
   const S = buildScene('monza');
@@ -935,9 +1078,23 @@ async function main() {
   for (const name of Object.keys(runners)) await runners[name](S);
 
   // ---- machine-readable contract summary ----------------------------------
+  const shotNames = results.persistence
+    .filter(item => item.contentType === 'image/png')
+    .map(item => item.name);
+  const complete = results.assetGate?.pass === true
+    && results.shots.length === 5
+    && new Set(shotNames).size === 5
+    && ['r4-hero-01', 'r4-hero-02', 'r4-hero-03', 'r4-hero-04', 'r4-hero-05']
+      .every(name => shotNames.includes(name));
+  if (!complete) results.pass = false;
   const summary = {
     schema: RIG_SCHEMA,
+    runId: RIG_RUN_ID,
     rig: 'tools/hero-capture.html',
+    status: results.pass && complete ? 'passed' : 'failed',
+    complete,
+    done: true,
+    activeLock: null,
     captureContract: CAPTURE_CONTRACT,
     resolution: `${W}x${H}`,
     renderer: {
@@ -959,6 +1116,8 @@ async function main() {
       },
     },
     track: 'monza',
+    assetGate: results.assetGate,
+    persistedShots: results.persistence.map(item => ({ ...item })),
     pass: results.pass,
     failed: results.failed,
     shots: results.shots.map(r => ({
@@ -966,28 +1125,70 @@ async function main() {
       metrics: r.metrics, asserts: r.asserts,
     })),
   };
+  const finalPersistence = await postEvidence(
+    AUTHORITY_NAME,
+    JSON.stringify(summary, null, 2),
+    'application/json',
+  );
+  results.authority = { ...finalPersistence, status: summary.status };
   results.manifest = summary;
-  try {
-    await fetch('/shot?name=r4-hero-contracts', {
-      method: 'POST', body: JSON.stringify(summary, null, 2),
-    });
-    out('h', 'contract summary -> tools/shots/r4-hero-contracts.png (JSON body)');
-  } catch (e) { out('f', 'contract POST failed: ' + e); }
+  out('p', 'contract summary persisted + verified -> tools/shots/r4-hero-contracts.png (JSON body)');
 
   head(results.pass
     ? 'ALL FRAMING CONTRACTS PASS'
     : `CONTRACT FAILURES (${results.failed.length}): ` + results.failed.join(' | '));
-  // expose a re-run hook for camera tuning: mutate __RIG__.params then rerun one
-  window.__RIG__.rerun = async (name) => { results.failed = results.failed.filter(f => !f.startsWith(name)); const i = results.shots.findIndex(r => r.name === name); if (i >= 0) results.shots.splice(i, 1); const rec = await runners[name](S); results.pass = results.shots.every(r => r.pass); return rec; };
-  window.__DBG__ = { S, THREE, renderer, grab, renderFrame, renderVisibleMask, named, arcPoint, placeCam, poseActionCar, gridCars };
+  window.__DBG__ = {
+    S, THREE, renderer, grab, renderFrame, renderVisibleMask, repeatFrameStability,
+    named, arcPoint, placeCam, poseActionCar, gridCars,
+  };
   results.done = true;
 }
 
-main().catch(e => {
+main().catch(async e => {
   results.error = String(e && e.stack || e);
-  results.done = true;
   results.pass = false;
+  const failure = `rig: ${String(e?.message || e)}`;
+  if (!results.failed.includes(failure)) results.failed.push(failure);
+  const failureSummary = {
+    schema: RIG_SCHEMA,
+    runId: RIG_RUN_ID,
+    rig: 'tools/hero-capture.html',
+    status: 'failed',
+    pass: false,
+    complete: false,
+    done: true,
+    activeLock: null,
+    error: results.error,
+    assetGate: results.assetGate,
+    persistedShots: results.persistence.filter(item => item.contentType === 'image/png'),
+    failed: results.failed,
+    shots: results.shots.map(shot => ({ name: shot.name, pass: shot.pass })),
+  };
+  // If this run established authority, replace its running/candidate marker
+  // with an atomic failed marker. If the sink itself was unavailable, do not
+  // recurse into another doomed persistence attempt.
+  if (results.authorityAttempted) {
+    try {
+      const failedPersistence = await postEvidence(
+        AUTHORITY_NAME,
+        JSON.stringify(failureSummary, null, 2),
+        'application/json',
+        { record: false },
+      );
+      results.authority = { ...failedPersistence, status: 'failed' };
+      results.manifest = failureSummary;
+    } catch (authorityError) {
+      const authorityFailure = `authority: ${String(authorityError?.message || authorityError)}`;
+      if (!results.failed.includes(authorityFailure)) results.failed.push(authorityFailure);
+      results.authority = { ...results.authority, status: 'failed', verified: false, error: authorityFailure };
+      results.manifest = { ...failureSummary, failed: results.failed, authority: results.authority };
+    }
+  } else {
+    results.manifest = failureSummary;
+  }
+  results.done = true;
   out('f', 'RIG ERROR: ' + results.error);
+  head(`RIG FAILURE (${results.failed.length}): ${results.failed.join(' | ')}`);
 });
 </script>
 </body>

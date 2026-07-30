@@ -1,24 +1,44 @@
 import { test, expect } from '@playwright/test';
-import { mkdir, rename, unlink, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import {
+  VISUAL_EVIDENCE_SCHEMA,
+  acquireRunOwnership,
+  atomicWriteJson,
+  ensureEvidenceRoot,
+  finalizeRunOwnership,
+  manifestIntegrity,
+  publishLatestPointer,
+  releaseRunOwnership,
+  resolveEvidenceRoot,
+  summarizeRgbDelta,
+} from './visual-evidence/support.mjs';
 
 // Opt-in only: a visual run writes reproducible review artifacts under the
 // already-ignored test-results/ tree, never into the distributable build.
-const captureRootOption = process.env.APEX_VISUAL_EVIDENCE_DIR || process.env.APEX_CAPTURE_DIR;
-const CAPTURE_ROOT = captureRootOption
-  ? path.resolve(captureRootOption)
-  : null;
+const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
+const CAPTURE_ROOT = resolveEvidenceRoot({
+  configured: process.env.APEX_VISUAL_EVIDENCE_DIR,
+  legacy: process.env.APEX_CAPTURE_DIR,
+  repoRoot: REPO_ROOT,
+});
 const EVIDENCE_RUN_ID = `run-${process.pid}-${randomUUID()}`;
 const CAPTURE_DIR = CAPTURE_ROOT ? path.join(CAPTURE_ROOT, 'runs', EVIDENCE_RUN_ID) : null;
 
-const VISUAL_EVIDENCE_SCHEMA = 'apex-formula.visual-evidence/v1';
 const FIXED_VIEWPORT = { width: 1600, height: 900 };
 const FIXED_DPR = 1;
-const FRESH_CAPTURE_RUNS = 3;
-const SAME_PAGE_TOLERANCE = { meanAbsoluteDifferenceMax: 1.5, changedPixelRatioMax: 0.02, changedPixelThreshold: 2 };
-const CROSS_RUN_TOLERANCE = { meanAbsoluteDifferenceMax: 1.5, changedPixelRatioMax: 0.02, changedPixelThreshold: 8 };
+const PRE_FREEZE_TICKS = [0, 600, 1_800];
+const FRESH_CAPTURE_RUNS = PRE_FREEZE_TICKS.length;
+const SAME_PAGE_TOLERANCE = { meanAbsoluteChannelDifferenceMax: 1.5, changedPixelRatioMax: 0.02, changedPixelChannelThreshold: 2 };
+// Fresh GPU contexts retain the established eight-level rasterisation budget;
+// the renderer fix removes stochastic GTAO input instead of widening it.
+const CROSS_RUN_TOLERANCE = { meanAbsoluteChannelDifferenceMax: 1.5, changedPixelRatioMax: 0.02, changedPixelChannelThreshold: 8 };
 const evidenceRecords = [];
+const testFailures = [];
+let runOwner = null;
 
 // Visual review must not inherit a developer's current browser size, display
 // scale, colour preference, or motion preference from playwright.config.mjs.
@@ -85,6 +105,67 @@ async function configureFreshPage(page) {
   });
 }
 
+async function advanceCaptureHistory(page, ticks) {
+  return page.evaluate(tickCount => {
+    const game = window.__game;
+    const session = game.session;
+    const effects = game.effects;
+    if (!(tickCount > 0)) return { ticks: 0, raceTime: session.raceTime, contaminated: false };
+
+    session.phase = 'racing';
+    session.phaseT = 0;
+    for (let tick = 0; tick < tickCount; tick++) {
+      const input = {
+        steer: Math.sin(tick / 90) * 0.45,
+        throttle: tick % 240 < 190 ? 1 : 0.2,
+        brake: tick % 240 >= 190 ? 0.85 : 0,
+        boost: tick % 360 > 280,
+        shiftUp: false,
+        shiftDown: false,
+        ersMode: 1,
+      };
+      session.update(1 / 60, input);
+      effects?.update(1 / 60, session.entries);
+      if (tick % 10 === 0) game.hud.update(1 / 6);
+    }
+
+    const player = session.player.phys;
+    effects?._emitSpark(player.pos.x, 1, player.pos.z, player.heading, 30, 0);
+    effects?._emitSmoke(player.pos.x, 1, player.pos.z);
+    const left = { x: Math.cos(player.heading), z: -Math.sin(player.heading) };
+    effects?._skidSegment(player.pos, player.pos, left, 0);
+    effects?._skidSegment({ x: player.pos.x + 1, z: player.pos.z + 1 },
+      { x: player.pos.x - 1, z: player.pos.z - 1 }, left, 0);
+    session.vsc = { active: true, timeLeft: 12 };
+    session.fastestLap = { driverId: session.player.driver.id, time: 72.345 };
+    game.hud._hideRadio();
+    session.radioQueue.length = 0;
+    session.radioQueue.push({ text: 'CONTAMINATION RADIO', tone: 'warning' });
+    session._playerPitOpen = true;
+    game.hud.message('CONTAMINATION MESSAGE', 'yellow');
+    game.hud.setLights(4);
+    game.hud.flash('CONTAMINATION FLASH', 60_000);
+    game.hud.update(0.1);
+
+    return {
+      ticks: tickCount,
+      raceTime: session.raceTime,
+      playerSpeed: player.v,
+      activeSparks: effects?.sparkData.filter(item => item.life > 0).length || 0,
+      activeSmoke: effects?.smoke.filter(item => item.life > 0 || item.sprite.visible).length || 0,
+      skidCursor: effects?._skidCursor || 0,
+      transientHud: {
+        vsc: document.querySelector('#vscbanner')?.className || '',
+        fastest: document.querySelector('#flbanner')?.className || '',
+        radio: document.querySelector('#radiocard')?.className || '',
+        lights: document.querySelector('#startlights')?.className || '',
+        flash: document.querySelector('#bigflash')?.style.display || '',
+      },
+      contaminated: true,
+    };
+  }, ticks);
+}
+
 async function lockCaptureFrame(page) {
   return page.evaluate(() => {
     const game = window.__game;
@@ -96,16 +177,46 @@ async function lockCaptureFrame(page) {
     // the new session; no captured transform or HUD field may retain that race.
     if (!game.paused) game.togglePause(true);
     game.resetSimulationTiming();
-    session.phase = 'grid';
-    session.phaseT = 0;
-    session.raceTime = 0;
-    session.lightsOn = 0;
-    session.lightsHold = 0;
-    session.lightsOut = false;
-    session.jumpStart = false;
-    session.vsc = { active: false, timeLeft: 0 };
-    session.blueFlagFor = null;
+    Object.assign(session, {
+      phase: 'grid',
+      phaseT: 0,
+      raceTime: 0,
+      lightsOn: 0,
+      lightsHold: 0,
+      lightsOut: false,
+      jumpStart: false,
+      fastestLap: null,
+      results: null,
+      vsc: { active: false, timeLeft: 0 },
+      blueFlagFor: null,
+      _posTimer: 0,
+      _radioCool: 0,
+      _vscEnding: false,
+      _vscViol: 0,
+      _vscPenalised: false,
+      _vscWarned: false,
+      _lightEvent: false,
+      _wallEvent: 0,
+      _touchEvent: 0,
+      _shiftEvent: false,
+      _playerPitOpen: false,
+      _finishGrace: 4,
+      _gapCheck: 0,
+      _lastPlayerPos: null,
+      _radioLastLap: false,
+      _radioTyreStint: null,
+      _radioResult: false,
+      _lastAnnounced: 0,
+      _onceKeys: {},
+    });
     session.radioQueue.length = 0;
+    game._lightsShown = 0;
+    game._resultsShown = false;
+    game._qualiDoneShown = false;
+    game._vscAudio = false;
+    game._radioLen = 0;
+    game._pitAudio = false;
+    game._timeTrialStatus = null;
 
     const gridPose = session.entries.map((entry, index) => {
       const gridIndex = Math.max(0, (entry.gridPos || index + 1) - 1);
@@ -122,8 +233,17 @@ async function lockCaptureFrame(page) {
         battery: 1,
         boosting: false,
         aeroX: false,
+        _xTimer: 0,
+        _shiftCooldown: 0,
+        _spinJitter: 0,
         wear: 0,
         fuel: 1,
+        tyreTemp: 65,
+        tyreGrip: 1,
+        brakeTemp: 90,
+        brakeFade: 0,
+        ersMode: 1,
+        ersDeploy: 0,
         lat: 0,
         offTrack: false,
         onKerb: false,
@@ -131,19 +251,49 @@ async function lockCaptureFrame(page) {
         wallHit: 0,
         slipstream: 0,
         dirtyAir: 0,
+        frontAeroLoss: 0,
         disabled: false,
         pitch: 0,
         roll: 0,
         rideBump: 0,
+        _bumpT: 0,
+        offTrackTime: 0,
+        offTrackSink: 0,
+        kerbScrub: 0,
       });
       entry.wheelSpin = 0;
       entry.lap = -1;
+      entry.lapStart = 0;
+      entry.lastLap = 0;
+      entry.bestLap = 0;
+      entry.lapTimes = [];
       entry.position = entry.gridPos;
       entry.gapText = '';
       entry.intervalText = '';
+      entry.pitStops = 0;
       entry.pitState = null;
+      entry.boxThisLap = false;
       entry.finished = false;
+      entry.finishTime = 0;
       entry.dnf = false;
+      entry.coolDown = null;
+      entry.sectors = [null, null, null];
+      entry.lastSectors = [null, null, null];
+      entry.bestSectors = [null, null, null];
+      entry.tyreAgeLaps = 0;
+      entry.penaltySeconds = 0;
+      entry.positionsGained = 0;
+      entry.wingDamage = 0;
+      entry.trackLimits = 0;
+      entry._secStage = 0;
+      entry._secSplit = [null, null];
+      entry._offAcc = 0;
+      entry._offLatched = false;
+      entry._blueFrom = null;
+      entry._blueT = 0;
+      entry._contactCool = 0;
+      entry._stuckT = 0;
+      entry._stuckRef = null;
       entry.mesh.visible = true;
       if (entry.tag) entry.tag.visible = false;
       return {
@@ -157,12 +307,67 @@ async function lockCaptureFrame(page) {
     session.resetRenderState();
     session.render(1);
 
+    // Scrub every pooled visual effect and skid-history buffer. The random
+    // streams may have advanced, but the captured paused frame consumes none.
+    const effects = game.effects;
+    if (effects) {
+      const sparkPositions = effects.sparks.geometry.attributes.position;
+      sparkPositions.array.fill(0);
+      for (let index = 1; index < sparkPositions.array.length; index += 3) sparkPositions.array[index] = -50;
+      sparkPositions.needsUpdate = true;
+      for (const spark of effects.sparkData) {
+        spark.life = 0;
+        spark.floor = 0;
+        spark.vel.set(0, 0, 0);
+      }
+      effects._sparkCursor = 0;
+      for (const smoke of effects.smoke) {
+        smoke.life = 0;
+        smoke.maxLife = 1;
+        smoke.sprite.visible = false;
+        smoke.sprite.position.set(0, -50, 0);
+        smoke.sprite.scale.setScalar(1);
+        smoke.sprite.material.opacity = 0;
+      }
+      effects._smokeCursor = 0;
+      const skidPositions = effects.skidGeo.attributes.position;
+      skidPositions.array.fill(0);
+      for (let index = 1; index < skidPositions.array.length; index += 3) skidPositions.array[index] = -50;
+      skidPositions.needsUpdate = true;
+      effects._skidCursor = 0;
+      effects._skidPrev = null;
+    }
+
     // Rebuild the HUD from the frozen state and remove transient notifications.
+    game.hud.hide();
     game.hud.bindSession(session, circuit);
+    game.hud._uiTimer = 0;
     game.hud.show();
     game.hud.update(0);
-    document.querySelector('#race-msg')?.replaceChildren();
+    clearTimeout(game.hud._flashTo);
+    game.hud._flashTo = null;
+    game.hud._hideRadio();
+    game.hud.clearTouchState();
+    const clearElement = id => {
+      const element = document.querySelector(`#${id}`);
+      if (!element) return;
+      element.className = '';
+      element.replaceChildren();
+      element.removeAttribute('style');
+    };
+    for (const id of ['race-msg', 'flbanner', 'radiocard', 'bigflash']) clearElement(id);
+    const vsc = document.querySelector('#vscbanner');
+    vsc?.classList.remove('on', 'green');
+    const vscText = document.querySelector('#vsc-text');
+    if (vscText) vscText.textContent = 'VIRTUAL SAFETY CAR';
+    const vscCount = document.querySelector('#vsc-count');
+    if (vscCount) vscCount.textContent = '';
     document.querySelector('#startlights')?.classList.remove('active');
+    document.querySelectorAll('#startlights .lamp').forEach(lamp => lamp.classList.remove('on'));
+    document.querySelector('#pit-overlay')?.classList.remove('active');
+    document.querySelector('#onboarding')?.classList.remove('active');
+    const vignette = document.querySelector('#boostvin');
+    if (vignette) vignette.style.opacity = '0';
     game.circuit.setStartLights?.(0);
     game.ui.hidePause();
 
@@ -190,12 +395,82 @@ async function lockCaptureFrame(page) {
     const canvas = game.renderer.domElement;
     const rect = canvas.getBoundingClientRect();
     const telemetry = game.renderTelemetry;
+    const effectState = {
+      activeSparks: effects?.sparkData.filter(item => item.life > 0).length || 0,
+      activeSmoke: effects?.smoke.filter(item => item.life > 0 || item.sprite.visible).length || 0,
+      sparkCursor: effects?._sparkCursor || 0,
+      smokeCursor: effects?._smokeCursor || 0,
+      skidCursor: effects?._skidCursor || 0,
+      skidHasPrevious: !!(effects?._skidPrev),
+      skidRaisedVertices: effects
+        ? [...effects.skidGeo.attributes.position.array].filter((_, index) => index % 3 === 1 && effects.skidGeo.attributes.position.array[index] > -49).length
+        : 0,
+    };
+    const hudState = {
+      raceMessages: document.querySelector('#race-msg')?.childElementCount || 0,
+      vscClass: document.querySelector('#vscbanner')?.className || '',
+      fastestClass: document.querySelector('#flbanner')?.className || '',
+      radioClass: document.querySelector('#radiocard')?.className || '',
+      radioText: document.querySelector('#radiocard')?.textContent || '',
+      lightsClass: document.querySelector('#startlights')?.className || '',
+      litLights: document.querySelectorAll('#startlights .lamp.on').length,
+      bigFlashDisplay: document.querySelector('#bigflash')?.style.display || '',
+      bigFlashText: document.querySelector('#bigflash')?.textContent || '',
+      pitClass: document.querySelector('#pit-overlay')?.className || '',
+    };
+    const canonicalState = {
+      session: {
+        phase: session.phase,
+        phaseT: session.phaseT,
+        raceTime: session.raceTime,
+        lightsOn: session.lightsOn,
+        fastestLap: session.fastestLap,
+        results: session.results,
+        vsc: session.vsc,
+        radioQueueLength: session.radioQueue.length,
+        blueFlagFor: session.blueFlagFor,
+        playerPitOpen: session._playerPitOpen,
+        timers: [session._posTimer, session._radioCool, session._vscViol, session._wallEvent,
+          session._touchEvent, session._gapCheck, session._lastAnnounced],
+        flags: [session._vscEnding, session._vscPenalised, session._vscWarned,
+          session._lightEvent, session._shiftEvent, session._radioLastLap, session._radioResult],
+      },
+      entries: session.entries.map(entry => ({
+        driverId: entry.driver.id,
+        position: entry.position,
+        lap: entry.lap,
+        timing: [entry.lapStart, entry.lastLap, entry.bestLap, entry.lapTimes.length],
+        pit: [entry.pitStops, entry.pitState, entry.boxThisLap],
+        state: [entry.finished, entry.dnf, entry.penaltySeconds, entry.tyreAgeLaps, entry.wingDamage, entry.trackLimits],
+        sectors: [entry.sectors, entry.lastSectors, entry.bestSectors],
+        physics: {
+          position: entry.phys.pos.toArray(),
+          heading: entry.phys.heading,
+          sampleIdx: entry.phys.sampleIdx,
+          speed: entry.phys.v,
+          controls: [entry.phys.steer, entry.phys.throttle, entry.phys.brake],
+          powertrain: [entry.phys.gear, entry.phys.rpmFrac, entry.phys.battery, entry.phys.boosting,
+            entry.phys.aeroX, entry.phys.fuel],
+          tyre: [entry.phys.compound, entry.phys.wear, entry.phys.tyreTemp, entry.phys.tyreGrip],
+          thermal: [entry.phys.brakeTemp, entry.phys.brakeFade],
+          ers: [entry.phys.ersMode, entry.phys.ersDeploy],
+          surface: [entry.phys.offTrack, entry.phys.onKerb, entry.phys.slip, entry.phys.offTrackTime,
+            entry.phys.offTrackSink, entry.phys.kerbScrub],
+          attitude: [entry.phys.pitch, entry.phys.roll, entry.phys.rideBump],
+          timers: [entry.phys._xTimer, entry.phys._shiftCooldown, entry.phys._spinJitter, entry.phys._bumpT],
+        },
+      })),
+      effects: effectState,
+      hud: hudState,
+    };
     return {
       contract: 'canonical-grid/chase-camera-v1',
       servedOrigin: location.origin,
       sessionSeed: game.sessionSeed,
       phase: session.phase,
       gridPose,
+      canonicalState,
+      gtaoNoiseBytes: [...game.gtao.pdNoiseTexture.image.data],
       camera: {
         mode: game.camMode,
         position: game.camera.position.toArray().map(value => Number(value.toFixed(4))),
@@ -310,18 +585,19 @@ async function measureScreenshot(page, png) {
     const mean = sum / count;
     const variance = Math.max(0, sumSquares / count - mean * mean);
     return {
-      mean: Number(mean.toFixed(2)),
-      standardDeviation: Number(Math.sqrt(variance).toFixed(2)),
-      range: Number((max - min).toFixed(2)),
-      opaqueRatio: Number((opaque / count).toFixed(4)),
-      luminanceBuckets: luminanceBuckets.size,
+      sampleSize: `${sample.width}x${sample.height}`,
+      meanSrgbLuma: mean,
+      srgbLumaStandardDeviation: Math.sqrt(variance),
+      srgbLumaRange: max - min,
+      opaquePixelRatio: opaque / count,
+      occupiedSrgbLumaBins: luminanceBuckets.size,
     };
   }, dataUrl);
 }
 
-async function measureScreenshotDelta(page, first, second, changedPixelThreshold = 2) {
+async function measureScreenshotDelta(page, first, second, changedPixelChannelThreshold = 2) {
   const toDataUrl = png => `data:image/png;base64,${png.toString('base64')}`;
-  return page.evaluate(async ([firstSource, secondSource, threshold]) => {
+  const samples = await page.evaluate(async ([firstSource, secondSource]) => {
     const load = async source => {
       const image = new Image();
       image.src = source;
@@ -338,49 +614,12 @@ async function measureScreenshotDelta(page, first, second, changedPixelThreshold
     context.clearRect(0, 0, sample.width, sample.height);
     context.drawImage(second, 0, 0, sample.width, sample.height);
     const b = context.getImageData(0, 0, sample.width, sample.height).data;
-
-    let total = 0;
-    let max = 0;
-    let changed = 0;
-    for (let i = 0; i < a.length; i += 4) {
-      const difference = Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]);
-      total += difference / 3;
-      max = Math.max(max, difference / 3);
-      if (difference / 3 > threshold) changed++;
-    }
-    const count = a.length / 4;
-    return {
-      sampleSize: `${sample.width}x${sample.height}`,
-      changedPixelThreshold: threshold,
-      meanAbsoluteDifference: Number((total / count).toFixed(4)),
-      maxChannelDifference: Number(max.toFixed(4)),
-      changedPixelRatio: Number((changed / count).toFixed(5)),
-    };
-  }, [toDataUrl(first), toDataUrl(second), changedPixelThreshold]);
+    return { first: [...a], second: [...b], sampleSize: `${sample.width}x${sample.height}` };
+  }, [toDataUrl(first), toDataUrl(second)]);
+  return summarizeRgbDelta(samples.first, samples.second, changedPixelChannelThreshold, samples.sampleSize);
 }
 
-function manifestIntegrity(records) {
-  const keyOf = record => `${record.venue}/${record.environment}`;
-  const expected = EXPECTED_VENUES.map(keyOf);
-  const expectedSet = new Set(expected);
-  const counts = new Map();
-  for (const record of records) counts.set(keyOf(record), (counts.get(keyOf(record)) || 0) + 1);
-  const missing = expected.filter(key => !counts.has(key));
-  const duplicate = [...counts].filter(([, count]) => count > 1).map(([key]) => key);
-  const unexpected = [...counts.keys()].filter(key => !expectedSet.has(key));
-  const failed = records.filter(record => record.pass !== true).map(keyOf);
-  const complete = missing.length === 0 && duplicate.length === 0 && unexpected.length === 0
-    && records.length === expected.length;
-  return { complete, pass: complete && failed.length === 0, missing, duplicate, unexpected, failed };
-}
-
-async function atomicWriteJson(target, value) {
-  const temporary = `${target}.${EVIDENCE_RUN_ID}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`);
-  await rename(temporary, target);
-}
-
-async function captureVenueRun(page, venue, runNumber) {
+async function captureVenueRun(page, venue, runNumber, preFreezeTicks) {
   const errors = observeErrors(page);
   await configureFreshPage(page);
   await page.goto(`/?seed=${encodeURIComponent(venue.seed)}`);
@@ -466,9 +705,34 @@ async function captureVenueRun(page, venue, runNumber) {
   await expect(page.locator('#hud')).toHaveClass(/active/);
   await expect.poll(() => page.evaluate(() => window.__game.paused)).toBe(true);
 
+  const preFreeze = await advanceCaptureHistory(page, preFreezeTicks);
+  if (preFreezeTicks > 0) {
+    expect(preFreeze).toMatchObject({ ticks: preFreezeTicks, contaminated: true });
+    expect(preFreeze.raceTime).toBeGreaterThan(0);
+    expect(preFreeze.activeSparks).toBeGreaterThan(0);
+    expect(preFreeze.activeSmoke).toBeGreaterThan(0);
+    expect(preFreeze.skidCursor).toBeGreaterThan(0);
+    expect(preFreeze.transientHud).toEqual({
+      vsc: 'on',
+      fastest: 'on',
+      radio: 'on warning',
+      lights: 'active',
+      flash: 'block',
+    });
+  }
+
   const frame = await lockCaptureFrame(page);
   frame.gridPoseSha256 = sha256(Buffer.from(JSON.stringify(frame.gridPose)));
+  frame.canonicalStateSha256 = sha256(Buffer.from(JSON.stringify(frame.canonicalState)));
+  frame.gtaoNoiseSha256 = sha256(Buffer.from(frame.gtaoNoiseBytes));
+  frame.canonicalStateSummary = {
+    session: frame.canonicalState.session,
+    effects: frame.canonicalState.effects,
+    hud: frame.canonicalState.hud,
+  };
   delete frame.gridPose;
+  delete frame.canonicalState;
+  delete frame.gtaoNoiseBytes;
   expect(frame.contract).toBe('canonical-grid/chase-camera-v1');
   expect(frame.phase).toBe('grid');
   expect(frame.devicePixelRatio).toBe(FIXED_DPR);
@@ -493,6 +757,27 @@ async function captureVenueRun(page, venue, runNumber) {
   expect(frame.pipeline.passes).toMatchObject({ gtao: true, bloom: true, fxaa: true });
   expect(frame.pipeline.passes.fxaaResolution.x).toBeCloseTo(1 / FIXED_VIEWPORT.width, 10);
   expect(frame.pipeline.passes.fxaaResolution.y).toBeCloseTo(1 / FIXED_VIEWPORT.height, 10);
+  expect(frame.canonicalStateSummary.effects).toEqual({
+    activeSparks: 0,
+    activeSmoke: 0,
+    sparkCursor: 0,
+    smokeCursor: 0,
+    skidCursor: 0,
+    skidHasPrevious: false,
+    skidRaisedVertices: 0,
+  });
+  expect(frame.canonicalStateSummary.hud).toEqual({
+    raceMessages: 0,
+    vscClass: '',
+    fastestClass: '',
+    radioClass: '',
+    radioText: '',
+    lightsClass: '',
+    litLights: 0,
+    bigFlashDisplay: '',
+    bigFlashText: '',
+    pitClass: '',
+  });
 
   const renderer = await measureRenderer(page);
   expect(renderer.calls).toBeGreaterThan(0);
@@ -508,11 +793,12 @@ async function captureVenueRun(page, venue, runNumber) {
   expect(screenshotDimensions).toEqual(FIXED_VIEWPORT);
   const screenshotMetrics = await measureScreenshot(page, screenshot);
   const repeatStability = await measureScreenshotDelta(page, screenshot, repeatScreenshot);
-  expect(screenshotMetrics.opaqueRatio).toBeGreaterThan(0.99);
-  expect(screenshotMetrics.range).toBeGreaterThan(40);
-  expect(screenshotMetrics.standardDeviation).toBeGreaterThan(8);
-  expect(screenshotMetrics.luminanceBuckets).toBeGreaterThan(4);
-  expect(repeatStability.meanAbsoluteDifference).toBeLessThanOrEqual(SAME_PAGE_TOLERANCE.meanAbsoluteDifferenceMax);
+  expect(screenshotMetrics.opaquePixelRatio).toBeGreaterThan(0.99);
+  expect(screenshotMetrics.srgbLumaRange).toBeGreaterThan(40);
+  expect(screenshotMetrics.srgbLumaStandardDeviation).toBeGreaterThan(8);
+  expect(screenshotMetrics.occupiedSrgbLumaBins).toBeGreaterThan(4);
+  expect(repeatStability.meanAbsoluteChannelDifference)
+    .toBeLessThanOrEqual(SAME_PAGE_TOLERANCE.meanAbsoluteChannelDifferenceMax);
   expect(repeatStability.changedPixelRatio).toBeLessThanOrEqual(SAME_PAGE_TOLERANCE.changedPixelRatioMax);
 
   // A run becomes evidence only after every app-error assertion has passed.
@@ -522,6 +808,7 @@ async function captureVenueRun(page, venue, runNumber) {
 
   const metrics = {
     run: runNumber,
+    preFreeze,
     servedOrigin: frame.servedOrigin,
     capture: {
       viewport: FIXED_VIEWPORT,
@@ -572,7 +859,8 @@ async function persistVenueEvidence(venue, runs) {
     pass: true,
     runs: runs.map(capture => capture.metrics),
   };
-  writes.push(writeFile(path.join(CAPTURE_DIR, metricsName), `${JSON.stringify(metrics, null, 2)}\n`));
+  const metricsBody = `${JSON.stringify(metrics, null, 2)}\n`;
+  writes.push(writeFile(path.join(CAPTURE_DIR, metricsName), metricsBody));
   await Promise.all(writes);
   evidenceRecords.push({
     venue: venue.trackId,
@@ -581,23 +869,274 @@ async function persistVenueEvidence(venue, runs) {
     pass: true,
     servedOrigins: [...new Set(runs.map(capture => capture.metrics.servedOrigin))],
     metrics: path.posix.join('runs', EVIDENCE_RUN_ID, metricsName),
+    metricsSha256: sha256(Buffer.from(metricsBody)),
     runs: runFiles,
   });
 }
 
+async function auditEvidenceArtifacts(records) {
+  if (!CAPTURE_ROOT || !CAPTURE_DIR) return [];
+  const failures = [];
+  const inspect = async (relative, expected, label) => {
+    const absolute = path.resolve(CAPTURE_ROOT, relative);
+    const ownedRelative = path.relative(CAPTURE_DIR, absolute);
+    if (ownedRelative.startsWith(`..${path.sep}`) || ownedRelative === '..' || path.isAbsolute(ownedRelative)) {
+      failures.push(`${label}: path escapes ${EVIDENCE_RUN_ID}`);
+      return;
+    }
+    try {
+      const bytes = await readFile(absolute);
+      if (sha256(bytes) !== expected) failures.push(`${label}: SHA-256 mismatch`);
+    } catch (error) {
+      failures.push(`${label}: ${error.code || error.message}`);
+    }
+  };
+  for (const record of records) {
+    await inspect(record.metrics, record.metricsSha256, `${record.venue} metrics`);
+    for (const run of record.runs) {
+      await inspect(run.primary, run.sha256.primary, `${record.venue} run ${run.run} primary`);
+      await inspect(run.repeat, run.sha256.repeat, `${record.venue} run ${run.run} repeat`);
+    }
+  }
+  return failures;
+}
+
 test.beforeAll(async () => {
   if (!CAPTURE_ROOT) return;
-  await mkdir(CAPTURE_ROOT, { recursive: true });
-  await unlink(path.join(CAPTURE_ROOT, 'manifest.json')).catch(error => {
-    if (error.code !== 'ENOENT') throw error;
+  await ensureEvidenceRoot(CAPTURE_ROOT, REPO_ROOT);
+  await mkdir(path.join(CAPTURE_ROOT, 'runs'), { recursive: true });
+  runOwner = await acquireRunOwnership(CAPTURE_ROOT, EVIDENCE_RUN_ID, {
+    schema: VISUAL_EVIDENCE_SCHEMA,
+    runId: EVIDENCE_RUN_ID,
+    status: 'running',
+    pass: false,
+    complete: false,
+    authoritativeManifest: path.posix.join('runs', EVIDENCE_RUN_ID, 'manifest.json'),
+  });
+  await mkdir(CAPTURE_DIR);
+  await atomicWriteJson(path.join(CAPTURE_DIR, 'owner.json'), {
+    schema: VISUAL_EVIDENCE_SCHEMA,
+    runId: EVIDENCE_RUN_ID,
+    pid: process.pid,
+    status: 'running',
+  }, EVIDENCE_RUN_ID);
+});
+
+test.afterEach(async ({}, testInfo) => {
+  if (!CAPTURE_ROOT || testInfo.status === testInfo.expectedStatus) return;
+  testFailures.push({
+    title: testInfo.title,
+    status: testInfo.status,
+    expectedStatus: testInfo.expectedStatus,
+    errors: testInfo.errors.map(error => error.message || String(error)),
   });
 });
 
-test('manifest integrity fails closed for incomplete and duplicate venue records', () => {
+test('manifest integrity fails closed for incomplete, duplicate, unexpected, and failed records', () => {
   const complete = EXPECTED_VENUES.map(record => ({ ...record, pass: true }));
-  expect(manifestIntegrity(complete)).toMatchObject({ complete: true, pass: true });
-  expect(manifestIntegrity(complete.slice(0, -1))).toMatchObject({ complete: false, pass: false });
-  expect(manifestIntegrity([...complete, complete[0]])).toMatchObject({ complete: false, pass: false });
+  expect(manifestIntegrity(complete, EXPECTED_VENUES)).toMatchObject({ complete: true, pass: true });
+  expect(manifestIntegrity(complete.slice(0, -1), EXPECTED_VENUES))
+    .toMatchObject({ complete: false, pass: false, missing: ['singapore/night'] });
+  expect(manifestIntegrity([...complete, complete[0]], EXPECTED_VENUES))
+    .toMatchObject({ complete: false, pass: false, duplicate: ['melbourne/day'] });
+  expect(manifestIntegrity([...complete, { venue: 'monaco', environment: 'day', pass: true }], EXPECTED_VENUES))
+    .toMatchObject({ complete: false, pass: false, unexpected: ['monaco/day'] });
+  expect(manifestIntegrity(complete.map((record, index) => index === 1 ? { ...record, pass: false } : record),
+    EXPECTED_VENUES)).toMatchObject({ complete: true, pass: false, failed: ['bahrain/dusk'] });
+});
+
+test('capture root validation rejects release, external, and conflicting output paths', () => {
+  const allowed = path.join(REPO_ROOT, 'test-results', 'visual-evidence');
+  expect(resolveEvidenceRoot({ configured: allowed, repoRoot: REPO_ROOT })).toBe(allowed);
+  expect(resolveEvidenceRoot({ configured: path.join(allowed, 'manual-run'), repoRoot: REPO_ROOT }))
+    .toBe(path.join(allowed, 'manual-run'));
+  expect(() => resolveEvidenceRoot({ configured: path.join(REPO_ROOT, 'dist', 'evidence'), repoRoot: REPO_ROOT }))
+    .toThrow(/must be .*test-results.*visual-evidence/);
+  expect(() => resolveEvidenceRoot({ configured: path.join(tmpdir(), 'apex-external-evidence'), repoRoot: REPO_ROOT }))
+    .toThrow(/must be .*test-results.*visual-evidence/);
+  expect(() => resolveEvidenceRoot({
+    configured: allowed,
+    legacy: path.join(allowed, 'different'),
+    repoRoot: REPO_ROOT,
+  })).toThrow(/disagree/);
+});
+
+test('RGB delta reports unrounded mean and true maximum channel difference', () => {
+  const delta = summarizeRgbDelta(
+    Uint8Array.from([0, 10, 20, 255, 100, 100, 100, 255]),
+    Uint8Array.from([3, 10, 20, 255, 101, 102, 100, 255]),
+    2,
+    '2x1',
+  );
+  expect(delta).toEqual({
+    sampleSize: '2x1',
+    changedPixelChannelThreshold: 2,
+    meanAbsoluteChannelDifference: 1,
+    maxAbsoluteChannelDifference: 3,
+    changedPixelRatio: 0.5,
+  });
+});
+
+test('root manifest ownership cannot be stolen and never exposes stale success', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'apex-evidence-owner-'));
+  const running = runId => ({
+    schema: VISUAL_EVIDENCE_SCHEMA,
+    runId,
+    status: 'running',
+    pass: false,
+    complete: false,
+  });
+  const terminal = (runId, status, pass) => ({
+    schema: VISUAL_EVIDENCE_SCHEMA,
+    runId,
+    status,
+    pass,
+    complete: pass,
+    authoritativeManifest: `runs/${runId}/manifest.json`,
+  });
+  let firstOwner;
+  let secondOwner;
+  let thirdOwner;
+  try {
+    await writeFile(path.join(root, 'manifest.json'), JSON.stringify({
+      schema: VISUAL_EVIDENCE_SCHEMA,
+      runId: 'stale-success',
+      status: 'passed',
+      pass: true,
+      complete: true,
+    }));
+
+    await expect(acquireRunOwnership(root, 'run-crash', running('run-crash'), {
+      afterInvalidate: () => { throw new Error('simulated crash after invalidation'); },
+    })).rejects.toThrow(/simulated crash/);
+    expect(JSON.parse(await readFile(path.join(root, 'manifest.json'), 'utf8')))
+      .toMatchObject({ runId: 'run-crash', status: 'running', pass: false, activeLock: '.active-run.lock' });
+    await expect(access(path.join(root, '.manifest-update.lock')))
+      .rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(path.join(root, '.active-run.lock', 'owner.json')))
+      .rejects.toMatchObject({ code: 'ENOENT' });
+
+    firstOwner = await acquireRunOwnership(root, 'run-a', running('run-a'));
+    expect(JSON.parse(await readFile(path.join(firstOwner.lockDirectory, 'owner.json'), 'utf8')))
+      .toMatchObject({ runId: 'run-a', status: 'running' });
+    expect(JSON.parse(await readFile(path.join(root, 'manifest.json'), 'utf8')))
+      .toMatchObject({ runId: 'run-a', status: 'running', pass: false, activeLock: '.active-run.lock' });
+    await expect(publishLatestPointer(firstOwner, {
+      schema: VISUAL_EVIDENCE_SCHEMA,
+      runId: 'not-the-owner',
+      status: 'running',
+      pass: false,
+      activeLock: '.active-run.lock',
+    })).rejects.toThrow(/does not match owner run-a/);
+    await expect(publishLatestPointer(firstOwner, { ...running('run-a'), activeLock: null }))
+      .rejects.toThrow(/must expose .active-run.lock/);
+    await expect(acquireRunOwnership(root, 'run-b', running('run-b')))
+      .rejects.toThrow(/already owned by run-a/);
+
+    await expect(finalizeRunOwnership(firstOwner, terminal('run-a', 'passed', true), {
+      afterRelease: () => { throw new Error('simulated crash after ownership release'); },
+    })).rejects.toThrow(/simulated crash after ownership release/);
+    firstOwner = null;
+    expect(JSON.parse(await readFile(path.join(root, 'manifest.json'), 'utf8')))
+      .toMatchObject({ runId: 'run-a', status: 'passed', pass: true, activeLock: '.active-run.lock' });
+    await expect(readFile(path.join(root, '.active-run.lock', 'owner.json')))
+      .rejects.toMatchObject({ code: 'ENOENT' });
+
+    secondOwner = await acquireRunOwnership(root, 'run-b', running('run-b'));
+    expect(JSON.parse(await readFile(path.join(root, 'manifest.json'), 'utf8')))
+      .toMatchObject({ runId: 'run-b', status: 'running', pass: false, activeLock: '.active-run.lock' });
+    await finalizeRunOwnership(secondOwner, terminal('run-b', 'failed', false));
+    secondOwner = null;
+    expect(JSON.parse(await readFile(path.join(root, 'manifest.json'), 'utf8')))
+      .toMatchObject({ runId: 'run-b', status: 'failed', pass: false, activeLock: null });
+
+    thirdOwner = await acquireRunOwnership(root, 'run-c', running('run-c'));
+    await finalizeRunOwnership(thirdOwner, terminal('run-c', 'passed', true));
+    thirdOwner = null;
+    expect(JSON.parse(await readFile(path.join(root, 'manifest.json'), 'utf8')))
+      .toMatchObject({ runId: 'run-c', status: 'passed', pass: true, activeLock: null });
+    await expect(readFile(path.join(root, '.active-run.lock', 'owner.json')))
+      .rejects.toMatchObject({ code: 'ENOENT' });
+  } finally {
+    if (thirdOwner) await releaseRunOwnership(thirdOwner).catch(() => {});
+    if (secondOwner) await releaseRunOwnership(secondOwner).catch(() => {});
+    if (firstOwner) await releaseRunOwnership(firstOwner).catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a contender waits through the terminal-pointer-to-unlock boundary', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'apex-evidence-finalize-'));
+  const running = runId => ({
+    schema: VISUAL_EVIDENCE_SCHEMA,
+    runId,
+    status: 'running',
+    pass: false,
+    complete: false,
+  });
+  const passed = runId => ({
+    schema: VISUAL_EVIDENCE_SCHEMA,
+    runId,
+    status: 'passed',
+    pass: true,
+    complete: true,
+    authoritativeManifest: `runs/${runId}/manifest.json`,
+  });
+  let firstOwner;
+  let contenderOwner;
+  let finalizing;
+  let acquiring;
+  let releaseFinalize = () => {};
+  try {
+    firstOwner = await acquireRunOwnership(root, 'run-finalizing', running('run-finalizing'));
+    let reachedFinalize;
+    const finalizeReached = new Promise(resolve => { reachedFinalize = resolve; });
+    const finalizeHold = new Promise(resolve => { releaseFinalize = resolve; });
+    finalizing = finalizeRunOwnership(firstOwner, passed('run-finalizing'), {
+      afterFinalize: async () => {
+        reachedFinalize();
+        await finalizeHold;
+      },
+    });
+    await finalizeReached;
+    firstOwner = null; // finalizeRunOwnership has released actual ownership.
+    expect(JSON.parse(await readFile(path.join(root, 'manifest.json'), 'utf8')))
+      .toMatchObject({ runId: 'run-finalizing', status: 'passed', pass: true, activeLock: null });
+    await expect(access(path.join(root, '.manifest-update.lock'))).resolves.toBeUndefined();
+
+    let acquisitionSettled = false;
+    acquiring = acquireRunOwnership(root, 'run-contender', running('run-contender'))
+      .then(owner => { acquisitionSettled = true; return owner; });
+    await expect.poll(async () => JSON.parse(await readFile(path.join(root, 'manifest.json'), 'utf8')).runId)
+      .toBe('run-contender');
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(acquisitionSettled, 'the contender must wait for finalization mutex release').toBe(false);
+
+    releaseFinalize();
+    await finalizing;
+    finalizing = null;
+    contenderOwner = await acquiring;
+    acquiring = null;
+    expect(JSON.parse(await readFile(path.join(contenderOwner.lockDirectory, 'owner.json'), 'utf8')))
+      .toMatchObject({ runId: 'run-contender', status: 'running' });
+    expect(JSON.parse(await readFile(path.join(root, 'manifest.json'), 'utf8')))
+      .toMatchObject({ runId: 'run-contender', status: 'running', pass: false, activeLock: '.active-run.lock' });
+
+    await finalizeRunOwnership(contenderOwner, {
+      ...passed('run-contender'),
+      status: 'failed',
+      pass: false,
+      complete: false,
+    });
+    contenderOwner = null;
+  } finally {
+    releaseFinalize();
+    if (finalizing) await finalizing.catch(() => {});
+    if (acquiring) contenderOwner = await acquiring.catch(() => null);
+    if (contenderOwner) await releaseRunOwnership(contenderOwner).catch(() => {});
+    if (firstOwner) await releaseRunOwnership(firstOwner).catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 for (const venue of VENUES) {
@@ -608,18 +1147,28 @@ for (const venue of VENUES) {
     for (let index = 0; index < FRESH_CAPTURE_RUNS; index++) {
       const runPage = index === 0 ? page : await context.newPage();
       try {
-        const capture = await captureVenueRun(runPage, venue, index + 1);
+        const capture = await captureVenueRun(runPage, venue, index + 1, PRE_FREEZE_TICKS[index]);
         const crossRun = baseline
           ? await measureScreenshotDelta(runPage, baseline.screenshot, capture.screenshot,
-            CROSS_RUN_TOLERANCE.changedPixelThreshold)
-          : { sampleSize: '160x90', changedPixelThreshold: CROSS_RUN_TOLERANCE.changedPixelThreshold,
-            meanAbsoluteDifference: 0, maxChannelDifference: 0, changedPixelRatio: 0 };
+            CROSS_RUN_TOLERANCE.changedPixelChannelThreshold)
+          : { sampleSize: '160x90', changedPixelChannelThreshold: CROSS_RUN_TOLERANCE.changedPixelChannelThreshold,
+            meanAbsoluteChannelDifference: 0, maxAbsoluteChannelDifference: 0, changedPixelRatio: 0 };
         capture.metrics.crossRunFromRun1 = crossRun;
         if (baseline) {
+          console.log(`[venue-evidence-delta] ${JSON.stringify({
+            venue: venue.trackId,
+            run: index + 1,
+            preFreezeTicks: PRE_FREEZE_TICKS[index],
+            crossRun,
+          })}`);
           expect(capture.metrics.capture.frame.camera).toEqual(baseline.metrics.capture.frame.camera);
           expect(capture.metrics.capture.frame.gridPoseSha256).toBe(baseline.metrics.capture.frame.gridPoseSha256);
+          expect(capture.metrics.capture.frame.canonicalStateSha256)
+            .toBe(baseline.metrics.capture.frame.canonicalStateSha256);
+          expect(capture.metrics.capture.frame.gtaoNoiseSha256).toBe(baseline.metrics.capture.frame.gtaoNoiseSha256);
           expect(capture.metrics.capture.frame.sessionSeed).toBe(baseline.metrics.capture.frame.sessionSeed);
-          expect(crossRun.meanAbsoluteDifference).toBeLessThanOrEqual(CROSS_RUN_TOLERANCE.meanAbsoluteDifferenceMax);
+          expect(crossRun.meanAbsoluteChannelDifference)
+            .toBeLessThanOrEqual(CROSS_RUN_TOLERANCE.meanAbsoluteChannelDifferenceMax);
           expect(crossRun.changedPixelRatio).toBeLessThanOrEqual(CROSS_RUN_TOLERANCE.changedPixelRatioMax);
         } else {
           baseline = capture;
@@ -656,31 +1205,40 @@ for (const venue of VENUES) {
   });
 }
 
-test('captured evidence contains every expected venue exactly once', () => {
+test('captured evidence contains every expected venue exactly once with intact artifacts', async () => {
   test.skip(!CAPTURE_ROOT, 'artifact completeness applies only to an evidence run');
-  expect(manifestIntegrity(evidenceRecords), 'visual evidence must be complete and unique')
+  expect(manifestIntegrity(evidenceRecords, EXPECTED_VENUES), 'visual evidence must be complete and unique')
     .toMatchObject({ complete: true, pass: true });
+  expect(await auditEvidenceArtifacts(evidenceRecords), 'every persisted artifact must exist with matching bytes')
+    .toEqual([]);
 });
 
 test.afterAll(async () => {
-  if (!CAPTURE_ROOT) return;
-  const integrity = manifestIntegrity(evidenceRecords);
+  if (!CAPTURE_ROOT || !runOwner) return;
+  const integrity = manifestIntegrity(evidenceRecords, EXPECTED_VENUES);
+  const artifactFailures = await auditEvidenceArtifacts(evidenceRecords);
+  const pass = integrity.pass && artifactFailures.length === 0 && testFailures.length === 0;
   const manifest = {
     schema: VISUAL_EVIDENCE_SCHEMA,
     runId: EVIDENCE_RUN_ID,
     generatedBy: 'tests/browser/venues.spec.mjs',
-    outputDirectory: CAPTURE_DIR,
-    pass: integrity.pass,
+    status: pass ? 'passed' : 'failed',
+    authoritative: true,
+    outputDirectory: path.posix.join('runs', EVIDENCE_RUN_ID),
+    pass,
     complete: integrity.complete,
     expectedVenues: EXPECTED_VENUES,
     integrity,
+    artifactFailures,
+    testFailures,
     servedOrigins: [...new Set(evidenceRecords.flatMap(record => record.servedOrigins))],
     captureContract: {
       viewport: FIXED_VIEWPORT,
       deviceScaleFactor: FIXED_DPR,
       graphicsQuality: 'high',
       freshRunsPerVenue: FRESH_CAPTURE_RUNS,
-      state: 'canonical grid slots, reset render state, fixed chase camera at fov 72',
+      preFreezeTicks: PRE_FREEZE_TICKS,
+      state: 'canonical grid, physics, timing, race, effects, HUD, fixed chase camera at fov 72',
       server: 'dedicated per-process/env port; reuseExistingServer=false; build runs before server',
       samePageRepeatTolerance: {
         sampleSize: '160x90',
@@ -693,7 +1251,20 @@ test.afterAll(async () => {
     },
     records: evidenceRecords,
   };
-  await mkdir(CAPTURE_DIR, { recursive: true });
   await atomicWriteJson(path.join(CAPTURE_DIR, 'manifest.json'), manifest);
-  await atomicWriteJson(path.join(CAPTURE_ROOT, 'manifest.json'), manifest);
+  await atomicWriteJson(path.join(CAPTURE_DIR, 'owner.json'), {
+    schema: VISUAL_EVIDENCE_SCHEMA,
+    runId: EVIDENCE_RUN_ID,
+    pid: process.pid,
+    status: manifest.status,
+  }, EVIDENCE_RUN_ID);
+  await finalizeRunOwnership(runOwner, {
+    schema: VISUAL_EVIDENCE_SCHEMA,
+    runId: EVIDENCE_RUN_ID,
+    status: manifest.status,
+    pass: manifest.pass,
+    complete: manifest.complete,
+    authoritativeManifest: path.posix.join('runs', EVIDENCE_RUN_ID, 'manifest.json'),
+  });
+  runOwner = null;
 });
