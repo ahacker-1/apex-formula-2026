@@ -47,7 +47,7 @@ globalThis.window = globalThis.window || { addEventListener: () => {}, removeEve
 globalThis.self = globalThis.self || globalThis.window;
 
 const THREE = await import('three');
-const { buildCircuit } = await import('../js/trackBuilder.js');
+const { buildCircuit, VENUE } = await import('../js/trackBuilder.js');
 const { TRACKS } = await import('../js/tracks.js');
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -177,6 +177,8 @@ function canopyAlphaBound(blobs) {
 let minStddev = { value: Infinity, track: '' };
 let worstAdjacent = { value: 0, track: '', mean: 0 };
 let maxCanopyAlpha = { value: 0, track: '', blobs: 0 };
+const bandSignatures = new Map();
+const groundRows = [];
 for (const trackId of Object.keys(TRACKS)) {
   const first = buildCircuit(trackId, TRACKS[trackId], new THREE.Scene());
   const second = buildCircuit(trackId, TRACKS[trackId], new THREE.Scene());
@@ -211,6 +213,24 @@ for (const trackId of Object.keys(TRACKS)) {
       }
     }
     const meta = ground.userData;
+    const expectedBands = VENUE[trackId]?.ground;
+    const realisedBands = meta.groundBands;
+    assert(Array.isArray(expectedBands) && Array.isArray(realisedBands)
+      && expectedBands.length === 3 && realisedBands.length === expectedBands.length,
+    `${trackId}: VENUE and realised ground both carry exactly three outward bands`);
+    if (expectedBands && realisedBands) {
+      const exact = expectedBands.every((band, i) => band.to === realisedBands[i]?.to
+        && band.surface === realisedBands[i]?.surface && band.tint === realisedBands[i]?.tint
+        && ['grass', 'gravel', 'asphalt'].includes(realisedBands[i]?.tile));
+      assert(exact, `${trackId}: realised ground bands match its VENUE entry exactly`);
+      assert(realisedBands[0].to < realisedBands[1].to && realisedBands[2].to === Infinity,
+        `${trackId}: ground bands are ordered outward and terminate at Infinity`);
+      const signature = realisedBands.map(band => `${band.to}:${band.surface}:${band.tint}`).join('|');
+      assert(!bandSignatures.has(signature), `${trackId}: ground-band identity is not shared with another circuit`,
+        `[duplicate=${bandSignatures.get(signature) || 'none'}]`);
+      bandSignatures.set(signature, trackId);
+      groundRows.push(`${trackId}: ${realisedBands.map(band => `${band.surface}/${band.tile}@${Number.isFinite(band.to) ? `${band.to}m` : 'inf'}`).join(' > ')}`);
+    }
     assert(Array.isArray(meta.macroOctaves) && meta.macroOctaves.length === 3
       && meta.vertexMacroOctaves?.length === 1 && meta.vertexMacroOctaves[0].wavelength >= 560
       && meta.fragmentMacroOctaves?.length === 2
@@ -226,8 +246,21 @@ for (const trackId of Object.keys(TRACKS)) {
       && shader.vertexShader.includes('vApexGroundWorldXZ')
       && shader.fragmentShader.includes('apexGroundNoise(vApexGroundWorldXZ, 46.0')
       && shader.fragmentShader.includes('apexGroundNoise(vApexGroundWorldXZ, 16.0')
+      && shader.fragmentShader.includes('texture2D(apexGroundDistanceMap')
+      && shader.fragmentShader.includes('texture2D(apexGroundBandMap0')
       && shader.fragmentShader.includes('texture2D(apexWoodlandMap, apexWoodlandUV)'),
-    `${trackId}: mid/high macro variation is evaluated per fragment from world position`);
+    `${trackId}: macro variation and band selection are evaluated per fragment from world position`);
+    const distanceTexture = ground.material.userData.groundDistanceTexture;
+    const otherDistanceTexture = otherGround.material.userData.groundDistanceTexture;
+    assert(distanceTexture?.isDataTexture && distanceTexture.image.width === meta.groundDistanceField?.textureSize
+      && distanceTexture.minFilter === THREE.LinearFilter && distanceTexture.magFilter === THREE.LinearFilter
+      && Buffer.from(distanceTexture.image.data).equals(Buffer.from(otherDistanceTexture?.image?.data || [])),
+    `${trackId}: outward kerb-distance field is deterministic and linearly filtered`);
+    assert(meta.groundBandCoordinate === 'metres-outward-from-outer-kerb'
+      && meta.groundDistanceField?.stage === 'fragment'
+      && ground.material.userData.groundBandTextures?.every(texture => texture?.isTexture
+        && texture.repeat.x === 1 && texture.repeat.y === 1 && texture.anisotropy >= 16),
+    `${trackId}: band selection preserves fixed UV repeat and high anisotropy`);
     const woodland = ground.material.userData.woodlandTexture;
     const otherWoodland = otherGround.material.userData.woodlandTexture;
     assert(woodland?.isDataTexture && woodland.image.width === meta.woodlandLayer.textureSize
@@ -253,7 +286,12 @@ for (const trackId of Object.keys(TRACKS)) {
   second.dispose();
 }
 
+assert(bandSignatures.size === Object.keys(TRACKS).length,
+  'no two circuits share an identical realised ground-band set',
+  `[${bandSignatures.size}/${Object.keys(TRACKS).length}]`);
+
 console.log(`GROUND SURFACE: ${checks - failures}/${checks} checks passed across ${Object.keys(TRACKS).length} circuits`);
+for (const row of groundRows) console.log(`ground bands ${row}`);
 console.log(`grass: ${grassBytes.length.toLocaleString('en-US')} bytes; mean ${grass.meanLuma.toFixed(4)}; dominant ${grass.dominantColumn.amplitude.toFixed(4)} @ ${grass.dominantColumn.cycles} cycles/tile; column p-p ${grass.columnPeakToPeak.toFixed(4)}; HF RMS ${grass.highFrequencyRms.toFixed(4)}; seam ${grass.wrapSeamMad.toFixed(4)}`);
 console.log(`ground colour luma stddev: minimum ${minStddev.value.toFixed(5)} (${minStddev.track}), floor ${MIN_COLOUR_LUMA_STDDEV.toFixed(3)}`);
 console.log(`adjacent ground-vertex luma delta: worst ${worstAdjacent.value.toFixed(5)} (${worstAdjacent.track}; mean ${worstAdjacent.mean.toFixed(5)}), ceiling ${MAX_ADJACENT_VERTEX_LUMA_DELTA.toFixed(3)}`);

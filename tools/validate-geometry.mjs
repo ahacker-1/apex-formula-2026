@@ -366,7 +366,8 @@ function rasterise(fn, W, H) {
 const THREE = await import('three');
 // TRACKBUILDER=/abs/path/to/a/copy.js points this at an alternate build, so a
 // deliberately broken copy can be used to confirm these assertions have teeth.
-const { buildCircuit } = await import(process.env.TRACKBUILDER || '../js/trackBuilder.js');
+const trackBuilderModule = await import(process.env.TRACKBUILDER || '../js/trackBuilder.js');
+const { buildCircuit, VENUE } = trackBuilderModule;
 const { TRACKS } = await import('../js/tracks.js');
 const TEX = await import('../js/textures.js');
 
@@ -384,6 +385,27 @@ const DOUBLE = THREE.DoubleSide;
 // one of the 24 layouts. Tracked across the whole run and reported at the end.
 const DRAW_BUDGET = 450;
 const worstDraws = { n: 0, id: '' };
+const worstTriangles = { n: 0, id: '' };
+
+function effectivelyVisible(object) {
+  for (let node = object; node; node = node.parent) if (node.visible === false) return false;
+  return true;
+}
+
+function sceneRenderCost(group) {
+  let draws = 0, instances = 0, triangles = 0;
+  group.traverse((object) => {
+    if (!effectivelyVisible(object)) return;
+    if (object.isMesh || object.isSprite || object.isLine || object.isPoints) draws++;
+    if (object.isInstancedMesh) instances += object.count;
+    if (object.isMesh && object.geometry?.attributes?.position) {
+      const primitive = object.geometry.index
+        ? object.geometry.index.count / 3 : object.geometry.attributes.position.count / 3;
+      triangles += primitive * (object.isInstancedMesh ? object.count : 1);
+    } else if (object.isSprite) triangles += 2;
+  });
+  return { draws, instances, triangles };
+}
 
 // Face normals of every triangle of an indexed geometry, as {n, area}.
 function faceNormals(geo) {
@@ -661,6 +683,15 @@ const EXPECT_AMP = {
 };
 const MAX_GRADE_TOL = 0.075;      // the builder aims at 0.068; this is the ceiling
 const worstRelief = { grade: 0, id: '', verge: 0, vergeId: '', base: 0, baseId: '' };
+const landformRows = [];
+const backdropRows = [];
+let furthestBackdropVertex = 0;
+let steepestBackdropAngle = { angle: 0, track: '', kind: '' };
+const PINNED_BACKDROP_KINDS = Object.freeze({
+  melbourne: ['city-sprawl', 'city-cluster'], shanghai: ['industry'],
+  miami: ['city-sprawl'], montreal: ['ridge-forest', 'city-cluster'],
+  silverstone: ['none'], monza: ['none'], austin: ['none'], yasmarina: ['none'],
+});
 
 // ------------------------------------------------------------------ tests ---
 function run(trackId) {
@@ -855,6 +886,9 @@ function run(trackId) {
   {
     const ALLOWED_UNLIT = new Set(['horizon-ridge', 'horizon-haze', 'racing-groove',
       'rubber-patches', 'track-paint', 'tv-screen', 'floodlight-pools',
+      // Typed far backdrops are pre-tinted matte paintings with fog disabled;
+      // lighting or scene fog would erase them before the 2600m sky dome.
+      'venue-backdrop',
       // baked ground shading: multiply-style black decals. Lighting them would
       // be circular (a shadow that responds to the light it represents).
       'ground-shade-structures', 'ground-shade-canopy']);
@@ -882,14 +916,11 @@ function run(trackId) {
 
   // ---- 0. draw-call budget -------------------------------------------------
   {
-    let draws = 0, instances = 0;
-    group.traverse(o => {
-      if (o.isMesh || o.isSprite || o.isLine || o.isPoints) draws++;
-      if (o.isInstancedMesh) instances += o.count;
-    });
+    const { draws, instances, triangles } = sceneRenderCost(group);
     if (draws > worstDraws.n) { worstDraws.n = draws; worstDraws.id = trackId; }
+    if (triangles > worstTriangles.n) { worstTriangles.n = triangles; worstTriangles.id = trackId; }
     assert(draws <= DRAW_BUDGET, `circuit stays inside the ${DRAW_BUDGET} draw-call budget`,
-      `[draws=${draws}, instances batched=${instances}]`);
+      `[draws=${draws}, triangles=${Math.round(triangles)}, instances batched=${instances}]`);
   }
 
   // ---- 1. road / edge / kerb triangles must be visible from above ----------
@@ -2341,23 +2372,81 @@ function run(trackId) {
       assert(speciesSeen.has('pine'), `${trackId} gets conifers`, `[species=${[...speciesSeen]}]`);
     }
 
-    if (!FOREST_IDS.has(trackId)) {
-      const sky = named('city-skyline');
-      assert(!!sky && sky.isInstancedMesh && sky.count > 20, 'far skyline blocks present',
-        `[n=${sky ? sky.count : 0}]`);
-      if (sky) {
-        let near = Infinity, far = 0, tallest = 0;
-        for (let k = 0; k < sky.count; k++) {
-          const { pos, scl } = instanceAt(sky, k);
-          const d = dist(pos.x, pos.z).d;
-          near = Math.min(near, d); far = Math.max(far, d);
-          tallest = Math.max(tallest, scl.y);
-        }
-        assert(near > wallOff && far <= 501, 'skyline sits at 200-500m',
-          `[nearest=${near.toFixed(0)}m furthest=${far.toFixed(0)}m tallest=${tallest.toFixed(0)}m]`);
+    // The old forest/theme skyline rule is intentionally gone. Typed backdrop
+    // identity is validated independently below against VENUE for all 24 tracks.
+    assert(!named('city-skyline'), 'legacy visible city-skyline batch is absent');
+  }
+
+  // ---- 4h.2 typed backdrop identity, containment and elevation angle -------
+  {
+    const expected = VENUE?.[trackId]?.backdrop;
+    const backdrop = named('venue-backdrop');
+    assert(Array.isArray(expected), `${trackId}: VENUE backdrop entry exists`);
+    assert(!!backdrop && backdrop.isGroup, `${trackId}: typed venue-backdrop group exists`);
+    if (expected && backdrop) {
+      const expectedKinds = expected.map(layer => layer.kind);
+      const realisedKinds = backdrop.userData.kinds || [];
+      assert(JSON.stringify(realisedKinds) === JSON.stringify(expectedKinds),
+        `${trackId}: realised backdrop kinds match VENUE in near-to-far order`,
+        `[${realisedKinds.join(' > ') || 'none'}]`);
+      if (PINNED_BACKDROP_KINDS[trackId]) {
+        assert(JSON.stringify(realisedKinds) === JSON.stringify(PINNED_BACKDROP_KINDS[trackId]),
+          `${trackId}: researched skyline correction is independently pinned`,
+          `[${realisedKinds.join(' > ')}]`);
       }
-    } else {
-      assert(!named('city-skyline'), 'wooded circuits do not get a city skyline');
+      const expectedVisible = expected.filter(layer => layer.kind !== 'none');
+      const meshes = backdrop.children.filter(child => child.isMesh && effectivelyVisible(child));
+      assert(meshes.length === expectedVisible.length,
+        `${trackId}: backdrop has one visible matte mesh per non-none layer`,
+        `[${meshes.length}/${expectedVisible.length}]`);
+      let vertexCount = 0, maxSky = 0, maxAngle = 0, minMargin = Infinity;
+      for (let layerIndex = 0; layerIndex < meshes.length; layerIndex++) {
+        const mesh = meshes[layerIndex];
+        const authored = expectedVisible[layerIndex];
+        assert(mesh.userData.kind === authored.kind
+          && JSON.stringify(mesh.userData.authored) === JSON.stringify(authored),
+        `${trackId}/${authored.kind}: backdrop metadata matches its VENUE layer`);
+        assert(mesh.material.isMeshBasicMaterial && mesh.material.fog === false
+          && mesh.material.transparent === false && mesh.userData.fogIndependent === true,
+        `${trackId}/${authored.kind}: backdrop is an opaque, pre-tinted, fog-independent matte`);
+        const position = mesh.geometry.attributes.position;
+        assert(!!position && position.count >= 8,
+          `${trackId}/${authored.kind}: backdrop layer has real silhouette geometry`,
+          `[vertices=${position?.count || 0}]`);
+        mesh.updateWorldMatrix(true, false);
+        const world = new THREE.Vector3();
+        for (let v = 0; v < position.count; v++) {
+          world.fromBufferAttribute(position, v).applyMatrix4(mesh.matrixWorld);
+          vertexCount++;
+          const skyR = world.length();
+          maxSky = Math.max(maxSky, skyR);
+          furthestBackdropVertex = Math.max(furthestBackdropVertex, skyR);
+          minMargin = Math.min(minMargin, dist(world.x, world.z).d - c.halfWidth);
+          for (let i = 0; i < N; i++) {
+            const plan = Math.hypot(world.x - samples[i].p.x, world.z - samples[i].p.z);
+            const angle = Math.atan2(world.y - (c.heights[i] + 2.6), Math.max(plan, 1e-6));
+            maxAngle = Math.max(maxAngle, angle);
+          }
+        }
+      }
+      const maxAngleDeg = maxAngle * 180 / Math.PI;
+      if (maxAngle > steepestBackdropAngle.angle) {
+        steepestBackdropAngle = { angle: maxAngle, track: trackId,
+          kind: meshes.find(mesh => mesh.userData.kind)?.userData.kind || 'none' };
+      }
+      assert(maxSky < 2600, `${trackId}: every backdrop vertex stays inside SKY_R`,
+        `[furthest=${maxSky.toFixed(1)}m/2600m]`);
+      assert(meshes.length === 0 || minMargin >= 0.95,
+        `${trackId}: backdrop geometry clears the racing surface`,
+        `[minimum outer-road margin=${Number.isFinite(minMargin) ? minMargin.toFixed(1) : 'none'}m]`);
+      assert(maxAngleDeg <= 22,
+        `${trackId}: no backdrop rises above a sane 22-degree chase-eye angle anywhere on the lap`,
+        `[maximum=${maxAngleDeg.toFixed(2)}deg]`);
+      const noneIds = new Set(['silverstone', 'monza', 'austin', 'yasmarina']);
+      assert(noneIds.has(trackId) ? expectedKinds.length === 1 && expectedKinds[0] === 'none'
+        && meshes.length === 0 : !expectedKinds.includes('none'),
+      `${trackId}: none is realised only for the four intentionally empty horizons`);
+      backdropRows.push(`${trackId}: ${expectedKinds.join(' > ')}; layers=${meshes.length}; vertices=${vertexCount}; max=${maxSky.toFixed(1)}m/${maxAngleDeg.toFixed(2)}deg`);
     }
   }
 
@@ -3089,10 +3178,85 @@ function run(trackId) {
       assert(worstEdge <= 0.5, 'ground meets the road height at the road edge',
         `[worst gap=${worstEdge.toFixed(3)}m over ${tested} probes]`);
       if (worstEdge > worstRelief.verge) { worstRelief.verge = worstEdge; worstRelief.vergeId = trackId; }
-      if (farTested > 20) {
+      if (farTested > 20 && VENUE?.[trackId]?.landform === 'flat') {
         assert(worstFar < 0.25, 'ground has faded back to the flat datum well past the barriers',
           `[worst residual=${worstFar.toFixed(3)}m over ${farTested} probes]`);
       }
+
+      // Measure the actual rendered ground vertices beyond the road-relief handoff.
+      // This is deliberately independent of landformAt(): a metadata-only flag or
+      // a function that never reaches the mesh cannot satisfy the identity gate.
+      const landform = g.userData.landform;
+      const expectedKind = VENUE?.[trackId]?.landform;
+      assert(landform?.kind === expectedKind,
+        `${trackId}: realised ground publishes the VENUE landform`,
+        `[${landform?.kind || 'missing'}]`);
+      const terrainPosition = g.geometry.attributes.position;
+      let terrainMin = Infinity, terrainMax = -Infinity, terrainSamples = 0;
+      for (let v = 0; v < terrainPosition.count; v++) {
+        const x = terrainPosition.getX(v) + g.position.x;
+        const z = terrainPosition.getZ(v) + g.position.z;
+        if (dist(x, z).d <= (landform?.fadeOut ?? Infinity) + 2) continue;
+        const y = terrainPosition.getY(v) + g.position.y;
+        terrainMin = Math.min(terrainMin, y);
+        terrainMax = Math.max(terrainMax, y);
+        terrainSamples++;
+      }
+      const terrainRange = terrainSamples ? terrainMax - terrainMin : 0;
+      const floors = { 'cut-bank': 6, dune: 4, bowl: 8, hillside: 10, terrace: 6 };
+      if (expectedKind === 'flat') {
+        assert(terrainRange <= 0.25,
+          `${trackId}: flat outfield remains below the 0.25m relief ceiling`,
+          `[range=${terrainRange.toFixed(2)}m across ${terrainSamples} vertices]`);
+      } else {
+        assert(terrainRange >= floors[expectedKind],
+          `${trackId}: ${expectedKind} outfield exceeds its ${floors[expectedKind]}m relief floor`,
+          `[range=${terrainRange.toFixed(2)}m across ${terrainSamples} vertices]`);
+      }
+      assert(terrainSamples > 100 && landform?.samples > 100
+        && Math.abs(terrainRange - (landform?.range ?? -1)) < 0.25,
+      `${trackId}: published landform range matches the realised ground geometry`,
+      `[measured=${terrainRange.toFixed(3)}m published=${(landform?.range ?? -1).toFixed(3)}m]`);
+      landformRows.push(`${trackId}: ${expectedKind} ${terrainMin.toFixed(2)}..${terrainMax.toFixed(2)}m (range ${terrainRange.toFixed(2)}m)`);
+
+      // Ground-sited infrastructure is authored around a terrainAt() anchor. At
+      // that anchor its lowest vertex must still meet the rendered terrain mesh;
+      // this catches a new landform leaving a paddock, road, fence or bank visibly
+      // floating or buried even though its placement code ran successfully.
+      const groundSited = new Set([
+        'infra-paddock-aprons', 'infra-perimeter-posts', 'infra-perimeter-panels',
+        'infra-parking-surfaces', 'infra-access-roads', 'infra-surface-margins',
+        'infra-spectator-banks',
+      ]);
+      let anchorTests = 0, worstAnchorGap = 0, worstAnchor = 'none', worstAnchorSigned = 0;
+      const instanceMatrix = new THREE.Matrix4(), worldMatrix = new THREE.Matrix4();
+      const anchor = new THREE.Vector3(), vertex = new THREE.Vector3();
+      group.traverse((mesh) => {
+        if (!mesh.isInstancedMesh || !groundSited.has(mesh.name)) return;
+        const position = mesh.geometry.attributes.position;
+        for (let instance = 0; instance < mesh.count; instance++) {
+          mesh.getMatrixAt(instance, instanceMatrix);
+          worldMatrix.multiplyMatrices(mesh.matrixWorld, instanceMatrix);
+          anchor.setFromMatrixPosition(worldMatrix);
+          let baseY = Infinity;
+          for (let v = 0; v < position.count; v++) {
+            vertex.fromBufferAttribute(position, v).applyMatrix4(worldMatrix);
+            baseY = Math.min(baseY, vertex.y);
+          }
+          const terrainY = at(anchor.x, anchor.z);
+          if (terrainY == null) continue;
+          anchorTests++;
+          const signedGap = baseY - terrainY;
+          if (Math.abs(signedGap) > worstAnchorGap) {
+            worstAnchorGap = Math.abs(signedGap);
+            worstAnchorSigned = signedGap;
+            worstAnchor = `${mesh.name}#${instance}`;
+          }
+        }
+      });
+      assert(anchorTests > 100 && worstAnchorGap <= 0.55,
+        `${trackId}: ground-sited infrastructure remains planted on the realised landform`,
+        `[worst=${worstAnchorSigned.toFixed(3)}m at ${worstAnchor} over ${anchorTests} instances]`);
     }
   }
 
@@ -3607,12 +3771,34 @@ if (process.env.API_BASELINE) {
   process.exit(diff === 0 ? 0 : 1);
 }
 
+// Lightweight cost-only mode is also usable against a historical builder that
+// predates VENUE. It is how work orders report a like-for-like before/after
+// triangle count without weakening or bypassing the full current validation.
+if (process.env.METRICS_ONLY) {
+  const peakDraws = { n: 0, id: '' }, peakTriangles = { n: 0, id: '' };
+  for (const id of Object.keys(TRACKS)) {
+    const circuit = buildCircuit(id, TRACKS[id], new THREE.Scene());
+    const cost = sceneRenderCost(circuit.group);
+    if (cost.draws > peakDraws.n) Object.assign(peakDraws, { n: cost.draws, id });
+    if (cost.triangles > peakTriangles.n) Object.assign(peakTriangles, { n: cost.triangles, id });
+    circuit.dispose();
+  }
+  log(`worst-case draw calls: ${peakDraws.n} (${peakDraws.id})`);
+  log(`worst-case triangles: ${Math.round(peakTriangles.n)} (${peakTriangles.id})`);
+  process.exit(0);
+}
+
 const list = artOnly ? [] : (ids.length ? ids : Object.keys(TRACKS)); // every circuit by default
 for (const id of list) run(id);
 if (!artOnly) await runCar();
 await runCanopyArt();
+for (const row of landformRows) log(`landform ${row}`);
+for (const row of backdropRows) log(`backdrop ${row}`);
 if (worstDraws.n) {
   log(`\nworst-case draw calls: ${worstDraws.n} (${worstDraws.id}), budget ${DRAW_BUDGET}`);
+  log(`worst-case triangles: ${Math.round(worstTriangles.n)} (${worstTriangles.id})`);
+  log(`furthest backdrop vertex: ${furthestBackdropVertex.toFixed(1)}m of 2600m sky radius`);
+  log(`steepest backdrop chase-eye angle: ${(steepestBackdropAngle.angle * 180 / Math.PI).toFixed(2)}deg (${steepestBackdropAngle.track})`);
 }
 if (worstRelief.id) {
   log(`worst grade: ${(worstRelief.grade * 100).toFixed(2)}% (${worstRelief.id}), ceiling ${(MAX_GRADE_TOL * 100).toFixed(1)}%`);

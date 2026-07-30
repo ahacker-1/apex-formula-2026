@@ -200,7 +200,9 @@ function venueMeshes(circuit) {
 }
 
 function matrixSnapshot(circuit) {
-  return venueMeshes(circuit).map(mesh => ({
+  const meshes = [];
+  circuit.group.traverse(object => { if (object.isInstancedMesh) meshes.push(object); });
+  return meshes.sort((a, b) => a.name.localeCompare(b.name)).map(mesh => ({
     name: mesh.name,
     count: mesh.count,
     matrices: Array.from(mesh.instanceMatrix.array.slice(0, mesh.count * 16)),
@@ -523,23 +525,26 @@ for (const trackId of Object.keys(TRACKS)) {
   minTriangles = Math.min(minTriangles, triangles); maxTriangles = Math.max(maxTriangles, triangles);
   const baseBatches = batches - identityMeshes.length - infrastructureMeshes.length;
   const baseTriangles = triangles - identityTriangles - infrastructureTriangles;
-  assert(baseBatches >= 7 && baseBatches <= 10,
-    `${trackId}: legacy base scenery stays within 7-10 batches`, `[${baseBatches}]`);
+  assert(baseBatches >= 6 && baseBatches <= 8,
+    `${trackId}: visible base scenery stays within 6-8 batches`, `[${baseBatches}]`);
   // f8cb011 used 5,700-12,500: the untextured detail-1 icosahedron shrubs cost
   // 80 triangles each. c1fb4df moved this to 3,400-6,000 when alpha-cut shrubs
   // dropped to 12 triangles while the richer far-mass run rose from 8 to 20.
   // The approved no-cap fallback shares the exact 8-triangle tree X with each
   // shrub, removing a further 4 * 25..104 = 100..416 triangles per venue.
-  assert(baseTriangles >= 3000 && baseTriangles <= 5600,
+  // Theme-gated city boxes moved to invisible RNG compatibility storage; the
+  // new matte backdrops are regular (non-instanced) meshes checked by the full
+  // geometry validator. Visible instanced base cost therefore has a lower floor.
+  assert(baseTriangles >= 1500 && baseTriangles <= 5600,
     `${trackId}: base scenery triangle cost stays within the foliage-card band`, `[${Math.round(baseTriangles)}]`);
   // d3105c5 measured 18-25 batches / 8,480-14,144 triangles. Adaptive short
-  // road/fence spans, one worn-edge batch and rounded berms deliberately move
-  // the follow-up range to 20-26 batches / 9,580-15,868 triangles.
+  // road/fence spans and rounded berms raised the ceiling; moving obsolete city
+  // boxes into invisible RNG compatibility storage lowers the visible floor.
   assert(infrastructureMeshes.length >= 12 && infrastructureMeshes.length <= 15,
     `${trackId}: infrastructure stays within 12-15 instanced batches`, `[${infrastructureMeshes.length}]`);
-  assert(batches >= 20 && batches <= 26 && triangles >= 9580 && triangles <= 15868,
+  assert(batches >= 18 && batches <= 24 && triangles >= 7312 && triangles <= 15868,
     `${trackId}: total scenery including infrastructure stays within bounded render cost`,
-    `[batches=${batches}/26 triangles=${Math.round(triangles)}/15868]`);
+    `[batches=${batches}/24 triangles=${Math.round(triangles)}/15868]`);
   infrastructureRows.push({
     trackId,
     batches: infrastructureMeshes.length,

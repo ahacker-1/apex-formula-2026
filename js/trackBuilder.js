@@ -75,18 +75,19 @@ const SPECIES_H = {
 
 // Structural identity for the three scenery depths. These are intentionally
 // original compositions rather than replicas of branded real-world landmarks:
-// the cue controls the little service compound beside the barrier, `mass` the
-// distant vegetation silhouette, and `skyline` the rhythm of generic buildings.
+// the cue controls the little service compound beside the barrier and `mass` the
+// distant vegetation silhouette. `rngSkyline` is retained only to consume the
+// historical non-classic RNG stream; VENUE.backdrop is the visible authority.
 // Every circuit gets a distinct combination even when it shares a climate.
 const VENUE_DEPTH = {
   melbourne:   { cue: 'park-workshop',    mass: 'park',     accent: 0x4f8c78 },
   shanghai:    { cue: 'river-garden-post', mass: 'park',     accent: 0xb75b3e },
   suzuka:      { cue: 'hillside-post',    mass: 'alpine',   accent: 0xd06a43 },
-  bahrain:     { cue: 'desert-canopy',    mass: 'arid',     accent: 0xc18a48, skyline: 'low' },
-  jeddah:      { cue: 'coastal-service',  mass: 'tropical', accent: 0x4a9ca6, skyline: 'needle' },
-  miami:       { cue: 'pastel-courtyard', mass: 'tropical', accent: 0xdb806f, skyline: 'low' },
+  bahrain:     { cue: 'desert-canopy',    mass: 'arid',     accent: 0xc18a48, rngSkyline: 'low' },
+  jeddah:      { cue: 'coastal-service',  mass: 'tropical', accent: 0x4a9ca6, rngSkyline: 'needle' },
+  miami:       { cue: 'pastel-courtyard', mass: 'tropical', accent: 0xdb806f, rngSkyline: 'low' },
   montreal:    { cue: 'island-post',      mass: 'park',     accent: 0x4c7898 },
-  monaco:      { cue: 'hillside-terrace', mass: 'tropical', accent: 0xd1a06e, skyline: 'terrace' },
+  monaco:      { cue: 'hillside-terrace', mass: 'tropical', accent: 0xd1a06e, rngSkyline: 'terrace' },
   barcelona:   { cue: 'dry-park-post',    mass: 'park',     accent: 0xb86c45 },
   spielberg:   { cue: 'alpine-workshop',  mass: 'alpine',   accent: 0xa95245 },
   silverstone: { cue: 'airfield-service', mass: 'park',     accent: 0x668ca1 },
@@ -94,17 +95,294 @@ const VENUE_DEPTH = {
   hungaroring: { cue: 'bowl-lookout',     mass: 'park',     accent: 0x796c9f },
   zandvoort:   { cue: 'dune-service',     mass: 'arid',     accent: 0x57908d },
   monza:       { cue: 'park-pavilion',    mass: 'woodland', accent: 0xa57642 },
-  madrid:      { cue: 'expo-courtyard',   mass: 'park',     accent: 0xc2734c, skyline: 'slab' },
-  baku:        { cue: 'stone-workshop',   mass: 'arid',     accent: 0xb28d5c, skyline: 'slender' },
-  singapore:   { cue: 'night-garden-post', mass: 'tropical', accent: 0x4ba89a, skyline: 'vertical' },
+  madrid:      { cue: 'expo-courtyard',   mass: 'park',     accent: 0xc2734c, rngSkyline: 'slab' },
+  baku:        { cue: 'stone-workshop',   mass: 'arid',     accent: 0xb28d5c, rngSkyline: 'slender' },
+  singapore:   { cue: 'night-garden-post', mass: 'tropical', accent: 0x4ba89a, rngSkyline: 'vertical' },
   austin:      { cue: 'scrub-lookout',    mass: 'arid',     accent: 0x8c658f },
   mexico:      { cue: 'highland-courtyard', mass: 'park',     accent: 0x8d7651 },
   interlagos:  { cue: 'hillside-workshop',  mass: 'tropical', accent: 0x568064 },
-  lasvegas:    { cue: 'desert-night-depot', mass: 'arid',     accent: 0x8b70b1, skyline: 'vertical' },
-  lusail:      { cue: 'dune-light-post',     mass: 'arid',     accent: 0x5c83a8, skyline: 'low' },
-  yasmarina:   { cue: 'marina-service',      mass: 'tropical', accent: 0x4d9ca3, skyline: 'terrace' },
+  lasvegas:    { cue: 'desert-night-depot', mass: 'arid',     accent: 0x8b70b1, rngSkyline: 'vertical' },
+  lusail:      { cue: 'dune-light-post',     mass: 'arid',     accent: 0x5c83a8, rngSkyline: 'low' },
+  yasmarina:   { cue: 'marina-service',      mass: 'tropical', accent: 0x4d9ca3, rngSkyline: 'terrace' },
 };
-const VENUE_DEPTH_DEFAULT = { cue: 'circuit-service', mass: 'woodland', accent: 0x687b71, skyline: 'mixed' };
+const VENUE_DEPTH_DEFAULT = { cue: 'circuit-service', mass: 'woodland', accent: 0x687b71, rngSkyline: 'mixed' };
+
+// Venue identity authored from the real setting, ordered outwards from the
+// OUTER KERB. Ground `surface` is semantic (and therefore useful to validators
+// and later art passes); GROUND_SURFACE_TILE below maps it onto one of the four
+// original, unbranded project tiles. Backdrops are matte-painting silhouettes,
+// never replicas of named architecture.
+export const VENUE = Object.freeze({
+  melbourne: {
+    ground: [
+      { to: 24, surface: 'mown-park-turf', tint: 0x77985f },
+      { to: 76, surface: 'worn-turf-sand-scuff', tint: 0x9a9467 },
+      { to: Infinity, surface: 'open-parkland', tint: 0x66865b },
+    ], landform: 'flat',
+    backdrop: [
+      { kind: 'city-sprawl', dist: 900, height: 20, spread: 2200 },
+      { kind: 'city-cluster', dist: 1900, height: 112, spread: 420 },
+    ],
+  },
+  shanghai: {
+    ground: [
+      { to: 38, surface: 'wide-concrete-apron', tint: 0xa6a59e },
+      { to: 92, surface: 'humid-mown-grass', tint: 0x72865a },
+      { to: Infinity, surface: 'reed-fringed-marsh', tint: 0x69775a },
+    ], landform: 'flat',
+    backdrop: [{ kind: 'industry', dist: 900, height: 34, spread: 2600 }],
+  },
+  suzuka: {
+    ground: [
+      { to: 26, surface: 'deep-gravel-trap', tint: 0xa89f8a },
+      { to: 84, surface: 'red-cut-earth-bank', tint: 0x8d644a },
+      { to: Infinity, surface: 'damp-forest-floor', tint: 0x4e5944 },
+    ], landform: 'cut-bank',
+    backdrop: [
+      { kind: 'ridge-forest', dist: 1500, height: 76, spread: 4200 },
+      { kind: 'mountain', dist: 2200, height: 138, spread: 3600 },
+    ],
+  },
+  bahrain: {
+    ground: [
+      { to: 34, surface: 'pale-sand-apron', tint: 0xc9b284 },
+      { to: 96, surface: 'raked-sand-berm', tint: 0xbda06d },
+      { to: Infinity, surface: 'desert-pavement', tint: 0x9e8a68 },
+    ], landform: 'flat',
+    backdrop: [{ kind: 'ridge-bare', dist: 2100, height: 42, spread: 3400 }],
+  },
+  jeddah: {
+    ground: [
+      { to: 16, surface: 'narrow-promenade', tint: 0xa9aaa5 },
+      { to: 88, surface: 'empty-pale-sand-lot', tint: 0xc6b997 },
+      { to: Infinity, surface: 'coastal-rubble', tint: 0x9f9a8e },
+    ], landform: 'flat',
+    backdrop: [
+      { kind: 'city-sprawl', dist: 700, height: 68, spread: 1800 },
+      { kind: 'industry', dist: 1100, height: 46, spread: 1300 },
+      { kind: 'sea', dist: 1800, height: 8, spread: 4200 },
+    ],
+  },
+  miami: {
+    ground: [
+      { to: 46, surface: 'painted-car-park-asphalt', tint: 0x8d999c },
+      { to: 94, surface: 'artificial-turf-bed', tint: 0x638c62 },
+      { to: Infinity, surface: 'mulch-island', tint: 0x795e4d },
+    ], landform: 'flat',
+    backdrop: [{ kind: 'city-sprawl', dist: 1200, height: 18, spread: 3000 }],
+  },
+  montreal: {
+    ground: [
+      { to: 20, surface: 'narrow-mown-grass', tint: 0x718f61 },
+      { to: 72, surface: 'leafy-tree-screen', tint: 0x536849 },
+      { to: Infinity, surface: 'riprap-bank', tint: 0x777a72 },
+    ], landform: 'flat',
+    backdrop: [
+      { kind: 'ridge-forest', dist: 1050, height: 52, spread: 1200 },
+      { kind: 'city-cluster', dist: 1850, height: 96, spread: 760 },
+    ],
+  },
+  monaco: {
+    ground: [
+      { to: 18, surface: 'street-pavement-kerb', tint: 0x898f91 },
+      { to: 58, surface: 'quay-slab', tint: 0xaaa69d },
+      { to: Infinity, surface: 'stone-retaining-wall', tint: 0x9c8e7d },
+    ], landform: 'terrace',
+    backdrop: [
+      { kind: 'city-sprawl', dist: 620, height: 72, spread: 2500 },
+      { kind: 'ridge-bare', dist: 1450, height: 118, spread: 1900 },
+      { kind: 'sea', dist: 1900, height: 8, spread: 2200 },
+    ],
+  },
+  barcelona: {
+    ground: [
+      { to: 30, surface: 'pale-gravel-apron', tint: 0xb8a98c },
+      { to: 96, surface: 'dry-straw-grass', tint: 0xa89a61 },
+      { to: Infinity, surface: 'catalan-dusty-earth', tint: 0x98745a },
+    ], landform: 'hillside',
+    backdrop: [
+      { kind: 'industry', dist: 700, height: 30, spread: 1300 },
+      { kind: 'ridge-forest', dist: 1700, height: 64, spread: 3600 },
+      { kind: 'mountain', dist: 2250, height: 112, spread: 2600 },
+    ],
+  },
+  spielberg: {
+    ground: [
+      { to: 26, surface: 'alpine-asphalt-apron', tint: 0x858b89 },
+      { to: 104, surface: 'mown-emerald-meadow', tint: 0x5c8b4f },
+      { to: Infinity, surface: 'black-spruce-floor', tint: 0x414f3e },
+    ], landform: 'hillside',
+    backdrop: [
+      { kind: 'ridge-forest', dist: 1350, height: 94, spread: 5000 },
+      { kind: 'mountain', dist: 2150, height: 152, spread: 5200 },
+    ],
+  },
+  silverstone: {
+    ground: [
+      { to: 34, surface: 'airfield-asphalt-apron', tint: 0x777d7f },
+      { to: 112, surface: 'mown-pasture', tint: 0x6f8d5a },
+      { to: Infinity, surface: 'rough-windblown-pasture', tint: 0x7d8560 },
+    ], landform: 'flat',
+    backdrop: [{ kind: 'none', dist: 0, height: 0, spread: 0 }],
+  },
+  spa: {
+    ground: [
+      { to: 28, surface: 'wet-gravel-trap', tint: 0x9b978a },
+      { to: 98, surface: 'wet-upland-grass', tint: 0x607957 },
+      { to: Infinity, surface: 'ardennes-forest-floor', tint: 0x404a3d },
+    ], landform: 'cut-bank',
+    backdrop: [{ kind: 'ridge-forest', dist: 1500, height: 112, spread: 5200 }],
+  },
+  hungaroring: {
+    ground: [
+      { to: 30, surface: 'chalky-pale-gravel', tint: 0xb3a486 },
+      { to: 104, surface: 'burnt-straw-grass', tint: 0xa29359 },
+      { to: Infinity, surface: 'bare-sandy-soil', tint: 0x9a7659 },
+    ], landform: 'bowl',
+    backdrop: [{ kind: 'ridge-bare', dist: 1750, height: 72, spread: 4600 }],
+  },
+  zandvoort: {
+    ground: [
+      { to: 32, surface: 'north-sea-sand-apron', tint: 0xc3b78e },
+      { to: 108, surface: 'marram-tufted-dune', tint: 0x999566 },
+      { to: Infinity, surface: 'bare-drifting-sand', tint: 0xc0af82 },
+    ], landform: 'dune',
+    backdrop: [
+      { kind: 'city-sprawl', dist: 850, height: 28, spread: 700 },
+      { kind: 'dune-ridge', dist: 1250, height: 44, spread: 3600 },
+      { kind: 'sea', dist: 2050, height: 7, spread: 4200 },
+    ],
+  },
+  monza: {
+    ground: [
+      { to: 28, surface: 'park-gravel-trap', tint: 0xa29b85 },
+      { to: 92, surface: 'dappled-parkland-grass', tint: 0x60764f },
+      { to: Infinity, surface: 'high-canopy-floor', tint: 0x46513f },
+    ], landform: 'flat',
+    backdrop: [{ kind: 'none', dist: 0, height: 0, spread: 0 }],
+  },
+  madrid: {
+    ground: [
+      { to: 40, surface: 'expo-concrete-paving', tint: 0xaaa69f },
+      { to: 102, surface: 'new-raw-subsoil', tint: 0x9c765d },
+      { to: Infinity, surface: 'grid-planted-mulch', tint: 0x6f5949 },
+    ], landform: 'terrace',
+    backdrop: [
+      { kind: 'industry', dist: 620, height: 38, spread: 1800 },
+      { kind: 'city-cluster', dist: 2050, height: 92, spread: 620 },
+      { kind: 'mountain', dist: 2350, height: 82, spread: 2200 },
+    ],
+  },
+  baku: {
+    ground: [
+      { to: 20, surface: 'granite-kerb-cobble', tint: 0x8e8c87 },
+      { to: 66, surface: 'caspian-paved-promenade', tint: 0xa39c90 },
+      { to: Infinity, surface: 'seaward-irrigated-lawn', tint: 0x698361 },
+    ], landform: 'terrace',
+    backdrop: [
+      { kind: 'city-sprawl', dist: 560, height: 64, spread: 2200 },
+      { kind: 'city-cluster', dist: 1250, height: 118, spread: 520 },
+      { kind: 'ridge-bare', dist: 1900, height: 70, spread: 3000 },
+      { kind: 'sea', dist: 2200, height: 7, spread: 2500 },
+    ],
+  },
+  singapore: {
+    ground: [
+      { to: 22, surface: 'granite-sett-paving', tint: 0x858b8b },
+      { to: 70, surface: 'civic-concrete-plaza', tint: 0xa4a39e },
+      { to: Infinity, surface: 'padang-turf', tint: 0x4f7955 },
+    ], landform: 'flat',
+    backdrop: [
+      { kind: 'city-sprawl', dist: 720, height: 54, spread: 1500 },
+      { kind: 'city-cluster', dist: 1100, height: 104, spread: 2300 },
+    ],
+  },
+  austin: {
+    ground: [
+      { to: 42, surface: 'broad-asphalt-apron', tint: 0x7d7c78 },
+      { to: 108, surface: 'graded-earth-bank', tint: 0x9a684c },
+      { to: Infinity, surface: 'dormant-prairie-black-clay', tint: 0x75674d },
+    ], landform: 'hillside',
+    backdrop: [{ kind: 'none', dist: 0, height: 0, spread: 0 }],
+  },
+  mexico: {
+    ground: [
+      { to: 36, surface: 'highland-asphalt-apron', tint: 0x777b79 },
+      { to: 98, surface: 'dusty-patchy-park-grass', tint: 0x777758 },
+      { to: Infinity, surface: 'bare-lakebed-clay', tint: 0x8d705f },
+    ], landform: 'flat',
+    backdrop: [
+      { kind: 'city-sprawl', dist: 850, height: 52, spread: 5600 },
+      { kind: 'mountain', dist: 2350, height: 102, spread: 1800 },
+    ],
+  },
+  interlagos: {
+    ground: [
+      { to: 18, surface: 'narrow-rain-darkened-grass', tint: 0x55704f },
+      { to: 82, surface: 'red-laterite-bank', tint: 0x915845 },
+      { to: Infinity, surface: 'dense-secondary-forest', tint: 0x3f5742 },
+    ], landform: 'bowl',
+    backdrop: [
+      { kind: 'city-sprawl', dist: 700, height: 58, spread: 3000 },
+      { kind: 'city-cluster', dist: 1750, height: 82, spread: 1800 },
+    ],
+  },
+  lasvegas: {
+    ground: [
+      { to: 24, surface: 'strip-concrete-sidewalk', tint: 0xa9a69f },
+      { to: 58, surface: 'decorative-paver', tint: 0x987f70 },
+      { to: Infinity, surface: 'gravel-mulch-bed', tint: 0x75685f },
+    ], landform: 'flat',
+    backdrop: [
+      { kind: 'city-sprawl', dist: 620, height: 34, spread: 3400 },
+      { kind: 'city-cluster', dist: 980, height: 142, spread: 2700 },
+      { kind: 'mountain', dist: 2200, height: 92, spread: 3000 },
+    ],
+  },
+  lusail: {
+    ground: [
+      { to: 18, surface: 'hard-edge-artificial-turf', tint: 0x4f805e },
+      { to: 86, surface: 'pale-gravel-hardpan', tint: 0xb4aa92 },
+      { to: Infinity, surface: 'flat-stony-desert', tint: 0x938976 },
+    ], landform: 'flat',
+    backdrop: [{ kind: 'city-cluster', dist: 2200, height: 48, spread: 420 }],
+  },
+  yasmarina: {
+    ground: [
+      { to: 28, surface: 'white-crushed-limestone', tint: 0xc8c2ae },
+      { to: 90, surface: 'sculpted-sand-berm', tint: 0xc0a979 },
+      { to: Infinity, surface: 'over-green-irrigated-turf', tint: 0x56835b },
+    ], landform: 'flat',
+    backdrop: [{ kind: 'none', dist: 0, height: 0, spread: 0 }],
+  },
+});
+
+const GROUND_SURFACE_TILE = Object.freeze({
+  'mown-park-turf': 'grass', 'worn-turf-sand-scuff': 'gravel', 'open-parkland': 'grass',
+  'wide-concrete-apron': 'asphalt', 'humid-mown-grass': 'grass', 'reed-fringed-marsh': 'grass',
+  'deep-gravel-trap': 'gravel', 'red-cut-earth-bank': 'gravel', 'damp-forest-floor': 'grass',
+  'pale-sand-apron': 'gravel', 'raked-sand-berm': 'gravel', 'desert-pavement': 'asphalt',
+  'narrow-promenade': 'asphalt', 'empty-pale-sand-lot': 'gravel', 'coastal-rubble': 'gravel',
+  'painted-car-park-asphalt': 'asphalt', 'artificial-turf-bed': 'grass', 'mulch-island': 'gravel',
+  'narrow-mown-grass': 'grass', 'leafy-tree-screen': 'grass', 'riprap-bank': 'gravel',
+  'street-pavement-kerb': 'asphalt', 'quay-slab': 'asphalt', 'stone-retaining-wall': 'gravel',
+  'pale-gravel-apron': 'gravel', 'dry-straw-grass': 'grass', 'catalan-dusty-earth': 'gravel',
+  'alpine-asphalt-apron': 'asphalt', 'mown-emerald-meadow': 'grass', 'black-spruce-floor': 'grass',
+  'airfield-asphalt-apron': 'asphalt', 'mown-pasture': 'grass', 'rough-windblown-pasture': 'grass',
+  'wet-gravel-trap': 'gravel', 'wet-upland-grass': 'grass', 'ardennes-forest-floor': 'grass',
+  'chalky-pale-gravel': 'gravel', 'burnt-straw-grass': 'grass', 'bare-sandy-soil': 'gravel',
+  'north-sea-sand-apron': 'gravel', 'marram-tufted-dune': 'grass', 'bare-drifting-sand': 'gravel',
+  'park-gravel-trap': 'gravel', 'dappled-parkland-grass': 'grass', 'high-canopy-floor': 'grass',
+  'expo-concrete-paving': 'asphalt', 'new-raw-subsoil': 'gravel', 'grid-planted-mulch': 'gravel',
+  'granite-kerb-cobble': 'asphalt', 'caspian-paved-promenade': 'asphalt', 'seaward-irrigated-lawn': 'grass',
+  'granite-sett-paving': 'asphalt', 'civic-concrete-plaza': 'asphalt', 'padang-turf': 'grass',
+  'broad-asphalt-apron': 'asphalt', 'graded-earth-bank': 'gravel', 'dormant-prairie-black-clay': 'gravel',
+  'highland-asphalt-apron': 'asphalt', 'dusty-patchy-park-grass': 'grass', 'bare-lakebed-clay': 'gravel',
+  'narrow-rain-darkened-grass': 'grass', 'red-laterite-bank': 'gravel', 'dense-secondary-forest': 'grass',
+  'strip-concrete-sidewalk': 'asphalt', 'decorative-paver': 'asphalt', 'gravel-mulch-bed': 'gravel',
+  'hard-edge-artificial-turf': 'grass', 'pale-gravel-hardpan': 'gravel', 'flat-stony-desert': 'gravel',
+  'white-crushed-limestone': 'gravel', 'sculpted-sand-berm': 'gravel', 'over-green-irrigated-turf': 'grass',
+});
 
 // Mid-ground venue infrastructure. This table is deliberately data, rather
 // than a set of per-circuit branches: the same placement machinery scales the
@@ -616,7 +894,10 @@ export function buildCircuit(trackId, def, scene) {
 
   // ================= MESHES =================
   const group = new THREE.Group();
-  const rnd = rng(trackId.split('').reduce((a, c) => a * 31 + c.charCodeAt(0), 7) | 0);
+  const scenerySeed = trackId.split('').reduce((a, c) => a * 31 + c.charCodeAt(0), 7) | 0;
+  const rnd = rng(scenerySeed);
+  const venue = VENUE[trackId];
+  if (!venue) throw new Error(`Missing VENUE model for circuit: ${trackId}`);
   const idxAt = (i) => ((i % N) + N) % N;
   const stepOf = (metres) => Math.max(1, Math.round(metres / ds));
 
@@ -1005,9 +1286,51 @@ export function buildCircuit(trackId, def, scene) {
   // verge over a metre off its own road. Out in the open, where the crease would
   // actually be visible, the slack grows to several metres and smooths it away.
   const FADE_IN = 2 * wallOff;                                  // full relief to here
-  const FADE_OUT = FADE_IN + Math.max(24, wallOff * 1.6);        // flat ground past here
+  const FADE_OUT = FADE_IN + Math.max(24, wallOff * 1.6);        // local road relief ends here
   const BLEND_MIN = 0.6, BLEND_REL = 0.10;
   const BLEND_REACH = FADE_OUT * (1 + 3 * BLEND_REL) + 3 * BLEND_MIN;
+  // Outfield relief is positional-hash terrain, never seeded scenery RNG. The
+  // road still owns the height field through FADE_IN; between FADE_IN/FADE_OUT
+  // it hands off smoothly to the venue landform. Values stay deliberately low
+  // enough to read as land rather than a fantasy mountain range.
+  const landformAngle = ((scenerySeed >>> 0) / 4294967295) * Math.PI * 2;
+  const landformAxis = { x: Math.cos(landformAngle), z: Math.sin(landformAngle) };
+  const landformAt = (px, pz) => {
+    if (venue.landform === 'flat') return 0;
+    const dx = px - centre.x, dz = pz - centre.z;
+    const radial = Math.hypot(dx, dz);
+    const axis = dx * landformAxis.x + dz * landformAxis.z;
+    const across = -dx * landformAxis.z + dz * landformAxis.x;
+    const broad = valueNoise(px, pz, 310, 131) - 0.5;
+    if (venue.landform === 'cut-bank') {
+      const wave = Math.sin((axis + across * 0.22) / 150);
+      const folded = wave * wave; // smooth bank crests; no abs() cusp for the mesh to bridge
+      return 3.5 + folded * 10.5 + broad * 4.0;
+    }
+    if (venue.landform === 'dune') {
+      const ridge = Math.sin(axis / 82 + Math.sin(across / 230) * 0.8);
+      const cross = Math.sin(across / 155 + 1.4);
+      return 2.8 + ridge * 3.2 + cross * 1.35 + broad * 1.8;
+    }
+    if (venue.landform === 'bowl') {
+      const rimStart = Math.max(160, extent * 0.48);
+      const rim = smoothBand(rimStart, rimStart + Math.max(320, extent * 0.52), radial);
+      return rim * (15.5 + 2.5 * Math.sin(radial / 145 + axis / 370)) + broad * 1.5;
+    }
+    if (venue.landform === 'hillside') {
+      const climb = Math.max(-1, Math.min(1, axis / Math.max(520, extent + 260)));
+      return 7.5 + climb * 9.5 + broad * 3.0 + Math.sin(across / 270) * 1.4;
+    }
+    // Terraces use broad, softened height shelves. Quantisation is applied to a
+    // low-frequency ramp, so the radial ground tessellation resolves each ledge
+    // without narrow spikes or any change to the physical racing surface.
+    const ramp = 7.0 + Math.max(-7, Math.min(13, axis / 72));
+    const terraceCoord = (ramp + 18) / 3;
+    const terraceBase = Math.floor(terraceCoord);
+    const terraceBlend = smoothBand(0.30, 0.70, terraceCoord - terraceBase);
+    const shelf = (terraceBase + terraceBlend) * 3 - 18;
+    return shelf + broad * 1.4;
+  };
   // One byte per bucket saying "some sample is close enough to matter", so the
   // overwhelming majority of ground vertices (open country) cost one array read.
   const nearMask = (() => {
@@ -1034,11 +1357,11 @@ export function buildCircuit(trackId, def, scene) {
   // nearest sample, then a second sweep limited to the slack that actually
   // matters. Right by the track that second sweep is a single ring, where a
   // one-pass version over the whole blend reach would touch 81 buckets.
-  const terrainAt = (px, pz) => {
+  let terrainAt = (px, pz) => {
     const cx = Math.floor(px / GRID), cz = Math.floor(pz / GRID);
     const ix = cx - nearMask.x0, iz = cz - nearMask.z0;
-    if (ix < 0 || iz < 0 || ix >= nearMask.w || iz >= nearMask.hgt) return 0;
-    if (!nearMask.m[iz * nearMask.w + ix]) return 0;
+    if (ix < 0 || iz < 0 || ix >= nearMask.w || iz >= nearMask.hgt) return landformAt(px, pz);
+    if (!nearMask.m[iz * nearMask.w + ix]) return landformAt(px, pz);
     const rMax = nearMask.pad;
     let best2 = Infinity;
     for (let r = 0; r <= rMax; r++) {
@@ -1059,7 +1382,7 @@ export function buildCircuit(trackId, def, scene) {
       if (best2 < Infinity && Math.sqrt(best2) <= r * GRID) break;
     }
     const best = Math.sqrt(best2);
-    if (best > FADE_OUT) return 0;
+    if (best > FADE_OUT) return landformAt(px, pz);
     const sigma = Math.max(BLEND_MIN, best * BLEND_REL);
     const lim = best + 3 * sigma;
     const rr = Math.min(rMax, Math.ceil(lim / GRID) + 1);
@@ -1081,9 +1404,10 @@ export function buildCircuit(trackId, def, scene) {
     }
     const local = ws > 0 ? hs / ws : 0;
     if (best <= FADE_IN) return local;
-    // smootherstep down to the flat datum
+    // smootherstep from the road-correlated field into the authored landform
     const t = 1 - (best - FADE_IN) / (FADE_OUT - FADE_IN);
-    return local * t * t * t * (t * (t * 6 - 15) + 10);
+    const roadWeight = t * t * t * (t * (t * 6 - 15) + 10);
+    return local * roadWeight + landformAt(px, pz) * (1 - roadWeight);
   };
 
   // Surface-aligned orientation for a road decal at sample `i`: local +x along
@@ -1187,10 +1511,11 @@ export function buildCircuit(trackId, def, scene) {
   // Anisotropy is 16 everywhere: the ground tile is the surface that runs from
   // under the front wing all the way to the fog, so it is the one that aliases
   // into moire stripes toward the horizon at low anisotropy.
-  let groundMat, groundTileM = 20;
+  let groundMat, groundTileM = 20, groundBaseSurface = 'grass';
   if (themeName === 'classic') {
     const surface = surfaceSet('grass', { aniso: 16 });
     groundTileM = 20;                                   // 20m grass tiles
+    groundBaseSurface = 'grass';
     groundMat = std({ ...surfaceProps(surface), roughness: 1 });
   } else if (themeName === 'desert' || themeName === 'dusk') {
     // Round 2 measured the desert ground's clods at 30-50cm ("bark mulch or
@@ -1198,6 +1523,7 @@ export function buildCircuit(trackId, def, scene) {
     // denser tile than grass does; 8m puts a clod at 8-12cm.
     const surface = surfaceSet('gravel', { aniso: 16 });
     groundTileM = 8;
+    groundBaseSurface = 'gravel';
     groundMat = std({
       ...surfaceProps(surface),
       roughness: 1,
@@ -1209,6 +1535,7 @@ export function buildCircuit(trackId, def, scene) {
     // backdrop wall. It is paved, so it gets the asphalt tile, tinted to theme.
     const surface = surfaceSet('asphalt', { aniso: 16 });
     groundTileM = 20;
+    groundBaseSurface = 'asphalt';
     groundMat = std({
       ...surfaceProps(surface, 0.28),
       roughness: 1,
@@ -1217,6 +1544,34 @@ export function buildCircuit(trackId, def, scene) {
   }
   groundMat.vertexColors = true;
   const groundMass = (VENUE_DEPTH[trackId] || VENUE_DEPTH_DEFAULT).mass;
+  const realisedGroundBands = venue.ground.map((band) => {
+    const tile = GROUND_SURFACE_TILE[band.surface];
+    if (!tile) throw new Error(`Unknown VENUE ground surface: ${trackId}/${band.surface}`);
+    return { ...band, tile };
+  });
+  if (realisedGroundBands.length !== 3
+    || !Number.isFinite(realisedGroundBands[0].to)
+    || !Number.isFinite(realisedGroundBands[1].to)
+    || realisedGroundBands[2].to !== Infinity) {
+    throw new Error(`VENUE ${trackId} must carry exactly three ordered ground bands ending at Infinity`);
+  }
+  const groundBandBlendM = trackId === 'lusail' ? 1.5 : 8;
+  const white = new THREE.Color(0xffffff);
+  const groundBandTints = realisedGroundBands.map(band => new THREE.Color(band.tint).lerp(white, 0.58));
+  const groundBandTintChannels = [
+    groundBandTints.map(tint => tint.r),
+    groundBandTints.map(tint => tint.g),
+    groundBandTints.map(tint => tint.b),
+  ];
+  const groundBandTextureCache = new Map();
+  const groundBandTexture = (tile) => {
+    if (groundBandTextureCache.has(tile)) return groundBandTextureCache.get(tile);
+    const map = tile === groundBaseSurface
+      ? groundMat.map : ctex(surfaceCanvas(tile), { aniso: 16, repeat: [1, 1] });
+    groundBandTextureCache.set(tile, map);
+    return map;
+  };
+  const groundBandMaps = realisedGroundBands.map(band => groundBandTexture(band.tile));
   // Only a very-low-frequency field belongs in vertex colours. The old 140m,
   // 46m and 16m fields were evaluated on vertices spaced from 12m to 220m, so
   // Gouraud interpolation exposed the radial mesh as a regular tonal grid. The
@@ -1247,6 +1602,16 @@ export function buildCircuit(trackId, def, scene) {
 varying vec2 vApexGroundWorldXZ;
 uniform sampler2D apexWoodlandMap;
 uniform vec4 apexWoodlandBounds;
+uniform sampler2D apexGroundDistanceMap;
+uniform vec4 apexGroundDistanceBounds;
+uniform sampler2D apexGroundBandMap0;
+uniform sampler2D apexGroundBandMap1;
+uniform sampler2D apexGroundBandMap2;
+uniform vec2 apexGroundBandEnds;
+uniform float apexGroundBandBlendM;
+uniform vec3 apexGroundBandTint0;
+uniform vec3 apexGroundBandTint1;
+uniform vec3 apexGroundBandTint2;
 float apexGroundHash(vec2 cell, float seed) {
   return fract(sin(dot(cell, vec2(127.1, 311.7)) + seed * 74.7) * 43758.5453123);
 }
@@ -1261,7 +1626,25 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
   float d = apexGroundHash(cell + vec2(1.0, 1.0), seed);
   return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }`)
-      .replace(mapFragment, `${mapFragment}
+      .replace(mapFragment, `#ifdef USE_MAP
+  vec4 apexGroundSample0 = texture2D(apexGroundBandMap0, vMapUv);
+  vec4 apexGroundSample1 = texture2D(apexGroundBandMap1, vMapUv);
+  vec4 apexGroundSample2 = texture2D(apexGroundBandMap2, vMapUv);
+  vec2 apexGroundDistanceUV = (vApexGroundWorldXZ - apexGroundDistanceBounds.xy)
+    * apexGroundDistanceBounds.zw;
+  float apexGroundDistance = texture2D(apexGroundDistanceMap, apexGroundDistanceUV).r
+    * ${ZONE_DISTANCE_CAP.toFixed(1)};
+  float apexGroundBlend01 = smoothstep(apexGroundBandEnds.x - apexGroundBandBlendM,
+    apexGroundBandEnds.x + apexGroundBandBlendM, apexGroundDistance);
+  float apexGroundBlend12 = smoothstep(apexGroundBandEnds.y - apexGroundBandBlendM,
+    apexGroundBandEnds.y + apexGroundBandBlendM, apexGroundDistance);
+  vec4 apexGroundSurface = mix(mix(apexGroundSample0, apexGroundSample1, apexGroundBlend01),
+    apexGroundSample2, apexGroundBlend12);
+  vec3 apexGroundTint = mix(mix(apexGroundBandTint0, apexGroundBandTint1, apexGroundBlend01),
+    apexGroundBandTint2, apexGroundBlend12);
+  diffuseColor *= apexGroundSurface;
+  diffuseColor.rgb *= mix(vec3(1.0), apexGroundTint, 0.42);
+#endif
   float apexGroundMacro =
       (apexGroundNoise(vApexGroundWorldXZ, 46.0, 43.0) - 0.5) * 0.27
     + (apexGroundNoise(vApexGroundWorldXZ, 16.0, 89.0) - 0.5) * 0.11;
@@ -1275,14 +1658,29 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
     1.0 + 0.050 * apexWoodland);`);
     shader.uniforms.apexWoodlandMap = { value: groundMat.userData.woodlandTexture };
     shader.uniforms.apexWoodlandBounds = { value: groundMat.userData.woodlandBounds };
+    shader.uniforms.apexGroundDistanceMap = { value: groundMat.userData.groundDistanceTexture };
+    shader.uniforms.apexGroundDistanceBounds = { value: groundMat.userData.groundDistanceBounds };
+    shader.uniforms.apexGroundBandMap0 = { value: groundBandMaps[0] };
+    shader.uniforms.apexGroundBandMap1 = { value: groundBandMaps[1] };
+    shader.uniforms.apexGroundBandMap2 = { value: groundBandMaps[2] };
+    shader.uniforms.apexGroundBandEnds = { value: new THREE.Vector2(
+      realisedGroundBands[0].to, realisedGroundBands[1].to) };
+    shader.uniforms.apexGroundBandBlendM = { value: groundBandBlendM };
+    shader.uniforms.apexGroundBandTint0 = { value: groundBandTints[0] };
+    shader.uniforms.apexGroundBandTint1 = { value: groundBandTints[1] };
+    shader.uniforms.apexGroundBandTint2 = { value: groundBandTints[2] };
   };
-  groundMat.customProgramCacheKey = () => 'apex-ground-world-macro-v1-560-46-16';
+  groundMat.customProgramCacheKey = () => 'apex-ground-world-macro-bands-v2-560-46-16';
   groundMat.userData.macroShader = {
     stage: 'fragment', coordinate: 'world-xz', amplitude: GROUND_MACRO_AMPLITUDE,
     octaves: fragmentMacroOctaves.map(({ wavelength, weight }) => ({ wavelength, weight })),
+    bandSelection: 'fragment-world-distance',
   };
   groundMat.userData.woodlandTexture = null;
   groundMat.userData.woodlandBounds = new THREE.Vector4(0, 0, 1, 1);
+  groundMat.userData.groundBandTextures = [...new Set(groundBandMaps)];
+  groundMat.userData.groundDistanceTexture = null;
+  groundMat.userData.groundDistanceBounds = new THREE.Vector4(0, 0, 1, 1);
   const outerGroundTone = {
     park: [1.055, 1.005, 0.885],
     woodland: [0.965, 0.945, 0.845],
@@ -1324,30 +1722,71 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
     const c = groundDistanceNode(ix, iz + 1), d = groundDistanceNode(ix + 1, iz + 1);
     return (a + (b - a) * tx) + ((c + (d - c) * tx) - (a + (b - a) * tx)) * tz;
   };
+  const groundOutwardDistance = (x, z) => Math.max(0, groundTrackDistance(x, z) - halfWidth);
+  // A linearly-filtered world-distance field lets the fragment shader select
+  // bands without bending, scaling or adding a second UV set. It encodes metres
+  // OUTWARD FROM THE OUTER KERB, capped beyond the last finite band.
+  {
+    const SIZE = 256, CAP = ZONE_DISTANCE_CAP;
+    const data = new Uint8Array(SIZE * SIZE);
+    const diameter = groundR * 2;
+    const minX = centre.x - groundR, minZ = centre.z - groundR;
+    for (let py = 0; py < SIZE; py++) for (let px = 0; px < SIZE; px++) {
+      const x = minX + (px + 0.5) * diameter / SIZE;
+      const z = minZ + (py + 0.5) * diameter / SIZE;
+      data[py * SIZE + px] = Math.round(Math.min(CAP, groundOutwardDistance(x, z)) / CAP * 255);
+    }
+    const texture = new THREE.DataTexture(data, SIZE, SIZE, THREE.RedFormat, THREE.UnsignedByteType);
+    texture.wrapS = texture.wrapT = THREE.ClampToEdgeWrapping;
+    texture.minFilter = texture.magFilter = THREE.LinearFilter;
+    texture.generateMipmaps = false;
+    texture.colorSpace = THREE.NoColorSpace;
+    texture.needsUpdate = true;
+    groundMat.userData.groundDistanceTexture = texture;
+    groundMat.userData.groundDistanceBounds.set(minX, minZ, 1 / diameter, 1 / diameter);
+  }
   const groundMacroColour = (x, z) => {
     let noise = 0;
     for (const octave of vertexMacroOctaves) {
       noise += (valueNoise(x, z, octave.wavelength, octave.seed) - 0.5) * octave.weight;
     }
     const noiseMul = 1 + noise * GROUND_MACRO_AMPLITUDE;
-    const distance = groundTrackDistance(x, z);
-    const verge = 1 - smoothBand(18, 42, distance);
-    const outer = smoothBand(105, 175, distance);
+    const trackDistance = groundTrackDistance(x, z);
+    const distance = Math.max(0, trackDistance - halfWidth);
+    const verge = 1 - smoothBand(18, 42, trackDistance);
+    const outer = smoothBand(105, 175, trackDistance);
     const vergeTone = [1.035, 1.050, 1.065];
-    return [0, 1, 2].map(channel => noiseMul
-      * (1 + (vergeTone[channel] - 1) * verge)
-      * (1 + (outerGroundTone[channel] - 1) * outer));
+    const t01 = smoothBand(realisedGroundBands[0].to - groundBandBlendM,
+      realisedGroundBands[0].to + groundBandBlendM, distance);
+    const t12 = smoothBand(realisedGroundBands[1].to - groundBandBlendM,
+      realisedGroundBands[1].to + groundBandBlendM, distance);
+    return [0, 1, 2].map((channel) => {
+      const values = groundBandTintChannels[channel];
+      const band01 = values[0] + (values[1] - values[0]) * t01;
+      const bandTint = band01 + (values[2] - band01) * t12;
+      return noiseMul
+        * (1 + (vergeTone[channel] - 1) * verge)
+        * (1 + (outerGroundTone[channel] - 1) * outer)
+        * (1 + (bandTint - 1) * 0.24);
+    });
   };
   let groundMesh = null;
   // A flat disc cannot carry the relief -- the verges would shear away from the
   // road the moment the lap climbs -- so the disc becomes a radial (ring x
   // segment) mesh sampling terrainAt(). Rings are packed tightly through the
-  // annulus the circuit actually occupies and coarsen away from it, because
-  // everything outside FADE_OUT is flat and needs no detail at all. Tiling moves
+  // annulus the circuit actually occupies. Flat venues can still coarsen hard in
+  // the distance; authored landforms retain a 96m ceiling so bowls, banks and
+  // dunes do not collapse into a handful of giant planar wedges. Tiling moves
   // from texture.repeat into the UVs, since the UVs are now generated here.
   {
     const bandIn = Math.max(0, innermost - FADE_OUT - 24);
-    const bandOut = Math.min(groundR, extent + FADE_OUT + 24);
+    const groundInfrastructureProfile = INFRASTRUCTURE_PROFILE[trackId] || INFRASTRUCTURE_PROFILE_DEFAULT;
+    // Perimeter posts and the venue's outer service surfaces also sample
+    // terrainAt(). Keep the rendered mesh dense through that authored radius or
+    // a correct terrain anchor can still float over a coarsely interpolated
+    // triangle (the old 96-220m outfield rings missed by metres at terraces).
+    const plantedReach = groundInfrastructureProfile.fenceRadius + 72;
+    const bandOut = Math.min(groundR, extent + Math.max(FADE_OUT + 24, plantedReach));
     // Edge length inside the band. Measured worst gap between the ground surface
     // and the road at the road edge, over all 24 circuits: 12m -> 0.060m,
     // 16m -> 0.098m, 20m -> 0.534m (monaco, whose hairpins put the medial axis
@@ -1363,14 +1802,15 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
         let dr;
         if (r >= bandIn - step && r <= bandOut) dr = step;
         else {
-          dr = Math.max(step, Math.min(r * 0.45, 220));
+          dr = Math.max(step, Math.min(r * 0.45, venue.landform === 'flat' ? 220 : 96));
           // never let a coarse ring stride straight over the band entry
           if (r < bandIn) dr = Math.min(dr, Math.max(step, bandIn - step - r));
         }
         r += dr;
       }
       if (groundR - radii[radii.length - 1] > 1e-6) radii.push(groundR);
-      seg = Math.min(1024, Math.max(96, Math.round(2 * Math.PI * bandOut / step / 8) * 8));
+      const segmentRadius = venue.landform === 'flat' ? bandOut : groundR;
+      seg = Math.min(1024, Math.max(96, Math.round(2 * Math.PI * segmentRadius / step / 8) * 8));
       if ((radii.length - 1) * seg + 1 <= BUDGET) break;
       step *= 1.35;
     }
@@ -1419,6 +1859,16 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
     g.setAttribute('color', new THREE.BufferAttribute(color, 3));
     g.setIndex(idx);
     g.computeVertexNormals();
+    let landformMin = Infinity, landformMax = -Infinity, landformSamples = 0;
+    for (let i = 0; i < nv; i++) {
+      const x = centre.x + pos[i * 3], z = centre.z + pos[i * 3 + 2];
+      if (groundTrackDistance(x, z) <= FADE_OUT + 2) continue;
+      const y = pos[i * 3 + 1];
+      landformMin = Math.min(landformMin, y);
+      landformMax = Math.max(landformMax, y);
+      landformSamples++;
+    }
+    if (!landformSamples) landformMin = landformMax = 0;
     const ground = new THREE.Mesh(g, groundMat);
     ground.name = 'ground';
     ground.position.set(centre.x, -0.08, centre.z);
@@ -1435,6 +1885,15 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
     ground.userData.vertexMacroOctaves = vertexMacroOctaves.map(({ wavelength, weight }) => ({ wavelength, weight }));
     ground.userData.fragmentMacroOctaves = fragmentMacroOctaves.map(({ wavelength, weight }) => ({ wavelength, weight }));
     ground.userData.zoneBands = { verge: [0, 30], outfield: [30, 140], outer: [140, groundR], mass: groundMass };
+    ground.userData.groundBands = realisedGroundBands.map(band => ({ ...band }));
+    ground.userData.groundBandBlendM = groundBandBlendM;
+    ground.userData.groundBandCoordinate = 'metres-outward-from-outer-kerb';
+    ground.userData.groundDistanceField = { textureSize: 256, capM: ZONE_DISTANCE_CAP, stage: 'fragment' };
+    ground.userData.landform = {
+      kind: venue.landform, fadeIn: FADE_IN, fadeOut: FADE_OUT,
+      min: landformMin, max: landformMax, range: landformMax - landformMin,
+      samples: landformSamples,
+    };
     ground.userData.noiseAmplitude = 0.13;
     ground.userData.woodlandLayer = {
       cellM: 48, radiusM: 66, maxDarkening: 0.24, placements: 0,
@@ -1442,6 +1901,48 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
     };
     groundMesh = ground;
     group.add(ground);
+
+    // From this point on, scenery anchors read the REAL rendered triangle, not
+    // the continuous source function that was sampled to create it. That removes
+    // the last way a correct terrainAt() placement could float over a coarse
+    // triangle where elevated road relief hands off to an outfield landform.
+    // The sampler returns geometry y (before ground.position.y = -0.08), retaining
+    // the deliberate 8cm anti-z-fighting clearance used throughout the builder.
+    const terrainFieldAt = terrainAt;
+    const triangleHeight = (ia, ib, ic, x, z) => {
+      const ax = pos[ia * 3], az = pos[ia * 3 + 2];
+      const bx = pos[ib * 3], bz = pos[ib * 3 + 2];
+      const cx = pos[ic * 3], cz = pos[ic * 3 + 2];
+      const den = (bz - cz) * (ax - cx) + (cx - bx) * (az - cz);
+      if (Math.abs(den) < 1e-12) return null;
+      const wa = ((bz - cz) * (x - cx) + (cx - bx) * (z - cz)) / den;
+      const wb = ((cz - az) * (x - cx) + (ax - cx) * (z - cz)) / den;
+      const wc = 1 - wa - wb;
+      if (wa < -1e-6 || wb < -1e-6 || wc < -1e-6) return null;
+      return wa * pos[ia * 3 + 1] + wb * pos[ib * 3 + 1] + wc * pos[ic * 3 + 1];
+    };
+    terrainAt = (px, pz) => {
+      const x = px - centre.x, z = pz - centre.z;
+      const r = Math.hypot(x, z);
+      if (r > groundR + 1e-6) return terrainFieldAt(px, pz);
+      let angle = Math.atan2(z, x);
+      if (angle < 0) angle += Math.PI * 2;
+      const af = angle / (Math.PI * 2) * seg;
+      const a = Math.floor(af) % seg, a2 = (a + 1) % seg;
+      if (r <= radii[1]) {
+        return triangleHeight(0, 1 + a2, 1 + a, x, z) ?? terrainFieldAt(px, pz);
+      }
+      let lo = 1, hi = radii.length - 1;
+      while (hi - lo > 1) {
+        const mid = (lo + hi) >> 1;
+        if (radii[mid] <= r) lo = mid; else hi = mid;
+      }
+      if (lo >= radii.length - 1) lo = radii.length - 2;
+      const b0 = 1 + (lo - 1) * seg, b1 = 1 + lo * seg;
+      return triangleHeight(b0 + a, b1 + a2, b1 + a, x, z)
+        ?? triangleHeight(b0 + a, b0 + a2, b1 + a2, x, z)
+        ?? terrainFieldAt(px, pz);
+    };
   }
 
   // Tree placements do not exist until section 8b. Build their broad density
@@ -4601,12 +5102,18 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
     }
 
     if (themeName !== 'classic') {
-      // ---- 8c. clustered architecture / far skyline ------------------------
-      // Generic boxes become a composition only when neighbouring masses share
-      // a rhythm. Generate families around a few anchors, then vary proportions
-      // by venue profile: low courtyards, stepped terraces, slender stone towers
-      // or a vertical night-city cadence. No landmark or brand is reproduced.
-      const cityForm = depthProfile.skyline || 'mixed';
+      // ---- 8c. legacy skyline RNG compatibility -----------------------------
+      // WO4 replaces these theme-gated boxes with the typed, fog-independent
+      // backdrop below. The computations remain in their historical order because
+      // later scenery shares this seeded stream; adding/removing one RNG sample here
+      // would reshuffle every subsequent instance matrix. The resulting meshes
+      // live under an invisible group and therefore never render or count as the
+      // venue's realised backdrop.
+      const rngCompatibility = new THREE.Group();
+      rngCompatibility.name = 'legacy-skyline-rng-compatibility';
+      rngCompatibility.visible = false;
+      group.add(rngCompatibility);
+      const cityForm = depthProfile.rngSkyline || 'mixed';
       const isCity = themeName === 'city' || themeName === 'night';
       const clusterScatter = (want, minD, maxD, margin, minFamily, maxFamily) => {
         const out = [];
@@ -4661,7 +5168,8 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
       });
       if (near.length) {
         const buildings = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), bmat, near.length);
-        buildings.name = 'city-near';
+        buildings.name = 'rng-compat-city-near';
+        buildings.visible = false;
         const m4 = new THREE.Matrix4(), qq = new THREE.Quaternion(), sc2 = new THREE.Vector3();
         const pp = new THREE.Vector3(), col = new THREE.Color();
         near.forEach((b, k) => {
@@ -4674,8 +5182,7 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
           buildings.setColorAt(k, col);
         });
         if (buildings.instanceColor) buildings.instanceColor.needsUpdate = true;
-        group.add(buildings);
-        depthStats.near.cityBlocks = near.length;
+        rngCompatibility.add(buildings);
       }
 
       // far skyline, clustered inside 200-500m and much taller
@@ -4701,7 +5208,8 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
       });
       if (far.length) {
         const sky = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), fmat, far.length);
-        sky.name = 'city-skyline';
+        sky.name = 'rng-compat-city-skyline';
+        sky.visible = false;
         const m4 = new THREE.Matrix4(), qq = new THREE.Quaternion(), sc2 = new THREE.Vector3();
         const pp = new THREE.Vector3(), col = new THREE.Color();
         const capItems = [];
@@ -4721,12 +5229,12 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
           }
         });
         if (sky.instanceColor) sky.instanceColor.needsUpdate = true;
-        group.add(sky);
-        depthStats.far.skyline = far.length;
+        rngCompatibility.add(sky);
         if (capItems.length) {
           const caps = new THREE.InstancedMesh(new THREE.ConeGeometry(1, 1, 4, 1, false),
             std({ color: 0xffffff, roughness: 0.7 }), capItems.length);
-          caps.name = 'city-skyline-caps';
+          caps.name = 'rng-compat-city-skyline-caps';
+          caps.visible = false;
           const cm = new THREE.Matrix4(), cq = new THREE.Quaternion(), cs = new THREE.Vector3(), cp = new THREE.Vector3();
           capItems.forEach((it, k) => {
             cq.setFromAxisAngle(UP, it.yaw + Math.PI / 4);
@@ -4737,10 +5245,135 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
             caps.setColorAt(k, it.color);
           });
           if (caps.instanceColor) caps.instanceColor.needsUpdate = true;
-          group.add(caps);
-          depthStats.far.skylineCaps = capItems.length;
+          rngCompatibility.add(caps);
         }
       }
+    }
+
+    // ---- 8c. typed, theme-independent matte backdrop -----------------------
+    // These layers deliberately do not use scene fog: Fog(300,1600) is already
+    // fully opaque before the sky dome. Instead each mesh carries a pre-receded
+    // tint and fog=false, like a matte painting behind the lit venue. Geometry is
+    // generic by kind (ridge rhythm, low urban band, industrial sheds), never a
+    // copy of a named building or venue landmark. No seeded random sample is consumed here.
+    {
+      const backdropGroup = new THREE.Group();
+      backdropGroup.name = 'venue-backdrop';
+      const realisedKinds = venue.backdrop.map(layer => layer.kind);
+      backdropGroup.userData.kinds = [...realisedKinds];
+      backdropGroup.userData.themeIndependent = true;
+      backdropGroup.userData.venue = trackId;
+      const backdropColour = (kind, layerIndex) => {
+        const day = {
+          'ridge-forest': 0x617269, 'ridge-bare': 0x8c8375, mountain: 0x78818c,
+          'dune-ridge': 0xaa9b78, 'city-cluster': 0x77828b, 'city-sprawl': 0x828783,
+          industry: 0x777b79, sea: 0x7295a7,
+        };
+        const night = {
+          'ridge-forest': 0x101a1b, 'ridge-bare': 0x221e21, mountain: 0x151a25,
+          'dune-ridge': 0x292523, 'city-cluster': 0x252b39, 'city-sprawl': 0x1a2029,
+          industry: 0x191e23, sea: 0x111b2b,
+        };
+        const palette = theme.night ? night : day;
+        return new THREE.Color(palette[kind] || theme.fog)
+          .lerp(new THREE.Color(theme.fog), theme.night ? 0.08 : 0.18 + layerIndex * 0.04);
+      };
+      const appendBox = (pos, idx, cx, cz, tangent, radial, width, depth, bottom, top) => {
+        const base = pos.length / 3;
+        for (const y of [bottom, top]) for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+          pos.push(cx + tangent.x * sx * width / 2 + radial.x * sz * depth / 2, y,
+            cz + tangent.z * sx * width / 2 + radial.z * sz * depth / 2);
+        }
+        idx.push(
+          base, base + 1, base + 3, base, base + 3, base + 2,
+          base + 4, base + 7, base + 5, base + 4, base + 6, base + 7,
+          base, base + 4, base + 5, base, base + 5, base + 1,
+          base + 2, base + 3, base + 7, base + 2, base + 7, base + 6,
+          base, base + 2, base + 6, base, base + 6, base + 4,
+          base + 1, base + 5, base + 7, base + 1, base + 7, base + 3,
+        );
+      };
+      let backdropTriangles = 0;
+      venue.backdrop.forEach((layer, layerIndex) => {
+        if (layer.kind === 'none') return;
+        const maxRadius = SKY_R - 220 - centre.length();
+        const radius = Math.min(maxRadius,
+          extent + 360 + Math.min(520, layer.dist * 0.18) + layerIndex * 54);
+        const kindSeed = [...layer.kind].reduce((sum, ch) => sum + ch.charCodeAt(0), 0);
+        const centreAngle = hashGrid(scenerySeed, layerIndex + 1, kindSeed) * Math.PI * 2;
+        const spanAngle = Math.min(Math.PI * 1.82, Math.max(0.34, layer.spread / Math.max(radius, 1)));
+        const isBuilt = layer.kind === 'city-cluster' || layer.kind === 'city-sprawl'
+          || layer.kind === 'industry';
+        const pos = [], idx = [];
+        if (isBuilt) {
+          const count = Math.max(12, Math.min(56, Math.round(layer.spread / (layer.kind === 'city-cluster' ? 34 : 52))));
+          for (let q = 0; q < count; q++) {
+            const u = count === 1 ? 0.5 : q / (count - 1);
+            const angle = centreAngle + (u - 0.5) * spanAngle;
+            const radial = { x: Math.cos(angle), z: Math.sin(angle) };
+            const tangent = { x: -radial.z, z: radial.x };
+            const jitter = (positionHash(q, layerIndex, kindSeed + 19) - 0.5) * 10;
+            const cx = centre.x + radial.x * (radius + jitter);
+            const cz = centre.z + radial.z * (radius + jitter);
+            const groundY = terrainAt(cx, cz) - 3;
+            let heightFactor = 0.34 + positionHash(cx, cz, kindSeed + 31) * 0.50;
+            if (layer.kind === 'city-cluster' && (q === Math.floor(count * 0.38)
+              || q === Math.floor(count * 0.64))) heightFactor = 1;
+            if (layer.kind === 'industry') heightFactor *= 0.62;
+            const height = Math.max(7, layer.height * heightFactor);
+            const pitch = radius * spanAngle / Math.max(1, count - 1);
+            const width = Math.max(8, pitch * (0.55 + positionHash(q, kindSeed, 47) * 0.24));
+            const depth = layer.kind === 'industry' ? 28 : 12 + positionHash(q, layerIndex, 53) * 14;
+            appendBox(pos, idx, cx, cz, tangent, radial, width, depth, groundY, groundY + height);
+          }
+        } else {
+          const segments = Math.max(28, Math.min(96, Math.round(layer.spread / 48)));
+          for (let q = 0; q <= segments; q++) {
+            const u = q / segments;
+            const angle = centreAngle + (u - 0.5) * spanAngle;
+            const radial = { x: Math.cos(angle), z: Math.sin(angle) };
+            const x = centre.x + radial.x * radius, z = centre.z + radial.z * radius;
+            const groundY = terrainAt(x, z);
+            let profile = 0.66 + 0.20 * Math.sin(q * 0.73 + layerIndex * 1.7)
+              + (positionHash(q, layerIndex, kindSeed) - 0.5) * 0.18;
+            if (layer.kind === 'mountain') profile += 0.18 * Math.abs(Math.sin(q * 0.31 + 0.8));
+            if (layer.kind === 'sea') profile = 1;
+            const top = groundY + Math.max(2, layer.height * profile);
+            pos.push(x, groundY - (layer.kind === 'sea' ? 10 : 18), z, x, top, z);
+            if (q < segments) {
+              const base = q * 2;
+              idx.push(base, base + 3, base + 1, base, base + 2, base + 3);
+            }
+          }
+        }
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+        geometry.setIndex(idx);
+        const material = new THREE.MeshBasicMaterial({
+          color: backdropColour(layer.kind, layerIndex), side: THREE.DoubleSide,
+          fog: false, depthWrite: true, transparent: false,
+        });
+        const mesh = new THREE.Mesh(geometry, material);
+        mesh.name = `backdrop-${layer.kind}-${layerIndex}`;
+        mesh.userData.venue = trackId;
+        mesh.userData.kind = layer.kind;
+        mesh.userData.layerIndex = layerIndex;
+        mesh.userData.authored = { ...layer };
+        mesh.userData.fogIndependent = true;
+        backdropTriangles += idx.length / 3;
+        backdropGroup.add(mesh);
+      });
+      backdropGroup.userData.triangles = backdropTriangles;
+      depthStats.backdrop = {
+        kinds: [...realisedKinds], layers: backdropGroup.children.length,
+        triangles: backdropTriangles,
+      };
+      group.userData.venue = {
+        ground: realisedGroundBands.map(band => ({ ...band })),
+        landform: venue.landform,
+        backdrop: venue.backdrop.map(layer => ({ ...layer })),
+      };
+      group.add(backdropGroup);
     }
 
     // ---- 8d. instanced venue infrastructure --------------------------------
@@ -5358,6 +5991,11 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
         }
         const woodlandTexture = material.userData?.woodlandTexture;
         if (woodlandTexture?.isTexture && !woodlandTexture.userData?.shared) textures.add(woodlandTexture);
+        const groundDistanceTexture = material.userData?.groundDistanceTexture;
+        if (groundDistanceTexture?.isTexture && !groundDistanceTexture.userData?.shared) textures.add(groundDistanceTexture);
+        for (const texture of material.userData?.groundBandTextures || []) {
+          if (texture?.isTexture && !texture.userData?.shared) textures.add(texture);
+        }
       }
       for (const texture of textures) texture.dispose();
       for (const material of materials) material.dispose();
