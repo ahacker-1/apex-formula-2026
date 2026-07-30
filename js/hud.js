@@ -39,12 +39,14 @@ export class HUD {
   constructor(root) {
     this.root = root;
     root.innerHTML = `
-      <div id="vscbanner"><span id="vsc-text">VIRTUAL SAFETY CAR</span><span id="vsc-count"></span></div>
-      <div id="tower">
+      <div id="hud-live-polite" class="hud-sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+      <div id="hud-live-assertive" class="hud-sr-only" role="alert" aria-live="assertive" aria-atomic="true"></div>
+      <div id="vscbanner" role="group" aria-label="Race control banner"><span id="vsc-text">VIRTUAL SAFETY CAR</span><span id="vsc-count"></span></div>
+      <div id="tower" role="group" aria-label="Race position tower">
         <div class="tower-head"><span id="tw-title">RACE</span><span class="tower-head-right"><span class="gapmode" id="tw-gapmode"></span><span class="lapcount" id="tw-lap"></span></span></div>
         <div id="tw-rows"></div>
       </div>
-      <div id="timing">
+      <div id="timing" role="group" aria-label="Lap timing">
         <div class="timing-box"><div class="lbl">POS</div><div class="val" id="t-pos">—</div><div class="posdelta" id="t-posdelta"></div></div>
         <div class="timing-box"><div class="lbl">LAP</div><div class="val" id="t-lap">—</div></div>
         <div class="timing-box"><div class="lbl">CURRENT</div><div class="val" id="t-cur">—</div></div>
@@ -52,11 +54,11 @@ export class HUD {
         <div class="timing-box"><div class="lbl">BEST</div><div class="val purple" id="t-best">—</div></div>
         <div class="timing-box" id="tt-delta-box"><div class="lbl">DELTA</div><div class="val" id="t-delta">—</div></div>
       </div>
-      <div id="sectorbar"></div>
-      <div id="gapwidget"></div>
-      <div id="flbanner"></div>
-      <div id="radiocard"></div>
-      <div id="dash">
+      <div id="sectorbar" role="group" aria-label="Sector timing"></div>
+      <div id="gapwidget" role="group" aria-label="Cars ahead and behind"></div>
+      <div id="flbanner" role="group" aria-label="Fastest lap display"></div>
+      <div id="radiocard" role="group" aria-label="Race engineer message"></div>
+      <div id="dash" role="group" aria-label="Car speed and energy status">
         <div class="revlights" id="revlights"></div>
         <div class="dash-main">
           <div class="gear" id="d-gear">N</div>
@@ -73,18 +75,18 @@ export class HUD {
           <div class="mode-pill boost" id="m-ovr">OVERRIDE</div>
         </div>
       </div>
-      <div id="carstat">
+      <div id="carstat" role="group" aria-label="Tyre, fuel, and pit status">
         <div class="row"><span class="lbl">TYRE</span><span class="val" id="c-tyre">MEDIUM</span></div>
         <div class="row"><div class="bar-track" style="flex:1;height:6px;background:#26262f;border-radius:4px;overflow:hidden"><div id="c-wear" style="height:100%;width:100%;background:var(--green)"></div></div></div>
         <div class="row"><span class="lbl">FUEL</span><span class="val" id="c-fuel">100%</span></div>
         <div class="row"><span class="lbl">PIT</span><span class="val" id="c-box">—</span></div>
       </div>
-      <canvas id="minimap" width="200" height="178"></canvas>
-      <div id="race-msg"></div>
-      <div id="startlights"></div>
-      <div id="bigflash"></div>
+      <canvas id="minimap" width="200" height="178" role="img" aria-label="Circuit minimap with car positions"></canvas>
+      <div id="race-msg" role="group" aria-label="Race messages"></div>
+      <div id="startlights" role="img" aria-label="Race start lights"></div>
+      <div id="bigflash" role="group" aria-label="Race event banner"></div>
       <div class="boost-vignette" id="boostvin"></div>
-      <div id="pit-overlay">
+      <div id="pit-overlay" role="dialog" aria-modal="false" aria-label="Select tyre compound" aria-hidden="true">
         <h3>SELECT TYRE COMPOUND</h3>
         <div class="tyre-choices">
           <button class="tyre-btn S" data-c="S"><div class="ring"></div><b>SOFT</b><small>FAST · HIGH DEG</small></button>
@@ -92,7 +94,7 @@ export class HUD {
           <button class="tyre-btn H" data-c="H"><div class="ring"></div><b>HARD</b><small>DURABLE</small></button>
         </div>
       </div>
-      <div id="onboarding" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
+      <div id="onboarding" role="dialog" aria-modal="true" aria-labelledby="onboarding-title" aria-hidden="true">
         <div class="onboarding-card">
           <span class="eyebrow">WELCOME TO APEX FORMULA</span>
           <h2 id="onboarding-title">THREE THINGS BEFORE LIGHTS OUT</h2>
@@ -116,6 +118,8 @@ export class HUD {
           <button type="button" class="touch-throttle" data-touch="throttle" aria-label="Throttle">THR</button>
         </div>
       </div>`;
+    root.setAttribute('aria-label', 'Driving heads-up display');
+    root.setAttribute('aria-hidden', 'true');
     // rev lights: 5 green, 5 red, 5 blue
     const rl = this.$('revlights');
     this._leds = [];
@@ -186,6 +190,9 @@ export class HUD {
     this._radio = null;
     this._radioTextEl = null;
     this._pulse = 0;
+    this._vscCycle = 0;
+    this._announcedEventKeys = new Set();
+    this._announceSeq = 0;
   }
 
   _buildSectorBar() {
@@ -221,15 +228,62 @@ export class HUD {
   }
 
   $(id) { return this.root.querySelector('#' + id); }
-  show() { this.root.classList.add('active'); }
+  _semanticEventKey(text) {
+    const value = String(text || '').trim().toUpperCase();
+    if (!value) return '';
+
+    // Race control fans these events out through message, banner and radio
+    // surfaces. Tie every wording variant to the underlying session event so
+    // screen readers hear the event once, even when the radio card is delayed.
+    if (value.includes('VIRTUAL SAFETY CAR') &&
+        (value === 'VIRTUAL SAFETY CAR' || value.includes('DEPLOY'))) {
+      const pendingCycle = this.session?.vsc?.active && !this._vscWasActive ? 1 : 0;
+      return `vsc:${Math.max(1, this._vscCycle + pendingCycle)}:deploy`;
+    }
+    if (value.includes('GREEN FLAG') || value.includes('RACE RESUMES')) {
+      return `vsc:${Math.max(1, this._vscCycle)}:green`;
+    }
+    if (value.includes('FASTEST LAP')) {
+      const fastest = this._fastestKey(this.session);
+      return fastest ? `fastest:${fastest}` : '';
+    }
+    return '';
+  }
+
+  _announce(text, priority = 'polite', eventKey = '') {
+    const value = String(text || '').trim();
+    if (!value) return;
+    const stableKey = eventKey || this._semanticEventKey(value);
+    if (stableKey) {
+      if (this._announcedEventKeys.has(stableKey)) return;
+      this._announcedEventKeys.add(stableKey);
+    }
+    this._announceSeq++;
+    const semanticPriority = stableKey.startsWith('vsc:') ? 'assertive' : priority;
+    const target = this.$(semanticPriority === 'assertive' ? 'hud-live-assertive' : 'hud-live-polite');
+    // An invisible separator makes an identical later event a real one-mutation
+    // DOM change without clearing the live region first or altering speech.
+    target.textContent = value + (this._announceSeq % 2 ? '\u2063' : '\u2063\u2063');
+  }
+  show() {
+    this.root.classList.add('active');
+    this.root.setAttribute('aria-hidden', 'false');
+  }
   hide() {
     this.root.classList.remove('active');
+    this.root.setAttribute('aria-hidden', 'true');
+    this.$('hud-live-polite').textContent = '';
+    this.$('hud-live-assertive').textContent = '';
     this.$('onboarding').classList.remove('active');
+    this.$('onboarding').setAttribute('aria-hidden', 'true');
     this.$('onboarding-go').onclick = null;
     this.$('race-msg').innerHTML = '';
     this.hideLights();
     this.flash('');
     this.showPitOverlay(null);
+    this.$('pit-overlay').classList.remove('active');
+    this.$('pit-overlay').setAttribute('aria-hidden', 'true');
+    this._pitShown = false;
     this._hideRadio();
     this.$('vscbanner').classList.remove('on', 'green');
     this.$('flbanner').classList.remove('on');
@@ -252,9 +306,11 @@ export class HUD {
   showOnboarding(onDone) {
     const overlay = this.$('onboarding');
     overlay.classList.add('active');
+    overlay.setAttribute('aria-hidden', 'false');
     const button = this.$('onboarding-go');
     button.onclick = () => {
       overlay.classList.remove('active');
+      overlay.setAttribute('aria-hidden', 'true');
       button.onclick = null;
       onDone?.();
     };
@@ -402,9 +458,12 @@ export class HUD {
     if (s._playerPitOpen && !this._pitShown) {
       this._pitShown = true;
       this.$('pit-overlay').classList.add('active');
+      this.$('pit-overlay').setAttribute('aria-hidden', 'false');
+      this._announce('Pit stop: select tyre compound', 'assertive');
     } else if (!s._playerPitOpen && this._pitShown) {
       this._pitShown = false;
       this.$('pit-overlay').classList.remove('active');
+      this.$('pit-overlay').setAttribute('aria-hidden', 'true');
     }
 
     this._drawMinimap();
@@ -674,6 +733,10 @@ export class HUD {
     const active = !!(vsc && vsc.active);
     const banner = this.$('vscbanner');
     if (active) {
+      if (!this._vscWasActive) {
+        this._vscCycle++;
+        this._announce('Virtual safety car deployed', 'assertive', `vsc:${this._vscCycle}:deploy`);
+      }
       this._greenFlagT = 0;
       banner.classList.add('on');
       banner.classList.remove('green');
@@ -686,6 +749,7 @@ export class HUD {
       banner.classList.add('on', 'green');
       this.$('vsc-text').textContent = 'GREEN FLAG';
       this.$('vsc-count').textContent = '';
+      this._announce('Green flag. Racing resumed', 'assertive', `vsc:${Math.max(1, this._vscCycle)}:green`);
     } else if (this._greenFlagT > 0) {
       this._greenFlagT -= dt;
       if (this._greenFlagT <= 0) {
@@ -721,6 +785,11 @@ export class HUD {
         banner.appendChild(el('span', 'fl-time', num(fl.time) != null ? fmtTime(fl.time) : ''));
         banner.appendChild(el('span', 'fl-sweep'));
         banner.classList.add('on');
+        this._announce(
+          `Fastest lap: ${name}${num(fl.time) != null ? ', ' + fmtTime(fl.time) : ''}`,
+          'polite',
+          `fastest:${key}`,
+        );
         this._flBannerT = FL_BANNER_MS / 1000;
       }
     }
@@ -737,6 +806,7 @@ export class HUD {
     const card = this.$('radiocard');
     card.className = '';
     card.innerHTML = '';
+    card.setAttribute('aria-label', 'Race engineer message');
   }
 
   _renderRadio(s, dt) {
@@ -748,6 +818,7 @@ export class HUD {
         : item && item.tone === 'celebration' ? 'celebration' : 'info';
       const card = this.$('radiocard');
       card.innerHTML = '';
+      card.setAttribute('aria-label', 'Race engineer: ' + text);
       const head = el('div', 'radio-head');
       head.appendChild(el('span', 'radio-icon', '●••'));
       head.appendChild(el('span', 'radio-who', 'RACE ENGINEER'));
@@ -755,6 +826,7 @@ export class HUD {
       card.appendChild(head);
       card.appendChild(body);
       card.className = 'on ' + tone;
+      this._announce('Race engineer: ' + text, tone === 'warning' ? 'assertive' : 'polite');
       this._radioTextEl = body;
       // type-on: whole message inside ~0.9s, floor of 26 chars/sec
       this._radio = { text, life: RADIO_LIFE, typed: 0, cps: Math.max(26, text.length / 0.9), shown: -1 };
@@ -839,6 +911,7 @@ export class HUD {
     div.className = 'msg-pill' + (color === 'green' ? ' green' : color === 'yellow' || color === 'purple' ? ' yellow' : '');
     if (color === 'purple') div.style.borderLeftColor = 'var(--purple)';
     div.textContent = text;
+    this._announce(text, color === 'green' || color === 'purple' ? 'polite' : 'assertive');
     box.appendChild(div);
     while (box.children.length > 3) box.firstChild.remove();
     setTimeout(() => { div.style.opacity = '0'; div.style.transition = 'opacity 0.4s'; }, 3200);
@@ -868,6 +941,7 @@ export class HUD {
     const box = this.$('bigflash');
     if (!text) { box.style.display = 'none'; return; }
     box.textContent = text;
+    this._announce(text, 'assertive');
     box.style.display = 'block';
     clearTimeout(this._flashTo);
     this._flashTo = setTimeout(() => { box.style.display = 'none'; }, ms);

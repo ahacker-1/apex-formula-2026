@@ -316,6 +316,55 @@ function stripeTex(accentHex) {
   });
 }
 
+// Rear-wing identity panel. Sidepod decals disappear from a chase camera, so
+// this deliberately puts the *team* and driver number on the one surface that
+// remains readable from a rear three-quarter view. Everything is fictional and
+// project-authored; the dark backing is part of the livery, not a real sponsor.
+function rearIdentityTex(team, drv) {
+  const teamName = String(team.name || team.id || 'APEX').toUpperCase();
+  const code = String(drv.code || '').toUpperCase();
+  const num = String(drv.num ?? 0);
+  const key = `${team.id || teamName}:${team.color}:${team.accent}:${code}:${num}`;
+  return T(`rearIdentity:${key}`, () => {
+    const c = cnv(768, 160), g = c.getContext('2d');
+    const base = new THREE.Color(team.color);
+    const accent = new THREE.Color(team.accent);
+    g.fillStyle = 'rgba(7,9,13,0.94)';
+    g.fillRect(0, 0, c.width, c.height);
+    g.fillStyle = '#' + base.getHexString();
+    g.fillRect(0, 0, 28, c.height);
+    g.fillStyle = '#' + accent.getHexString();
+    g.fillRect(28, 0, 12, c.height);
+    g.fillRect(40, 0, c.width - 40, 10);
+    g.fillStyle = 'rgba(255,255,255,0.14)';
+    for (let x = 62; x < 560; x += 42) {
+      g.beginPath();
+      g.moveTo(x, c.height);
+      g.lineTo(x + 24, c.height);
+      g.lineTo(x + 78, 10);
+      g.lineTo(x + 54, 10);
+      g.closePath();
+      g.fill();
+    }
+    g.textAlign = 'left'; g.textBaseline = 'middle';
+    g.fillStyle = '#ffffff';
+    const fs = teamName.length > 18 ? 42 : teamName.length > 12 ? 50 : 58;
+    g.font = `italic 900 ${fs}px Arial`;
+    g.fillText(teamName, 62, 72, 500);
+    g.fillStyle = 'rgba(255,255,255,0.68)';
+    g.font = '800 24px Arial';
+    g.fillText(code ? `${code}  //  APEX FORMULA` : 'APEX FORMULA', 64, 122);
+    g.textAlign = 'right';
+    g.fillStyle = luminance(accent) > 0.42 ? '#0a0c10' : '#ffffff';
+    g.font = 'italic 900 118px Arial';
+    g.strokeStyle = '#' + accent.getHexString();
+    g.lineWidth = 22; g.lineJoin = 'round';
+    g.strokeText(num, 744, 88);
+    g.fillText(num, 744, 88);
+    return c;
+  });
+}
+
 // Nose roundel: accent disc + driver number (kept from the original car).
 function roundelTex(num, accent) {
   return T(`roundel:${num}:${accent.getHexString()}`, () => {
@@ -333,35 +382,49 @@ function roundelTex(num, accent) {
 }
 
 /* -- tyre sidewall branding -------------------------------------------------
- * One shared canvas: transparent background, "ION TYRES" wordmark repeated
- * around the circumference with small separator ticks, drawn WHITE so the
- * per-car 'tyrewall' material can tint the whole ring to the live compound
- * colour (setTyreCompound recolours it together with the bead band — that is
- * the judge's "compound ring decal matching the color band"). The texture maps
- * onto a lathe ring that follows the sidewall bulge (u = around, v = radial).
+ * Transparent circular face art, drawn white so one per-car material can tint
+ * it to the live compound. It supplements the thin bead band at chase distance
+ * without changing wheel geometry, steering or spin.
  */
 function tyreWallTex() {
   return T('tyrewall', () => {
-    const W = 1024, H = 96, c = cnv(W, H), g = c.getContext('2d');
-    g.clearRect(0, 0, W, H);
+    const S = 512, c = cnv(S, S), g = c.getContext('2d');
+    g.clearRect(0, 0, S, S);
+    g.translate(S / 2, S / 2);
     g.textAlign = 'center'; g.textBaseline = 'middle';
-    const words = 3;
-    for (let i = 0; i < words; i++) {
-      const cx = W * (i + 0.5) / words;
-      g.fillStyle = 'rgba(255,255,255,0.96)';
-      g.font = 'italic 900 44px Arial';
-      g.fillText('ION TYRES', cx, H * 0.44);
-      // compound scale marks under the wordmark
-      g.fillStyle = 'rgba(255,255,255,0.55)';
-      g.font = '700 20px Arial';
-      g.fillText('APEX GP', cx, H * 0.80);
-      // separator tick between wordmarks
-      g.fillStyle = 'rgba(255,255,255,0.75)';
-      const tx = W * (i + 1) / words - 6;
-      g.fillRect(tx, H * 0.32, 12, 10);
+    for (let i = 0; i < 3; i++) {
+      g.save();
+      g.rotate((i / 3) * TAU);
+      g.fillStyle = 'rgba(255,255,255,0.98)';
+      g.font = 'italic 900 33px Arial';
+      g.fillText('ION TYRES', 0, -197);
+      g.fillStyle = 'rgba(255,255,255,0.62)';
+      g.fillRect(-7, -232, 14, 18);
+      g.restore();
     }
     return c;
   });
+}
+
+// A tiny deterministic weave map gives carbon pieces a scale cue in close
+// shots. At racing distance it resolves to the same restrained charcoal tone.
+function carbonWeaveTex() {
+  const t = T('carbonWeave', () => {
+    const S = 64, c = cnv(S, S), g = c.getContext('2d');
+    g.fillStyle = '#565b65'; g.fillRect(0, 0, S, S);
+    for (let y = -S; y < S * 2; y += 8) {
+      for (let x = -S; x < S * 2; x += 16) {
+        g.fillStyle = 'rgba(18,20,25,0.46)';
+        g.fillRect(x + y, y, 9, 3);
+        g.fillStyle = 'rgba(214,220,232,0.12)';
+        g.fillRect(x - y, y + 4, 9, 2);
+      }
+    }
+    return c;
+  });
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(9, 9);
+  return t;
 }
 
 // Subtle monochrome noise, tiled: bump + roughness variation for the rubber so
@@ -422,10 +485,10 @@ function rimTex() {
 // accents, rear-wing surfaces) that lift stacks on top of an already-bright
 // diffuse term and pushes the surface over the daytime bloom threshold (0.86
 // in js/main.js), so white wings grew a bloom halo. Fade the glow to zero as
-// the colour approaches white; dark liveries keep the full 0.05.
+// the colour approaches white; dark liveries keep a restrained 0.018 lift.
 function selfGlow(c) {
   const L = luminance(c);
-  return 0.05 * (1 - clamp01((L - 0.55) / 0.35));
+  return 0.018 * (1 - clamp01((L - 0.55) / 0.35));
 }
 // ...and cap near-WHITE paint itself: under the daytime sun (+ HDRI ambient) a
 // 0.9+ albedo surface exceeds linear luminance 0.86 — the bloom high-pass
@@ -447,14 +510,13 @@ function capWhite(c) {
 // judged as "gummy toy plastic — one broad creamy specular lobe, no fresnel
 // rim, no environment reflection": the base lobe was tight enough to read
 // plasticky but there was no second glossy layer to catch the sky. Real F1
-// paint is a matte-ish base under a hard clearcoat, which is exactly
-// MeshPhysicalMaterial: base roughness 0.40 (soft, non-gummy diffuse/spec),
-// clearcoat 1.0 at clearcoatRoughness 0.15 (sharp HDRI reflections + fresnel
-// rim brightening on every curved panel). Exported so tooling can assert the
-// spec on both build paths.
+// paint is a dielectric colour coat under a hard clearcoat, which is exactly
+// MeshPhysicalMaterial: near-zero metalness, a moderately rough base and a
+// sharper glossy layer for HDRI reflections + fresnel rim brightening. Exported
+// so tooling can assert the spec on both build paths.
 export const PAINT_SPEC = {
-  body: { metalness: 0.35, roughness: 0.40, clearcoat: 1.0, clearcoatRoughness: 0.15 },
-  accent: { metalness: 0.32, roughness: 0.40, clearcoat: 1.0, clearcoatRoughness: 0.15 },
+  body: { metalness: 0.06, roughness: 0.34, clearcoat: 1.0, clearcoatRoughness: 0.17 },
+  accent: { metalness: 0.05, roughness: 0.37, clearcoat: 0.92, clearcoatRoughness: 0.20 },
 };
 const bodyM = (team) => M(`body:${team.color}`, () => new THREE.MeshPhysicalMaterial({
   color: capWhite(new THREE.Color(team.color)),
@@ -480,13 +542,14 @@ const helmetTrimM = (trim) => M(`helmetTrim:${trim.getHexString()}`, () =>
   }));
 
 const carbonM = () => M('carbon', () => new THREE.MeshStandardMaterial({
-  color: 0x15171c, metalness: 0.38, roughness: 0.5,
+  color: 0x343842, map: carbonWeaveTex(), metalness: 0.12, roughness: 0.46,
 }));
 const plankM = () => M('plank', () => new THREE.MeshStandardMaterial({
   color: 0x07080a, metalness: 0.08, roughness: 0.8,
 }));
 const tyreM = () => M('tyre', () => new THREE.MeshStandardMaterial({
-  color: 0x111114, metalness: 0.05, roughness: 0.92,
+  color: 0x111114, metalness: 0.03, roughness: 0.9,
+  bumpMap: tyreNoiseTex(), bumpScale: 0.006,
 }));
 const rimM = () => M('rimSide', () => new THREE.MeshStandardMaterial({
   color: 0x6f757f, metalness: 0.88, roughness: 0.3,
@@ -937,6 +1000,8 @@ const wheelRimGeo = (w) => G(`wrim:${w}`, () =>
   new THREE.CylinderGeometry(BEAD_R, BEAD_R, w * 0.92, 16, 1).rotateZ(HALF_PI));
 const bandGeo = () => G('band', () =>
   new THREE.TorusGeometry(0.272, 0.013, 4, 20).rotateY(HALF_PI));
+const tyreSidewallGeo = () => G('tyreSidewall', () =>
+  new THREE.RingGeometry(0.238, 0.316, 48, 1).rotateY(HALF_PI));
 // Helmet trim ring, sits below the visor so it reads from a pure side view.
 const helmetBandGeo = () => G('helmetBand', () =>
   new THREE.TorusGeometry(0.152, 0.014, 6, 20).rotateX(HALF_PI));
@@ -944,6 +1009,68 @@ const helmetBandGeo = () => G('helmetBand', () =>
 /* ------------------------------------------------------------- build ------ */
 
 const COMPOUND_COLORS = { S: 0xe10600, M: 0xffd24a, H: 0xf0f0f0 };
+const WHEEL_WIDTHS = { fl: 0.30, fr: 0.30, rl: 0.38, rr: 0.38 };
+
+function tyreWallMaterial() {
+  return new THREE.MeshStandardMaterial({
+    name: 'tyrewall', map: tyreWallTex(), color: COMPOUND_COLORS.M,
+    transparent: true, alphaTest: 0.08, depthWrite: false,
+    metalness: 0.02, roughness: 0.66,
+    emissive: new THREE.Color(COMPOUND_COLORS.M).multiplyScalar(0.12),
+  });
+}
+
+function addTyreSidewalls(wheels, material) {
+  const out = [];
+  for (const [key, wheel] of Object.entries(wheels)) {
+    if (!wheel) continue;
+    const side = key[1] === 'l' ? -1 : 1;
+    const m = new THREE.Mesh(tyreSidewallGeo(), material);
+    m.name = 'tyrewall_' + key;
+    // Sit just proud of the rim but inside the certified tyre envelope. The GLB
+    // rear tyre is 0.384 m wide including its shoulder, so +11 mm exceeded the
+    // car's 2.09 m maximum width even though it looked flush.
+    m.position.x = side * (WHEEL_WIDTHS[key] / 2 + 0.001);
+    if (side < 0) m.rotation.y = Math.PI;
+    m.renderOrder = 1;
+    wheel.add(m);
+    out.push(m);
+  }
+  return out;
+}
+
+// High-frequency livery art is useful near the player but wasted on cars that
+// are a few corners away. THREE.LOD provides camera-distance switching without
+// coupling car.js to race/camera code. Geometry and materials remain shared.
+function addRearIdentity(body, team, drv) {
+  const mat = decalM(`rearIdentity:${team.id || team.name || 'apex'}:${drv.code || ''}:${drv.num ?? 0}`,
+    rearIdentityTex(team, drv));
+  const detail = new THREE.Group();
+  detail.name = 'rearIdentityDetail';
+
+  const top = new THREE.Mesh(PLANE(), mat);
+  top.name = 'rearWingIdentityTop';
+  top.position.set(0, 0.969, -2.275);
+  top.rotation.x = -HALF_PI;
+  top.scale.set(1.18, 0.205, 1);
+  top.renderOrder = 2;
+  detail.add(top);
+
+  const rear = new THREE.Mesh(PLANE(), mat);
+  rear.name = 'rearWingIdentityRear';
+  rear.position.set(0, 0.908, -2.368);
+  rear.rotation.y = Math.PI;
+  rear.scale.set(1.16, 0.118, 1);
+  rear.renderOrder = 2;
+  detail.add(rear);
+
+  const lod = new THREE.LOD();
+  lod.name = 'carPresentationLOD';
+  lod.addLevel(detail, 0);
+  lod.addLevel(new THREE.Group(), 90);
+  body.add(lod);
+  return lod;
+}
 
 /* -- nose number fit -------------------------------------------------------
  * The nose number panels are fitted to the ACTUAL lathed nose surface (like the
@@ -1139,6 +1266,28 @@ function prepareTemplate(scene) {
     mg.roughness = 0.08;
     if (mg.emissive) mg.emissive.setHex(0x000000);
   }
+  // The authored GLB carries neutral Blender materials; finish the shared
+  // non-livery surfaces here so they match the procedural fallback.
+  let carbon = null;
+  holder.traverse((o) => {
+    if (!carbon && o.isMesh && o.material?.name === 'carbon') carbon = o;
+  });
+  if (carbon && carbon.material) {
+    carbon.material.color.setHex(0x343842);
+    carbon.material.map = carbonWeaveTex();
+    carbon.material.metalness = 0.12;
+    carbon.material.roughness = 0.46;
+    carbon.material.needsUpdate = true;
+  }
+  holder.traverse((o) => {
+    if (!o.isMesh || o.material?.name !== 'tyre') return;
+    o.material.color.setHex(0x111114);
+    o.material.metalness = 0.03;
+    o.material.roughness = 0.9;
+    o.material.bumpMap = tyreNoiseTex();
+    o.material.bumpScale = 0.006;
+    o.material.needsUpdate = true;
+  });
   holder.traverse((o) => {
     if (!o.isMesh) return;
     if (o.geometry) o.geometry.userData.shared = true;
@@ -1243,7 +1392,21 @@ function buildFromTemplate(team, driver) {
     if (!m || !GLB_PER_CAR_MATS.has(m.name)) return;
     let c = perCar.get(m.name);
     if (!c) {
-      c = m.clone();
+      // Blender exports body paint as MeshStandardMaterial. Promote those two
+      // dielectric paints to a physical clearcoat material while retaining the
+      // source colour/visibility contract; carbon/tyres stay shared.
+      if (m.name === 'body' || m.name === 'accent') {
+        c = new THREE.MeshPhysicalMaterial({
+          color: m.color?.clone() || 0xffffff,
+          emissive: m.emissive?.clone() || new THREE.Color(0),
+          emissiveIntensity: m.emissiveIntensity ?? 1,
+          side: m.side, transparent: m.transparent, opacity: m.opacity,
+          depthTest: m.depthTest, depthWrite: m.depthWrite,
+          alphaTest: m.alphaTest, vertexColors: m.vertexColors,
+        });
+      } else {
+        c = m.clone();
+      }
       c.name = m.name;
       c.userData = {};              // must NOT inherit shared:true
       perCar.set(m.name, c);
@@ -1256,15 +1419,13 @@ function buildFromTemplate(team, driver) {
   const bodyMat = perCar.get('body');
   if (bodyMat) {
     bodyMat.color.copy(capWhite(color));
-    bodyMat.metalness = 0.5;
-    bodyMat.roughness = 0.30;
+    Object.assign(bodyMat, PAINT_SPEC.body);
     bodyMat.emissive.copy(color).multiplyScalar(selfGlow(color));
   }
   const accentMat = perCar.get('accent');
   if (accentMat) {
     accentMat.color.copy(capWhite(accent));
-    accentMat.metalness = 0.48;
-    accentMat.roughness = 0.32;
+    Object.assign(accentMat, PAINT_SPEC.accent);
     accentMat.emissive.copy(accent).multiplyScalar(selfGlow(accent));
   }
   const helmMat = perCar.get('helmet');
@@ -1288,9 +1449,12 @@ function buildFromTemplate(team, driver) {
   }
   const rainMat = perCar.get('rainlight');
   if (rainMat) {
-    rainMat.color.setHex(0x1a0202);
-    rainMat.emissive.setHex(0xff1a12);
-    rainMat.emissiveIntensity = 2.2;
+    // A restrained hot lens is visible without an additive sprite. The base
+    // mesh may still blink with harvesting state, but removing the sprite avoids
+    // 22 synchronized full-screen additive halos at the 110 ms blink cadence.
+    rainMat.color.setHex(0x240303);
+    rainMat.emissive.setHex(0xff2618);
+    rainMat.emissiveIntensity = 3.0;
     rainMat.toneMapped = false;
   }
   const bandMat = perCar.get('band');
@@ -1321,6 +1485,7 @@ function buildFromTemplate(team, driver) {
     m.renderOrder = 1;
     body.add(m);
   }
+  const rearIdentity = addRearIdentity(body, team, drv);
 
   const brakeGlows = ['brake_glow_l', 'brake_glow_r']
     .map((n) => body.getObjectByName(n)).filter(Boolean);
@@ -1330,13 +1495,17 @@ function buildFromTemplate(team, driver) {
 
   const tyreBands = ['fl', 'fr', 'rl', 'rr']
     .map((k) => wheels[k].getObjectByName('band_' + k)).filter(Boolean);
+  const wallMat = tyreWallMaterial();
+  const tyreSidewalls = addTyreSidewalls(wheels, wallMat);
 
   const handle = {
     group, wheels, wheelRadius: 0.34,
     body, team, driver: drv,
-    tyreBands, tyreBandMats: bandMat ? [bandMat] : [], compound: 'M',
+    tyreBands, tyreSidewalls,
+    tyreBandMats: [bandMat, wallMat].filter(Boolean), compound: 'M',
     brakeGlows, brakeGlowMaterial: glowMat || null,
     rainLight, rainLightMaterial: rainMat || null,
+    rearIdentity,
     variant,
     monocoque: body.getObjectByName('chassis') || null,
     haloFeet: HALO_FEET.map((p) => new THREE.Vector3(p[0], p[1], p[2])),
@@ -1371,7 +1540,10 @@ function _upgradePendingCars() {
 }
 
 const _disposePerCar = (o) => {
-  if (o.geometry && !o.geometry.userData.shared) o.geometry.dispose();
+  // THREE.Sprite instances all share one module-level geometry. Disposing it
+  // while swapping a primitive car to the GLB corrupts every other sprite in
+  // the scene (name tags included), so mirror RaceSession.dispose's exception.
+  if (o.geometry && !o.isSprite && !o.geometry.userData.shared) o.geometry.dispose();
   const mats = Array.isArray(o.material) ? o.material : (o.material ? [o.material] : []);
   for (const m of mats) {
     if (m.userData.shared) continue;
@@ -1411,11 +1583,13 @@ function _upgradeToTemplate(handle) {
   }
   handle.body = fresh.body;
   handle.tyreBands = fresh.tyreBands;
+  handle.tyreSidewalls = fresh.tyreSidewalls;
   handle.tyreBandMats = fresh.tyreBandMats;
   handle.brakeGlows = fresh.brakeGlows;
   handle.brakeGlowMaterial = fresh.brakeGlowMaterial;
   handle.rainLight = fresh.rainLight;
   handle.rainLightMaterial = fresh.rainLightMaterial;
+  handle.rearIdentity = fresh.rearIdentity;
   handle.monocoque = fresh.monocoque;
   handle.helmetColors = fresh.helmetColors;
   handle.source = 'glb';
@@ -1564,6 +1738,7 @@ export function buildPrimitiveCarMesh(team, driver) {
   // nose roundel (kept)
   put(DISC(), decalM(`roundel:${drv.num}:${accent.getHexString()}`, roundelTex(drv.num, accent)),
     0, 0.545, 1.42, { s: [0.12, 0.12, 1], r: [-HALF_PI, 0, 0], name: 'roundel' });
+  const rearIdentity = addRearIdentity(body, team, drv);
 
   /* --- race-state hooks ------------------------------------------------- */
   // per-car materials: another module drives these, so they must not be shared
@@ -1577,7 +1752,9 @@ export function buildPrimitiveCarMesh(team, driver) {
   ];
   for (const d of brakeGlows) d.visible = false;
 
-  const rainMat = new THREE.MeshBasicMaterial({ color: 0xff1a12, transparent: true });
+  const rainMat = new THREE.MeshBasicMaterial({
+    color: 0xff301f, transparent: true, toneMapped: false,
+  });
   const rainLight = put(BOX(), rainMat, 0, 0.365, -2.20, { s: [0.13, 0.07, 0.05], name: 'rainLight' });
   rainLight.visible = true;
 
@@ -1587,6 +1764,7 @@ export function buildPrimitiveCarMesh(team, driver) {
   const bandMats = [];
   const tyreBands = [];
   const wheels = {};
+  const wallMat = tyreWallMaterial();
   const wr = 0.34;
   for (const [key, x, z, w] of [
     ['fl', -0.82, 1.55, 0.30], ['fr', 0.82, 1.55, 0.30],
@@ -1627,13 +1805,16 @@ export function buildPrimitiveCarMesh(team, driver) {
     group.add(g);
     wheels[key] = g;
   }
+  const tyreSidewalls = addTyreSidewalls(wheels, wallMat);
+  bandMats.push(wallMat);
 
   const handle = {
     group, wheels, wheelRadius: wr,
     body, team, driver: drv,
-    tyreBands, tyreBandMats: bandMats, compound: 'M',
+    tyreBands, tyreSidewalls, tyreBandMats: bandMats, compound: 'M',
     brakeGlows, brakeGlowMaterial: glowMat,
     rainLight, rainLightMaterial: rainMat,
+    rearIdentity,
     // extras used by tools/validate-geometry.mjs (and handy for debugging)
     variant,
     monocoque: tub,
