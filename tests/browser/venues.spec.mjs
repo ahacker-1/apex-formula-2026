@@ -32,6 +32,9 @@ const FIXED_VIEWPORT = { width: 1600, height: 900 };
 const FIXED_DPR = 1;
 const PRE_FREEZE_TICKS = [0, 600, 1_800];
 const FRESH_CAPTURE_RUNS = PRE_FREEZE_TICKS.length;
+// Three full WebGL contexts plus the 1,800-tick contamination/reset probe can
+// exceed Playwright's ordinary test ceiling on CI software rendering.
+const VENUE_CAPTURE_TIMEOUT_MS = 360_000;
 const SAME_PAGE_TOLERANCE = { meanAbsoluteChannelDifferenceMax: 1.5, changedPixelRatioMax: 0.02, changedPixelChannelThreshold: 2 };
 // Fresh GPU contexts retain the established eight-level rasterisation budget;
 // the renderer fix removes stochastic GTAO input instead of widening it.
@@ -1231,7 +1234,7 @@ test('a contender waits through the terminal-pointer-to-unlock boundary', async 
 
 for (const venue of VENUES) {
   test(`${venue.trackId} uses one ${venue.environment} HDR and is stable across fresh sessions`, async ({ page, context }) => {
-    test.setTimeout(180_000);
+    test.setTimeout(VENUE_CAPTURE_TIMEOUT_MS);
     const captures = [];
     let baseline = null;
     for (let index = 0; index < FRESH_CAPTURE_RUNS; index++) {
