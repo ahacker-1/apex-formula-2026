@@ -230,6 +230,16 @@ ok(nodeCount + decals.length + 1 <= 80,
 /* ---- both build paths, end to end --------------------------------------- */
 const TEAM = { id: 'ferrari', color: 0xe10600, accent: 0xffe66d };
 const DRIVER = { num: 16, code: 'LEC' };
+const TACN_TEAM = { id: 'tacn', color: 0x111c2e, accent: 0x16c7ff };
+const TACN_DRIVER = { id: 'hacker', num: 26, code: 'AVI' };
+
+const materialOf = (h, name) => {
+  let found = null;
+  h.group.traverse((o) => {
+    if (o.isMesh && o.material && o.material.name === name) found = o.material;
+  });
+  return found;
+};
 
 // primitives first: installing the template is one-way inside the module
 {
@@ -239,6 +249,15 @@ const DRIVER = { num: 16, code: 'LEC' };
   ok(h.wheelRadius === 0.34 && ['fl', 'fr', 'rl', 'rr'].every(
     (k) => h.wheels[k] && h.wheels[k].rotation.order === 'YXZ'),
   'primitives handle keeps the wheels API');
+
+  const fallbackTacn = CAR.buildCarMesh(TACN_TEAM, TACN_DRIVER);
+  ok(fallbackTacn.source === 'primitives' && fallbackTacn.liveryDetail?.name === 'tacnDeckLivery',
+    'primitive TACN car carries its intentional shoulder-deck livery');
+  ok(fallbackTacn.liveryDetail?.material?.map?.image?.width === 512,
+    'TACN macro livery uses one bounded 512px texture');
+  ok(fallbackTacn.body.getObjectByName('monocoque')?.material?.envMapIntensity === 0.68
+    && fallbackTacn.body.getObjectByName('rearWingMainplane')?.material?.envMapIntensity === 0.72,
+  'primitive TACN paint uses restrained environment reflection');
 }
 
 const tpl = await CAR.preloadCarModel(scene.clone(true));
@@ -247,6 +266,7 @@ ok(!!tpl && CAR.carModelLoaded(), 'preloadCarModel(scene) installs the template'
 const a = CAR.buildCarMesh(TEAM, DRIVER);
 const b = CAR.buildCarMesh({ id: 'mclaren', color: 0xff8000, accent: 0x111111 },
   { num: 4, code: 'NOR' });
+const tacn = CAR.buildCarMesh(TACN_TEAM, TACN_DRIVER);
 ok(a.source === 'glb', 'buildCarMesh() uses the GLB template once loaded',
   `[${a.source}]`);
 ok(a.wheelRadius === 0.34, 'wheelRadius still 0.34', `[${a.wheelRadius}]`);
@@ -284,13 +304,7 @@ ok(worstTilt < 1e-9, 'steered + spinning front axles stay horizontal',
   `[max |axle.y| = ${worstTilt.toExponential(2)}]`);
 
 // per-car recolour isolation
-const matOf = (h, name) => {
-  let found = null;
-  h.group.traverse((o) => {
-    if (o.isMesh && o.material && o.material.name === name) found = o.material;
-  });
-  return found;
-};
+const matOf = materialOf;
 const bodyA = matOf(a, 'body'), bodyB = matOf(b, 'body');
 ok(bodyA && bodyB && bodyA !== bodyB, "'body' material is cloned per car");
 ok(bodyA.color.getHex() === 0xe10600 && bodyB.color.getHex() === 0xff8000,
@@ -299,6 +313,17 @@ ok(bodyA.color.getHex() === 0xe10600 && bodyB.color.getHex() === 0xff8000,
 const accA = matOf(a, 'accent');
 ok(accA && accA.color.getHex() === 0xffe66d, "'accent' is recoloured to team.accent",
   `[#${accA.color.getHexString()}]`);
+ok(matOf(tacn, 'body')?.color.getHex() === TACN_TEAM.color
+  && matOf(tacn, 'accent')?.color.getHex() === TACN_TEAM.accent,
+"TACN's blue-charcoal / electric-azure palette reaches the sculpted car");
+ok(matOf(tacn, 'body')?.envMapIntensity === 0.68
+  && matOf(tacn, 'accent')?.envMapIntensity === 0.72,
+"TACN's sculpted clearcoat stays inside the restrained IBL range");
+ok(tacn.liveryDetail?.name === 'tacnDeckLivery'
+  && tacn.body.getObjectByName('tacnDeckLivery') === tacn.liveryDetail,
+"TACN's macro livery is attached to the live body handle");
+ok(!a.liveryDetail && !a.body.getObjectByName('tacnDeckLivery'),
+  'the team-specific livery does not alter other cars');
 for (const n of ['body', 'accent', 'band', 'glow', 'rainlight']) {
   const m = matOf(a, n);
   ok(m && !m.userData.shared,
@@ -339,6 +364,10 @@ ok(matOf(b, 'band').color.getHex() === 0xffd24a,
     ok(names.includes(d.name), `decal plane '${d.name}' is attached to the body`);
   }
   ok(objects <= 80, 'a built car stays within 80 objects', `[${objects}]`);
+  let tacnObjects = 0;
+  tacn.group.traverse(() => { tacnObjects++; });
+  ok(tacnObjects <= 80, 'the fully dressed TACN car stays within 80 objects',
+    `[${tacnObjects}]`);
   // undo the axle sweep above: a spun wheel's AABB-of-AABB dips below the road
   // even though its vertices do not, so measure the car at rest and precisely.
   for (const k of ['fl', 'fr', 'rl', 'rr']) a.wheels[k].rotation.set(0, 0, 0);

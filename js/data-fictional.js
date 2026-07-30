@@ -16,7 +16,11 @@ export const TEAMS = [
   // color/accent: invented liveries. perf: 0.90-0.99 relative car performance —
   // a balanced spread so the fictional grid remains competitive.
   { id: 'vantara',    name: 'Vantara',                 fullName: 'Vantara Racing Collective',            engine: 'Kestrel',  color: 0x7B2FF7, accent: 0xFFD200, perf: 0.99 },
-  { id: 'tacn',       name: 'AI Consulting Network',   fullName: 'The AI Consulting Network Racing Team', engine: 'Apex',     color: 0x0A0A0A, accent: 0xFFFFFF, perf: 0.97 },
+  // TACN's deep blue-charcoal + electric azure is intentionally authored as a
+  // racing livery, not pure black/white chrome. The cool off-black keeps its
+  // body shape in night lighting while the saturated accent remains distinct
+  // from every other team at chase-camera distance.
+  { id: 'tacn',       name: 'AI Consulting Network',   fullName: 'The AI Consulting Network Racing Team', engine: 'Apex',     color: 0x111C2E, accent: 0x16C7FF, perf: 0.97 },
   { id: 'solaris',    name: 'Solaris',                 fullName: 'Solaris Racing Works',                 engine: 'Solstice', color: 0xFF4D1F, accent: 0x141414, perf: 0.96 },
   { id: 'meridian',   name: 'Meridian',                fullName: 'Meridian Motorsport Group',            engine: 'Volta',    color: 0x00A86B, accent: 0xF4F4F4, perf: 0.96 },
   { id: 'halcyon',    name: 'Halcyon',                 fullName: 'Halcyon Racing Division',              engine: 'Kestrel',  color: 0x2277CC, accent: 0xEAF4FF, perf: 0.95 },

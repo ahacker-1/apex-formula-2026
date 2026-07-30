@@ -329,6 +329,42 @@ function rearIdentityTex(team, drv) {
     const c = cnv(768, 160), g = c.getContext('2d');
     const base = new THREE.Color(team.color);
     const accent = new THREE.Color(team.accent);
+
+    // TACN gets a deliberately terse broadcast mark. Its full team name was
+    // technically present before, but shrank below legibility on the narrow
+    // rear flap and read as anonymous black/white bodywork from the chase cam.
+    // These three large blocks survive the same downsampling: TACN / AVI / 26.
+    if (team.id === 'tacn') {
+      g.fillStyle = '#0d1728';
+      g.fillRect(0, 0, c.width, c.height);
+      g.fillStyle = '#' + accent.getHexString();
+      g.fillRect(0, 0, 34, c.height);
+      g.fillRect(34, 0, c.width - 34, 12);
+      g.beginPath();
+      g.moveTo(486, 12);
+      g.lineTo(650, 12);
+      g.lineTo(604, 160);
+      g.lineTo(440, 160);
+      g.closePath();
+      g.fill();
+      g.fillStyle = '#d7edf4';
+      g.textAlign = 'left'; g.textBaseline = 'middle';
+      g.font = 'italic 900 68px Arial';
+      g.fillText('TACN', 58, 68);
+      g.fillStyle = 'rgba(215,237,244,0.76)';
+      g.font = '800 27px Arial';
+      g.fillText(`${code || 'AVI'}  //  APEX FORMULA`, 62, 124);
+      g.textAlign = 'center';
+      g.fillStyle = '#0d1728';
+      g.font = 'italic 900 72px Arial';
+      g.fillText(code || 'AVI', 535, 88);
+      g.textAlign = 'right';
+      g.fillStyle = '#d7edf4';
+      g.font = 'italic 900 122px Arial';
+      g.fillText(num, 750, 92);
+      return c;
+    }
+
     g.fillStyle = 'rgba(7,9,13,0.94)';
     g.fillRect(0, 0, c.width, c.height);
     g.fillStyle = '#' + base.getHexString();
@@ -361,6 +397,73 @@ function rearIdentityTex(team, drv) {
     g.lineWidth = 22; g.lineJoin = 'round';
     g.strokeText(num, 744, 88);
     g.fillText(num, 744, 88);
+    return c;
+  });
+}
+
+// One bold shoulder-deck graphic shared by both car build paths. It is a
+// macro-livery layer, not a decal sheet: two long electric-azure spears frame
+// the cockpit, with a single large driver identity on the rear-facing ends.
+// Transparent negative space lets the clearcoated blue-charcoal body remain the
+// dominant mass. At 512px it costs 1 MiB per TACN driver on the grid and adds
+// only one draw call/object per car.
+function tacnDeckTex(drv) {
+  const code = String(drv.code || 'AVI').toUpperCase();
+  const num = String(drv.num ?? 26);
+  return T(`tacnDeck:${code}:${num}`, () => {
+    const c = cnv(512, 512), g = c.getContext('2d');
+    g.clearRect(0, 0, c.width, c.height);
+
+    const spear = (mirror) => {
+      g.save();
+      if (mirror) { g.translate(c.width, 0); g.scale(-1, 1); }
+      const grad = g.createLinearGradient(44, 0, 220, 0);
+      grad.addColorStop(0, 'rgba(22,199,255,0.98)');
+      grad.addColorStop(0.72, 'rgba(10,141,205,0.96)');
+      grad.addColorStop(1, 'rgba(10,91,150,0.86)');
+      g.fillStyle = grad;
+      g.beginPath();
+      g.moveTo(28, 496);
+      g.lineTo(204, 496);
+      g.lineTo(164, 24);
+      g.lineTo(84, 24);
+      g.closePath();
+      g.fill();
+
+      // Broad dark inset + a restrained cool-white pinline give the spear the
+      // layered, intentional finish that a single flat cyan patch would lack.
+      g.fillStyle = 'rgba(13,23,40,0.88)';
+      g.beginPath();
+      g.moveTo(64, 468);
+      g.lineTo(177, 468);
+      g.lineTo(153, 176);
+      g.lineTo(96, 176);
+      g.closePath();
+      g.fill();
+      g.strokeStyle = 'rgba(215,237,244,0.86)';
+      g.lineWidth = 7;
+      g.beginPath();
+      g.moveTo(48, 488);
+      g.lineTo(184, 488);
+      g.lineTo(157, 90);
+      g.stroke();
+      g.restore();
+    };
+    spear(false);
+    spear(true);
+
+    // Canvas y=bottom maps to the physical rear edge after the plane is laid
+    // onto the deck, putting the identity closest to the chase camera.
+    g.fillStyle = '#d7edf4';
+    g.textBaseline = 'middle';
+    g.textAlign = 'center';
+    g.font = 'italic 900 58px Arial';
+    g.fillText('TACN', 119, 414);
+    g.font = 'italic 900 86px Arial';
+    g.fillText(num, 393, 410);
+    g.fillStyle = 'rgba(215,237,244,0.82)';
+    g.font = '800 30px Arial';
+    g.fillText(code, 393, 474);
     return c;
   });
 }
@@ -518,14 +621,17 @@ export const PAINT_SPEC = {
   body: { metalness: 0.06, roughness: 0.34, clearcoat: 1.0, clearcoatRoughness: 0.17 },
   accent: { metalness: 0.05, roughness: 0.37, clearcoat: 0.92, clearcoatRoughness: 0.20 },
 };
-const bodyM = (team) => M(`body:${team.color}`, () => new THREE.MeshPhysicalMaterial({
+const paintSpec = (team, kind) => (team.id === 'tacn'
+  ? { ...PAINT_SPEC[kind], envMapIntensity: kind === 'body' ? 0.68 : 0.72 }
+  : PAINT_SPEC[kind]);
+const bodyM = (team) => M(`body:${team.id || 'team'}:${team.color}`, () => new THREE.MeshPhysicalMaterial({
   color: capWhite(new THREE.Color(team.color)),
-  ...PAINT_SPEC.body,
+  ...paintSpec(team, 'body'),
   emissive: new THREE.Color(team.color).multiplyScalar(selfGlow(new THREE.Color(team.color))),
 }));
-const accentM = (team) => M(`accent:${team.accent}`, () => new THREE.MeshPhysicalMaterial({
+const accentM = (team) => M(`accent:${team.id || 'team'}:${team.accent}`, () => new THREE.MeshPhysicalMaterial({
   color: capWhite(new THREE.Color(team.accent)),
-  ...PAINT_SPEC.accent,
+  ...paintSpec(team, 'accent'),
   emissive: new THREE.Color(team.accent).multiplyScalar(selfGlow(new THREE.Color(team.accent))),
 }));
 // Helmet shell: never unlit-black (see helmetPalette) and always slightly
@@ -585,6 +691,17 @@ function decalM(key, tex) {
     metalness: 0.2, roughness: 0.45,
     emissive: 0xffffff, emissiveMap: tex, emissiveIntensity: 0.2,
   }));
+}
+
+function tacnDeckM(drv) {
+  const tex = tacnDeckTex(drv);
+  return M(`tacnDeck:${drv.code || 'AVI'}:${drv.num ?? 26}`, () =>
+    new THREE.MeshPhysicalMaterial({
+      map: tex, transparent: true, depthWrite: false,
+      side: THREE.FrontSide, metalness: 0.04, roughness: 0.36,
+      clearcoat: 0.88, clearcoatRoughness: 0.22, envMapIntensity: 0.68,
+      emissive: 0x7adfff, emissiveMap: tex, emissiveIntensity: 0.045,
+    }));
 }
 
 /* ------------------------------------------------------- aero plate table -- */
@@ -1072,6 +1189,18 @@ function addRearIdentity(body, team, drv) {
   return lod;
 }
 
+function addTacnDeckLivery(body, team, drv, y) {
+  if (team.id !== 'tacn') return null;
+  const deck = new THREE.Mesh(PLANE(), tacnDeckM(drv));
+  deck.name = 'tacnDeckLivery';
+  deck.position.set(0, y, -0.22);
+  deck.rotation.x = -HALF_PI;
+  deck.scale.set(1.36, 1.62, 1);
+  deck.renderOrder = 2;
+  body.add(deck);
+  return deck;
+}
+
 /* -- nose number fit -------------------------------------------------------
  * The nose number panels are fitted to the ACTUAL lathed nose surface (like the
  * GLB path's snapDecals), not hand-typed: probe rays sample the surface across
@@ -1419,13 +1548,13 @@ function buildFromTemplate(team, driver) {
   const bodyMat = perCar.get('body');
   if (bodyMat) {
     bodyMat.color.copy(capWhite(color));
-    Object.assign(bodyMat, PAINT_SPEC.body);
+    Object.assign(bodyMat, paintSpec(team, 'body'));
     bodyMat.emissive.copy(color).multiplyScalar(selfGlow(color));
   }
   const accentMat = perCar.get('accent');
   if (accentMat) {
     accentMat.color.copy(capWhite(accent));
-    Object.assign(accentMat, PAINT_SPEC.accent);
+    Object.assign(accentMat, paintSpec(team, 'accent'));
     accentMat.emissive.copy(accent).multiplyScalar(selfGlow(accent));
   }
   const helmMat = perCar.get('helmet');
@@ -1485,6 +1614,7 @@ function buildFromTemplate(team, driver) {
     m.renderOrder = 1;
     body.add(m);
   }
+  const liveryDetail = addTacnDeckLivery(body, team, drv, 0.556);
   const rearIdentity = addRearIdentity(body, team, drv);
 
   const brakeGlows = ['brake_glow_l', 'brake_glow_r']
@@ -1506,6 +1636,7 @@ function buildFromTemplate(team, driver) {
     brakeGlows, brakeGlowMaterial: glowMat || null,
     rainLight, rainLightMaterial: rainMat || null,
     rearIdentity,
+    liveryDetail,
     variant,
     monocoque: body.getObjectByName('chassis') || null,
     haloFeet: HALO_FEET.map((p) => new THREE.Vector3(p[0], p[1], p[2])),
@@ -1590,6 +1721,7 @@ function _upgradeToTemplate(handle) {
   handle.rainLight = fresh.rainLight;
   handle.rainLightMaterial = fresh.rainLightMaterial;
   handle.rearIdentity = fresh.rearIdentity;
+  handle.liveryDetail = fresh.liveryDetail;
   handle.monocoque = fresh.monocoque;
   handle.helmetColors = fresh.helmetColors;
   handle.source = 'glb';
@@ -1738,6 +1870,7 @@ export function buildPrimitiveCarMesh(team, driver) {
   // nose roundel (kept)
   put(DISC(), decalM(`roundel:${drv.num}:${accent.getHexString()}`, roundelTex(drv.num, accent)),
     0, 0.545, 1.42, { s: [0.12, 0.12, 1], r: [-HALF_PI, 0, 0], name: 'roundel' });
+  const liveryDetail = addTacnDeckLivery(body, team, drv, 0.612);
   const rearIdentity = addRearIdentity(body, team, drv);
 
   /* --- race-state hooks ------------------------------------------------- */
@@ -1815,6 +1948,7 @@ export function buildPrimitiveCarMesh(team, driver) {
     brakeGlows, brakeGlowMaterial: glowMat,
     rainLight, rainLightMaterial: rainMat,
     rearIdentity,
+    liveryDetail,
     // extras used by tools/validate-geometry.mjs (and handy for debugging)
     variant,
     monocoque: tub,

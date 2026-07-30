@@ -788,7 +788,7 @@ function liveryChips(team) {
   return cols.map(col => `<i style="background:${col}"></i>`).join('');
 }
 // Text tinted with a team colour has to stay legible on the dark panels. The
-// near-black liveries (TACN's 0x0A0A0A) and the deep navies fail otherwise, on
+// near-black liveries (including TACN's blue-charcoal) and deep navies fail otherwise, on
 // either roster. Blend toward white until the relative luminance clears a
 // floor, which keeps the hue.
 function readable(n, floor = 0.55) {

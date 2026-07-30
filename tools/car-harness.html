@@ -33,7 +33,7 @@
 //   (d) every car is the SAME art generation (sculpted GLB) — including cars
 //       built BEFORE the template resolved, which must upgrade in place
 //   (e) the APEX / VELOCE sponsor atlas has a clean gutter between glyph blocks
-//   (f) white rear-wing surfaces stay under the day bloom threshold
+//   (f) bright rear-wing surfaces stay under the day bloom threshold
 //
 // Run:  python3 tools/devserver.py 8452 .   then open /tools/car-harness.html
 // Results land in window.__HARNESS__; frames are POSTed to /shot.
@@ -259,7 +259,7 @@ async function run() {
   const c = S.circuit;
 
   // grid: front row = dark, saturated, non-yellow liveries so the debris and
-  // mirror probes are unambiguous; tacn (white accent) included for check (f)
+  // mirror probes are unambiguous; TACN's saturated accent is included for (f)
   const wantIds = ['kuroshio', 'norvik', 'vantara', 'tacn', 'solaris', 'meridian', 'halcyon', 'zephyr'];
   const teams = wantIds.map(id => TEAMS.find(t => t.id === id)).filter(Boolean);
   check(teams.length === 8, 'harness grid: 8 teams resolved', `[${teams.map(t => t.id).join(',')}]`);
@@ -458,10 +458,10 @@ async function run() {
   }
 
   // -------------------------------------------------- (f) rear-wing bloom clip
-  head('(f) white rear-wing surfaces stay under the day bloom threshold');
+  head('(f) bright rear-wing surfaces stay under the day bloom threshold');
   {
-    const tac = cars[3];   // tacn: black body, WHITE accent -> white rear-wing mainplane
-    check(tac.team.id === 'tacn', 'white-accent car resolved', `[${tac.team.id}]`);
+    const tac = cars[3];   // TACN: blue-charcoal body + electric-azure mainplane
+    check(tac.team.id === 'tacn', 'TACN accent car resolved', `[${tac.team.id}]`);
     tac.group.updateMatrixWorld(true);
     // rear three-quarter framing on the wing
     const camL = tac.group.localToWorld(new THREE.Vector3(3.0, 2.0, -6.5));
@@ -475,7 +475,7 @@ async function run() {
     await shot('car-02-tacn-wing', im2);
     // The bloom high-pass thresholds LINEAR luminance at 0.86; through ACES
     // (exposure 1.05) + sRGB that lands at ~sRGB 214. Wing pixels above it
-    // would seed a bloom halo on the white paint.
+    // would seed a bloom halo on the bright paint.
     let over = 0, total = 0, maxL = 0, sum = 0;
     for (let i = 0; i < W * H; i++) {
       if (!wm.m[i]) continue;
@@ -488,7 +488,7 @@ async function run() {
     const overFrac = total ? over / total : 1;
     results.numbers.wing = { total, over, overFrac, maxL, mean: total ? sum / total : 0 };
     check(total > 400, 'rear wing occupies a measurable area', `[${total} px]`);
-    check(overFrac < 0.05, 'white wing stays under the bloom threshold (no clip into bloom)',
+    check(overFrac < 0.05, 'bright wing stays under the bloom threshold (no clip into bloom)',
       `[${(overFrac * 100).toFixed(2)}% of ${total} px over sRGB 214, max=${maxL.toFixed(0)}]`);
   }
 
