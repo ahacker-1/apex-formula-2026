@@ -64,14 +64,15 @@ test('live GLB race LOD saves render work, covers every camera, and restarts cle
         target: target.lodLevel,
         player: session.player.lodLevel,
         playerPinnedFull: telemetry.playerPinnedFull,
+        playerHasProxy: !!session.player.carHandle.farProxy,
       });
     }
     return out;
   });
   expect(cameraModes).toEqual([
-    { mode: 0, target: 'far', player: 'full', playerPinnedFull: true },
-    { mode: 1, target: 'far', player: 'full', playerPinnedFull: true },
-    { mode: 2, target: 'far', player: 'full', playerPinnedFull: true },
+    { mode: 0, target: 'far', player: 'full', playerPinnedFull: true, playerHasProxy: false },
+    { mode: 1, target: 'far', player: 'full', playerPinnedFull: true, playerHasProxy: false },
+    { mode: 2, target: 'far', player: 'full', playerPinnedFull: true, playerHasProxy: false },
   ]);
 
   const beforeForced = await page.evaluate(async () => {
@@ -108,18 +109,70 @@ test('live GLB race LOD saves render work, covers every camera, and restarts cle
   expect(automatic.renderer.calls).toBeLessThan(forced.renderer.calls);
   expect(automatic.renderer.triangles).toBeLessThan(forced.renderer.triangles);
 
+  const brakePixels = await page.evaluate(async () => {
+    const THREE = await import('/lib/three.module.js');
+    const game = window.__game;
+    const session = game.session;
+    const target = session.entries.find(entry => !entry.isPlayer);
+    for (const entry of session.entries) entry.mesh.visible = entry === target;
+    target.mesh.position.set(0, 0, 0);
+    target.mesh.rotation.set(0, 0, 0);
+    session._setEntryCarLod(target, 'far');
+    target.carHandle.farProxy.rainLight.visible = false;
+    const brake = target.carHandle.farProxy.brakeGlows[0];
+    brake.material.opacity = 1;
+    brake.material.color.setRGB(1, 0.08, 0.01);
+    game.camera.position.set(8, 2.4, -8);
+    game.camera.lookAt(0, 0.35, -0.2);
+    game.camera.fov = 44;
+    game.camera.updateProjectionMatrix();
+    game.camera.updateMatrixWorld(true);
+
+    const capture = (visible) => {
+      brake.visible = visible;
+      game.composer.render();
+      const copy = document.createElement('canvas');
+      copy.width = 720;
+      copy.height = 450;
+      const context = copy.getContext('2d', { willReadFrequently: true });
+      context.drawImage(game.renderer.domElement, 0, 0, copy.width, copy.height);
+      return context.getImageData(0, 0, copy.width, copy.height).data;
+    };
+    const off = capture(false);
+    const on = capture(true);
+    let changed = 0, totalDelta = 0, maxDelta = 0;
+    for (let i = 0; i < off.length; i += 4) {
+      const delta = Math.abs(off[i] - on[i])
+        + Math.abs(off[i + 1] - on[i + 1])
+        + Math.abs(off[i + 2] - on[i + 2]);
+      if (delta >= 12) changed++;
+      totalDelta += delta;
+      maxDelta = Math.max(maxDelta, delta);
+    }
+    return { changed, totalDelta, maxDelta };
+  });
+  expect(brakePixels.changed).toBeGreaterThan(20);
+  expect(brakePixels.totalDelta).toBeGreaterThan(1_000);
+  expect(brakePixels.maxDelta).toBeGreaterThan(40);
+  console.log('car-lod browser metrics', JSON.stringify({
+    forced: forced.renderer,
+    automatic: automatic.renderer,
+    brakePixels,
+  }));
+
   const ownership = await page.evaluate(() => {
     const game = window.__game;
     const oldSession = game.session;
     const oldPlayer = oldSession.player;
-    const sharedGeometry = oldPlayer.carHandle.farProxy.body.geometry;
-    const sharedMaterial = oldPlayer.carHandle.farProxy.body.material;
-    const ownedBrake = oldPlayer.carHandle.farProxy.brakeGlows[0].material;
+    const oldAi = oldSession.entries.find(entry => !entry.isPlayer);
+    const sharedGeometry = oldAi.carHandle.farProxy.body.geometry;
+    const sharedMaterial = oldAi.carHandle.farProxy.body.material;
+    const ownedBrake = oldAi.carHandle.farProxy.brakeGlows[0].material;
     const counts = { geometry: 0, material: 0, brake: 0 };
     sharedGeometry.addEventListener('dispose', () => { counts.geometry++; });
     sharedMaterial.addEventListener('dispose', () => { counts.material++; });
     ownedBrake.addEventListener('dispose', () => { counts.brake++; });
-    window.__lodRestart = { oldSession, oldPlayer, sharedGeometry, sharedMaterial, counts };
+    window.__lodRestart = { oldSession, oldPlayer, oldAi, sharedGeometry, sharedMaterial, counts };
     game.onUI('restartRace');
     return true;
   });
@@ -132,20 +185,23 @@ test('live GLB race LOD saves render work, covers every camera, and restarts cle
   const restarted = await page.evaluate(() => {
     const state = window.__lodRestart;
     const nextPlayer = window.__game.session.player;
+    const nextAi = window.__game.session.entries.find(entry => entry.driver.id === state.oldAi.driver.id);
     return {
       oldDisposed: state.oldPlayer.carHandle.disposed,
       oldDetached: state.oldPlayer.mesh.parent === null,
       counts: state.counts,
-      geometryReused: nextPlayer.carHandle.farProxy.body.geometry === state.sharedGeometry,
-      materialReused: nextPlayer.carHandle.farProxy.body.material === state.sharedMaterial,
-      ownedBrakeFresh: nextPlayer.carHandle.farProxy.brakeGlows[0].material
-        !== state.oldPlayer.carHandle.farProxy.brakeGlows[0].material,
+      playersHaveNoProxy: !state.oldPlayer.carHandle.farProxy && !nextPlayer.carHandle.farProxy,
+      geometryReused: nextAi.carHandle.farProxy.body.geometry === state.sharedGeometry,
+      materialReused: nextAi.carHandle.farProxy.body.material === state.sharedMaterial,
+      ownedBrakeFresh: nextAi.carHandle.farProxy.brakeGlows[0].material
+        !== state.oldAi.carHandle.farProxy.brakeGlows[0].material,
     };
   });
   expect(restarted).toEqual({
     oldDisposed: true,
     oldDetached: true,
     counts: { geometry: 0, material: 0, brake: 1 },
+    playersHaveNoProxy: true,
     geometryReused: true,
     materialReused: true,
     ownedBrakeFresh: true,
@@ -194,8 +250,8 @@ test('primitive race upgrades late to GLB without disturbing near/far ownership 
     };
     return {
       sources: [far.carHandle.source, near.carHandle.source],
-      farVisibility: [far.carHandle.nearGroup.visible, far.carHandle.farProxy.root.visible],
-      nearVisibility: [near.carHandle.nearGroup.visible, near.carHandle.farProxy.root.visible],
+      farVisibility: [far.carHandle.fullDetailRoots.every(root => root.visible), far.carHandle.farProxy.root.visible],
+      nearVisibility: [near.carHandle.fullDetailRoots.every(root => root.visible), near.carHandle.farProxy.root.visible],
       tagOuter: far.tag.parent === far.mesh && near.tag.parent === near.mesh,
     };
   });
@@ -222,8 +278,10 @@ test('primitive race upgrades late to GLB without disturbing near/far ownership 
       proxiesStable: far.carHandle.farProxy.root === refs.farProxy
         && near.carHandle.farProxy.root === refs.nearProxy,
       sources: [far.carHandle.source, near.carHandle.source],
-      farVisibility: [far.carHandle.nearGroup.visible, far.carHandle.farProxy.root.visible],
-      nearVisibility: [near.carHandle.nearGroup.visible, near.carHandle.farProxy.root.visible],
+      farVisibility: [far.carHandle.fullDetailRoots.every(root => root.visible), far.carHandle.farProxy.root.visible],
+      nearVisibility: [near.carHandle.fullDetailRoots.every(root => root.visible), near.carHandle.farProxy.root.visible],
+      directFullRoots: [far, near].every(entry =>
+        entry.carHandle.fullDetailRoots.every(root => root.parent === entry.mesh)),
       nearPoseCarried: {
         spin: far.wheels.fl.rotation.x,
         steer: far.wheels.fl.rotation.y,
@@ -252,6 +310,7 @@ test('primitive race upgrades late to GLB without disturbing near/far ownership 
   expect(after.sources).toEqual(['glb', 'glb']);
   expect(after.farVisibility).toEqual([false, true]);
   expect(after.nearVisibility).toEqual([true, false]);
+  expect(after.directFullRoots).toBe(true);
   for (const pose of [after.nearPoseCarried, after.farPoseStable]) {
     expect(pose.spin).toBeCloseTo(9.75, 10);
     expect(pose.steer).toBeCloseTo(0.65 * 0.32, 10);

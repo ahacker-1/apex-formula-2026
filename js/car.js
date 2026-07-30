@@ -192,8 +192,12 @@ const FAR_SHADOW = () => G('farShadow16', () =>
   new THREE.CircleGeometry(1, 16).rotateX(-HALF_PI));
 const FAR_BRAKE_DISC = () => G('farBrakeDisc8', () => new THREE.CircleGeometry(0.20, 8));
 const FAR_BRAKES = () => G('farBrakes', () => mergeGeos([
-  { geo: FAR_BRAKE_DISC(), m: TRS(-0.86, 0.36, -1.60, 1, 1, 1, 0, HALF_PI, 0) },
-  { geo: FAR_BRAKE_DISC(), m: TRS(0.86, 0.36, -1.60, 1, 1, 1, 0, -HALF_PI, 0) },
+  // Sit 6 mm outside the rear tyre's outer cap (centre +/-0.85, half-width
+  // 0.19). CircleGeometry faces +Z, so +/-Y rotation points each normal away
+  // from the centreline; FrontSide then renders the exposed face, not the face
+  // buried inside the wheel cylinder.
+  { geo: FAR_BRAKE_DISC(), m: TRS(-1.046, 0.35, -1.60, 1, 1, 1, 0, -HALF_PI, 0) },
+  { geo: FAR_BRAKE_DISC(), m: TRS(1.046, 0.35, -1.60, 1, 1, 1, 0, HALF_PI, 0) },
 ]));
 
 function extrude(shape, depth, seg = 8) {
@@ -1383,12 +1387,14 @@ export function buildDistantCarProxy(team) {
   return { root, body, wheels, brakeGlows: [brakeGlow], rainLight, shadow, stats };
 }
 
-function attachDistantCarProxy(handle) {
+export function attachDistantCarProxy(handle) {
+  if (!handle || handle.disposed) return null;
+  if (handle.farProxy) return handle.farProxy;
   const proxy = buildDistantCarProxy(handle.team);
   handle.group.add(proxy.root);
   handle.farProxy = proxy;
   handle.lodLevel = 'full';
-  return handle;
+  return proxy;
 }
 
 /* -- nose number fit -------------------------------------------------------
@@ -1687,7 +1693,7 @@ function decalMaterial(kind, drv, team, accent, lightNumber) {
     roundelTex(drv.num, accent));
 }
 
-function buildFromTemplate(team, driver, withDistantProxy = true) {
+function buildFromTemplate(team, driver) {
   const drv = driver || { num: 0, code: '---' };
   const color = new THREE.Color(team.color);
   const accent = new THREE.Color(team.accent);
@@ -1783,16 +1789,13 @@ function buildFromTemplate(team, driver, withDistantProxy = true) {
   }
 
   const group = new THREE.Group();
-  const nearGroup = new THREE.Group();
-  nearGroup.name = 'fullFidelityCar';
-  group.add(nearGroup);
-  nearGroup.add(body);
+  group.add(body);
   for (const k of ['fl', 'fr', 'rl', 'rr']) {
     const w = wheels[k];
     // race.js writes rotation.y (steer) then rotation.x (spin) directly; 'YXZ'
     // applies steer first and keeps the axle horizontal.
     w.rotation.order = 'YXZ';
-    nearGroup.add(w);
+    group.add(w);
   }
 
   // livery planes, fitted to the sculpted surfaces at preload time
@@ -1822,7 +1825,7 @@ function buildFromTemplate(team, driver, withDistantProxy = true) {
   const tyreSidewalls = addTyreSidewalls(wheels, wallMat);
 
   const handle = {
-    group, nearGroup, wheels, wheelRadius: 0.34,
+    group, wheels, wheelRadius: 0.34,
     body, team, driver: drv,
     tyreBands, tyreSidewalls,
     tyreBandMats: [bandMat, wallMat].filter(Boolean), compound: 'M',
@@ -1837,10 +1840,11 @@ function buildFromTemplate(team, driver, withDistantProxy = true) {
     helmetColors: helm,
     source: 'glb',
   };
+  handle.fullDetailRoots = [body, wheels.fl, wheels.fr, wheels.rl, wheels.rr];
   group.userData.brakeGlows = brakeGlows;
   group.userData.rainLight = rainLight;
   group.userData.carVariant = variant;
-  return withDistantProxy ? attachDistantCarProxy(handle) : handle;
+  return handle;
 }
 
 /* -- primitive -> GLB in-place upgrade -------------------------------------
@@ -1891,8 +1895,7 @@ function _upgradeToTemplate(handle) {
   const oldBody = handle.body;
   const oldWheels = { ...handle.wheels };
 
-  const fresh = buildFromTemplate(handle.team, handle.driver, false);
-  const nearGroup = handle.nearGroup || group;
+  const fresh = buildFromTemplate(handle.team, handle.driver);
 
   // strip the primitive parts (body group + 4 wheel groups); extra children the
   // race session attached to the group (contact shadow, name tag) stay put
@@ -1906,12 +1909,12 @@ function _upgradeToTemplate(handle) {
   // graft the sculpted parts, carrying over live pose state
   fresh.body.rotation.copy(oldBody.rotation);       // pitch/roll attitude
   fresh.body.position.y = oldBody.position.y;       // ride bump
-  nearGroup.add(fresh.body);
+  group.add(fresh.body);
   for (const k of ['fl', 'fr', 'rl', 'rr']) {
     const nw = fresh.wheels[k];
     nw.rotation.x = oldWheels[k].rotation.x;        // spin
     nw.rotation.y = oldWheels[k].rotation.y;        // steer
-    nearGroup.add(nw);
+    group.add(nw);
     handle.wheels[k] = nw;    // entries hold this same wheels object — mutate it
   }
   handle.body = fresh.body;
@@ -1926,8 +1929,10 @@ function _upgradeToTemplate(handle) {
   handle.liveryDetail = fresh.liveryDetail;
   handle.monocoque = fresh.monocoque;
   handle.helmetColors = fresh.helmetColors;
+  handle.fullDetailRoots = [fresh.body, fresh.wheels.fl, fresh.wheels.fr,
+    fresh.wheels.rl, fresh.wheels.rr];
   handle.source = 'glb';
-  nearGroup.visible = handle.lodLevel !== 'far';
+  for (const root of handle.fullDetailRoots) root.visible = handle.lodLevel !== 'far';
   for (const b of handle.brakeGlows) b.visible = glowWasOn;
   if (handle.rainLight) handle.rainLight.visible = rainWasOn;
   group.userData.brakeGlows = handle.brakeGlows;
@@ -1974,11 +1979,8 @@ export function buildPrimitiveCarMesh(team, driver) {
   const helm = helmetPalette(team);
 
   const group = new THREE.Group();
-  const nearGroup = new THREE.Group();
-  nearGroup.name = 'fullFidelityCar';
   const body = new THREE.Group();
-  group.add(nearGroup);
-  nearGroup.add(body);
+  group.add(body);
 
   // (geo, mat, x, y, z, { s:[..], r:[..], cast, name })
   const put = (geo, mat, x = 0, y = 0, z = 0, o = {}) => {
@@ -2151,14 +2153,14 @@ export function buildPrimitiveCarMesh(team, driver) {
     bandMats.push(bandMat);
     tyreBands.push(band);
 
-    nearGroup.add(g);
+    group.add(g);
     wheels[key] = g;
   }
   const tyreSidewalls = addTyreSidewalls(wheels, wallMat);
   bandMats.push(wallMat);
 
   const handle = {
-    group, nearGroup, wheels, wheelRadius: wr,
+    group, wheels, wheelRadius: wr,
     body, team, driver: drv,
     tyreBands, tyreSidewalls, tyreBandMats: bandMats, compound: 'M',
     brakeGlows, brakeGlowMaterial: glowMat,
@@ -2173,10 +2175,11 @@ export function buildPrimitiveCarMesh(team, driver) {
     helmetColors: helm,
     source: 'primitives',
   };
+  handle.fullDetailRoots = [body, wheels.fl, wheels.fr, wheels.rl, wheels.rr];
   group.userData.brakeGlows = brakeGlows;
   group.userData.rainLight = rainLight;
   group.userData.carVariant = variant;
-  return attachDistantCarProxy(handle);
+  return handle;
 }
 
 // Recolour the sidewall compound band on all four wheels. key: 'S' | 'M' | 'H'.

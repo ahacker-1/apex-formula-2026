@@ -264,6 +264,9 @@ export class RaceSession {
       const slot = c.gridSlots[gi];
       phys.placeAt(slot.pos, slot.heading, slot.idx);
       const carHandle = buildCarMesh(team, driver);
+      // Standalone/hero cars retain the established body+wheel hierarchy and no
+      // proxy allocation. Only non-player race entries opt into distant detail.
+      if (!isPlayer) CAR.attachDistantCarProxy?.(carHandle);
       const { group, wheels, wheelRadius } = carHandle;
       group.position.copy(slot.pos);
       group.rotation.y = slot.heading;
@@ -1180,13 +1183,15 @@ export class RaceSession {
 
   _setEntryCarLod(e, level) {
     const handle = e?.carHandle;
-    if (!handle?.farProxy || !handle.nearGroup) return false;
+    if (!handle) return false;
     const next = e.isPlayer ? 'full' : (level === 'far' ? 'far' : 'full');
     const changed = e.lodLevel !== next;
     e.lodLevel = next;
     handle.lodLevel = next;
-    handle.nearGroup.visible = next === 'full';
-    handle.farProxy.root.visible = next === 'far';
+    const fullRoots = handle.fullDetailRoots
+      || [handle.body, handle.wheels?.fl, handle.wheels?.fr, handle.wheels?.rl, handle.wheels?.rr];
+    for (const root of fullRoots) if (root) root.visible = next === 'full';
+    if (handle.farProxy) handle.farProxy.root.visible = next === 'far';
     if (e.contactShadow) e.contactShadow.visible = next === 'full';
     if (changed) this._carLodSwitches++;
     return changed;

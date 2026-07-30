@@ -71,11 +71,15 @@ function colourPresent(attribute, color) {
 console.log('\n[car-lod] proxy budgets and identity');
 const team = TEAMS[0];
 const hero = CAR.buildPrimitiveCarMesh(team, DRIVERS.find((driver) => driver.team === team.id));
-const proxy = hero.farProxy;
+check(!hero.farProxy && hero.body.parent === hero.group
+    && Object.values(hero.wheels).every((wheel) => wheel.parent === hero.group),
+  'standalone/hero construction keeps direct full-detail roots and allocates no proxy');
+const proxyOwner = CAR.buildPrimitiveCarMesh(team, DRIVERS.find((driver) => driver.team === team.id));
+const proxy = CAR.attachDistantCarProxy(proxyOwner);
 const steady = visibleMeshStats(proxy.root);
 const braking = visibleMeshStats(proxy.root, true);
-check(hero.nearGroup.visible && !proxy.root.visible && hero.lodLevel === 'full',
-  'standalone/hero construction remains full fidelity until a race updater opts in');
+check(proxyOwner.fullDetailRoots.every((root) => root.visible) && !proxy.root.visible,
+  'explicit AI attachment begins at full fidelity');
 check(steady.draws === CAR.DISTANT_CAR_BUDGET.steadyDrawCalls,
   'steady proxy hits the seven-call target', `draws=${steady.draws}`);
 check(braking.draws === CAR.DISTANT_CAR_BUDGET.brakingDrawCalls,
@@ -96,10 +100,11 @@ check(!!colours && colourPresent(colours, team.color)
     && colourPresent(colours, team.accent) && colourPresent(colours, 0x1c2027),
   'one vertex-coloured body draw retains body, accent, and carbon identity');
 const sibling = CAR.buildPrimitiveCarMesh(team, DRIVERS.filter((driver) => driver.team === team.id)[1]);
-check(proxy.body.geometry === sibling.farProxy.body.geometry
-    && proxy.body.material === sibling.farProxy.body.material,
+const siblingProxy = CAR.attachDistantCarProxy(sibling);
+check(proxy.body.geometry === siblingProxy.body.geometry
+    && proxy.body.material === siblingProxy.body.material,
   'same-team proxy geometry and stateless material are cached/shared');
-check(proxy.brakeGlows[0].material !== sibling.farProxy.brakeGlows[0].material,
+check(proxy.brakeGlows[0].material !== siblingProxy.brakeGlows[0].material,
   'per-car brake opacity keeps exact independent ownership');
 
 console.log('\n[car-lod] 55m / 45m hysteresis');
@@ -145,8 +150,12 @@ const physicsBefore = JSON.stringify(session.entries.map((entry) => ({
 camera.position.set(target.mesh.position.x + 60, target.mesh.position.y, target.mesh.position.z);
 session.updateCarLod(camera, 0);
 check(target.lodLevel === 'far' && target.carHandle.farProxy.root.visible
-    && !target.carHandle.nearGroup.visible && !target.contactShadow.visible,
+    && target.carHandle.fullDetailRoots.every((root) => !root.visible)
+    && !target.contactShadow.visible,
   'automatic pass shows proxy and consolidated shadow beyond 55m');
+check(!session.player.carHandle.farProxy
+    && session.entries.filter((entry) => !entry.isPlayer).every((entry) => !!entry.carHandle.farProxy),
+  'only AI race entries own a far proxy');
 check(target.tag.parent === target.mesh,
   'nametag remains an outer root child across detail switches');
 const updatesAtZero = session.carLodTelemetry.updates;
@@ -207,9 +216,10 @@ check(automatic.mode === 'automatic' && automatic.far > 0 && automatic.playerPin
   'automatic telemetry reports active far cars and the player pin');
 
 console.log('\n[car-lod] hidden disposal and restart ownership');
-const oldSharedGeometry = session.player.carHandle.farProxy.body.geometry;
-const oldSharedMaterial = session.player.carHandle.farProxy.body.material;
-const oldOwnedBrake = session.player.carHandle.farProxy.brakeGlows[0].material;
+const oldAi = session.entries.find((entry) => !entry.isPlayer);
+const oldSharedGeometry = oldAi.carHandle.farProxy.body.geometry;
+const oldSharedMaterial = oldAi.carHandle.farProxy.body.material;
+const oldOwnedBrake = oldAi.carHandle.farProxy.brakeGlows[0].material;
 let sharedGeometryDisposals = 0, sharedMaterialDisposals = 0, ownedBrakeDisposals = 0;
 oldSharedGeometry.addEventListener('dispose', () => { sharedGeometryDisposals++; });
 oldSharedMaterial.addEventListener('dispose', () => { sharedMaterialDisposals++; });
@@ -226,10 +236,11 @@ first.circuit.dispose();
 
 const secondRandom = createRandom(0x1a2b3c4d);
 const second = makeSession(secondRandom);
-check(second.session.player.carHandle.farProxy.body.geometry === oldSharedGeometry
-    && second.session.player.carHandle.farProxy.body.material === oldSharedMaterial,
+const secondAi = second.session.entries.find((entry) => entry.driver.id === oldAi.driver.id);
+check(secondAi.carHandle.farProxy.body.geometry === oldSharedGeometry
+    && secondAi.carHandle.farProxy.body.material === oldSharedMaterial,
   'restart reuses intact shared proxy resources');
-check(second.session.player.carHandle.farProxy.brakeGlows[0].material !== oldOwnedBrake,
+check(secondAi.carHandle.farProxy.brakeGlows[0].material !== oldOwnedBrake,
   'restart receives fresh per-car stateful brake ownership');
 second.session.dispose();
 second.circuit.dispose();
