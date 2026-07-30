@@ -2,6 +2,7 @@
 // racing line + speed profile, grid slots, spatial helpers.
 import * as THREE from 'three';
 import * as TEX from './textures.js';
+import { createSurfaceMaps } from './photoTex.js';
 
 const UP = new THREE.Vector3(0, 1, 0);
 
@@ -74,6 +75,16 @@ const SPECIES_H = {
 // Classic circuits keep real gravel traps; the modern venues have paved,
 // painted run-off areas instead.
 const GRAVEL_TRAP = new Set(['spa', 'suzuka', 'monza', 'zandvoort', 'spielberg']);
+
+// All response maps are derived from the project's existing original colour
+// tiles. Small data maps are enough here: world-space tiling supplies the detail,
+// and keeping them at 256px avoids adding binary payload or a large load spike.
+const SURFACE_RESPONSE = {
+  asphalt: { size: 256, normalStrength: 1.15, normalScale: 0.42, roughnessLow: 0.82, roughnessHigh: 0.97, cavity: 0.10 },
+  grass:   { size: 256, normalStrength: 1.75, normalScale: 0.62, roughnessLow: 0.88, roughnessHigh: 1.00, cavity: 0.16 },
+  gravel:  { size: 256, normalStrength: 2.10, normalScale: 0.72, roughnessLow: 0.90, roughnessHigh: 1.00, cavity: 0.20 },
+  runoff:  { size: 256, normalStrength: 0.80, normalScale: 0.30, roughnessLow: 0.84, roughnessHigh: 0.98, cavity: 0.08 },
+};
 
 // main.js parents the sky dome at the origin with radius 2600 and never moves it,
 // so every piece of scenery has to stay inside that shell or the dome depth-tests
@@ -488,6 +499,41 @@ export function buildCircuit(trackId, def, scene) {
   const rnd = rng(trackId.split('').reduce((a, c) => a * 31 + c.charCodeAt(0), 7) | 0);
   const idxAt = (i) => ((i % N) + N) % N;
   const stepOf = (metres) => Math.max(1, Math.round(metres / ds));
+
+  // One authored/procedural source canvas per surface per circuit, then one GPU
+  // texture set per sampling configuration. The road and kerbs can therefore
+  // share their aligned asphalt response, while a 16x-anisotropic ground texture
+  // remains independent of the road's tested 8x sampler. Nothing GPU-owned lives
+  // in module scope, so restart cannot reuse a texture disposed by the old track.
+  const surfaceCanvases = new Map();
+  const surfaceSets = new Map();
+  const surfaceCanvas = (kind) => {
+    if (surfaceCanvases.has(kind)) return surfaceCanvases.get(kind);
+    let canvas;
+    if (kind === 'asphalt') canvas = draw(TEX.asphalt, [512], '#39393d');
+    else if (kind === 'grass') canvas = draw(TEX.grassDetail, [512], '#3f7d3a');
+    else if (kind === 'gravel') canvas = draw(TEX.gravel, [256], '#9b8f7c');
+    else if (kind === 'runoff') canvas = draw(TEX.runoffPaint, [512], '#8d8f92');
+    else throw new Error(`Unknown circuit surface: ${kind}`);
+    surfaceCanvases.set(kind, canvas);
+    return canvas;
+  };
+  const surfaceSet = (kind, { aniso = 8, repeat = [1, 1] } = {}) => {
+    const profile = SURFACE_RESPONSE[kind];
+    const key = `${kind}|${aniso}|${repeat[0]}|${repeat[1]}`;
+    if (surfaceSets.has(key)) return surfaceSets.get(key);
+    const map = ctex(surfaceCanvas(kind), { aniso, repeat });
+    const response = createSurfaceMaps(map, profile);
+    const set = { map, ...response, normalScale: profile.normalScale };
+    surfaceSets.set(key, set);
+    return set;
+  };
+  const surfaceProps = (surface, scale = surface.normalScale) => ({
+    map: surface.map,
+    normalMap: surface.normalMap,
+    roughnessMap: surface.roughnessMap,
+    normalScale: new THREE.Vector2(scale, scale),
+  });
 
   // ---- scenery lighting contract -------------------------------------------
   // MeshLambertMaterial does NOT read scene.environment. When main.js moved to a
@@ -982,29 +1028,29 @@ export function buildCircuit(trackId, def, scene) {
   // into moire stripes toward the horizon at low anisotropy.
   let groundMat, groundTileM = 20;
   if (themeName === 'classic') {
-    const t = ctex(draw(TEX.grassDetail, [512], '#3f7d3a'), { aniso: 16 });
+    const surface = surfaceSet('grass', { aniso: 16 });
     groundTileM = 20;                                   // 20m grass tiles
-    groundMat = std({ map: t, roughness: 0.95 });
+    groundMat = std({ ...surfaceProps(surface), roughness: 1 });
   } else if (themeName === 'desert' || themeName === 'dusk') {
     // Round 2 measured the desert ground's clods at 30-50cm ("bark mulch or
     // boulders") because a gravel tile was stretched over 22m. Gravel needs a far
     // denser tile than grass does; 8m puts a clod at 8-12cm.
-    const t = ctex(draw(TEX.gravel, [256], '#9b8f7c'), { aniso: 16 });
+    const surface = surfaceSet('gravel', { aniso: 16 });
     groundTileM = 8;
     groundMat = std({
-      map: t,
-      roughness: 0.95,
+      ...surfaceProps(surface),
+      roughness: 1,
       color: new THREE.Color(theme.ground).lerp(new THREE.Color(0xffffff), 0.34),
     });
   } else {
     // City/night run-off used to be a single flat colour, which is why Monaco's
     // whole left third measured byte-identical at every sample and read as a grey
     // backdrop wall. It is paved, so it gets the asphalt tile, tinted to theme.
-    const t = ctex(draw(TEX.asphalt, [512], '#4c5054'), { aniso: 16 });
+    const surface = surfaceSet('asphalt', { aniso: 16 });
     groundTileM = 20;
     groundMat = std({
-      map: t,
-      roughness: 0.9,
+      ...surfaceProps(surface, 0.28),
+      roughness: 1,
       color: new THREE.Color(theme.ground).lerp(new THREE.Color(0xffffff), 0.55),
     });
   }
@@ -1206,7 +1252,7 @@ export function buildCircuit(trackId, def, scene) {
   }
 
   // ---- 1. road strip -------------------------------------------------------
-  const asphalt = ctex(draw(TEX.asphalt, [512], '#39393d'), { aniso: 8 });
+  const asphaltSurface = surfaceSet('asphalt', { aniso: 8 });
   // tiling comes from the UVs below (1 tile = 8m); repeat must stay 1:1 or it aliases
   const roadGeo = new THREE.BufferGeometry();
   {
@@ -1232,7 +1278,11 @@ export function buildCircuit(trackId, def, scene) {
     roadGeo.setIndex(idx);
     roadGeo.computeVertexNormals();
   }
-  const road = new THREE.Mesh(roadGeo, new THREE.MeshStandardMaterial({ map: asphalt, roughness: 0.94, metalness: 0 }));
+  const road = new THREE.Mesh(roadGeo, new THREE.MeshStandardMaterial({
+    ...surfaceProps(asphaltSurface),
+    roughness: 1,
+    metalness: 0,
+  }));
   road.name = 'road';
   road.receiveShadow = true;
   group.add(road);
@@ -1364,7 +1414,7 @@ export function buildCircuit(trackId, def, scene) {
   const KERB_TAPER = 3.0;     // metres over which a run closes into the road edge
   const KERB_SUB = 2;         // stations per sample interval -> 1.25m stripes
   {
-    const pos = [], col = [], idx = [];
+    const pos = [], col = [], uv = [], idx = [];
     let vbase = 0, stCount = 0;
     const runsMeta = [];
     // The white was 0.95, which clipped to 246-255 at close range and blew out the
@@ -1420,6 +1470,17 @@ export function buildCircuit(trackId, def, scene) {
         // interpolated colour, is ever shared across a stripe boundary
         const a = station(st), b = station(st + 1);
         pos.push(...a, ...b);
+        // Data-only asphalt response supplies subtle aggregate under the paint;
+        // the colour remains entirely vertex-authored. UVs are in metres at a
+        // denser 2m pitch than the road so close-up kerbs do not read as smooth.
+        const arc0 = st * (ds / KERB_SUB) / 2;
+        const arc1 = (st + 1) * (ds / KERB_SUB) / 2;
+        const f0 = Math.max(0.06, Math.min(1, Math.min(st * ds / KERB_SUB,
+          L - st * ds / KERB_SUB) / KERB_TAPER));
+        const f1 = Math.max(0.06, Math.min(1, Math.min((st + 1) * ds / KERB_SUB,
+          L - (st + 1) * ds / KERB_SUB) / KERB_TAPER));
+        uv.push(0, arc0, KERB_STEP * f0 / 2, arc0, KERB_W * f0 / 2, arc0,
+          0, arc1, KERB_STEP * f1 / 2, arc1, KERB_W * f1 / 2, arc1);
         const c3 = (st % 2 === 0) ? RED : WHITE;
         for (let q = 0; q < 6; q++) col.push(...c3);
         const v = vbase / 3;
@@ -1484,9 +1545,16 @@ export function buildCircuit(trackId, def, scene) {
       const g = new THREE.BufferGeometry();
       g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
       g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+      g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
       g.setIndex(idx);
       g.computeVertexNormals();
-      const kerb = new THREE.Mesh(g, std({ vertexColors: true, roughness: 0.72 }));
+      const kerb = new THREE.Mesh(g, std({
+        vertexColors: true,
+        normalMap: asphaltSurface.normalMap,
+        roughnessMap: asphaltSurface.roughnessMap,
+        normalScale: new THREE.Vector2(0.20, 0.20),
+        roughness: 1,
+      }));
       kerb.name = 'kerbs';
       kerb.userData.runs = runsMeta;
       kerb.userData.stripeM = ds / KERB_SUB;
@@ -1570,12 +1638,12 @@ export function buildCircuit(trackId, def, scene) {
         // Gravel UV was 16m per tile, which made a single clod read as 30-50cm of
         // world ("bark mulch or boulders"). The apron UVs below divide by 16, so
         // repeat 4 takes the tile to 4m -- clods land at 6-10cm.
-        const tex = isGravel
-          ? ctex(draw(TEX.gravel, [256], '#aa9878'), { aniso: 16, repeat: [4, 4] })
-          : ctex(draw(TEX.runoffPaint, [512], '#8d8f92'), { aniso: 16 });
+        const surface = isGravel
+          ? surfaceSet('gravel', { aniso: 16, repeat: [4, 4] })
+          : surfaceSet('runoff', { aniso: 16 });
         const apron = new THREE.Mesh(g, std({
-          map: tex,
-          roughness: 0.95,
+          ...surfaceProps(surface),
+          roughness: 1,
           polygonOffset: true,
           polygonOffsetFactor: -1,
           polygonOffsetUnits: -1,
@@ -3233,7 +3301,9 @@ export function buildCircuit(trackId, def, scene) {
       g.fillRect(0, 0, 128, 128);
       const t = new THREE.CanvasTexture(c);
       t.colorSpace = THREE.SRGBColorSpace;
-      t.userData.shared = true;
+      // This texture is reused by meshes inside one circuit but is still owned
+      // by that circuit. `userData.shared` is reserved for external resources.
+      t.userData.circuitOwned = true;
       return t;
     };
     const quad = new THREE.PlaneGeometry(1, 1);
@@ -3357,19 +3427,31 @@ export function buildCircuit(trackId, def, scene) {
     },
     dispose() {
       scene.remove(group);
+      const geometries = new Set();
+      const materials = new Set();
+      const textures = new Set();
       group.traverse(o => {
         if (o.isInstancedMesh) o.dispose();
         // Sprite.geometry is a module-level singleton shared by every sprite in
         // three.js -- disposing it would break sprites built after this circuit.
-        if (o.geometry && !o.isSprite) o.geometry.dispose();
+        if (o.geometry && !o.isSprite) geometries.add(o.geometry);
         if (o.material) {
           const ms = Array.isArray(o.material) ? o.material : [o.material];
-          ms.forEach(m => {
-            for (const k of ['map', 'alphaMap', 'emissiveMap']) if (m[k]) m[k].dispose();
-            m.dispose();
-          });
+          for (const m of ms) materials.add(m);
         }
       });
+      // Builder-created textures are circuit-owned even when several meshes use
+      // them (road/kerb response, edge lines, shadow decals). An injected texture
+      // explicitly marked userData.shared is externally owned and must survive
+      // circuit teardown. Every owned resource is still disposed exactly once.
+      for (const material of materials) {
+        for (const value of Object.values(material)) {
+          if (value?.isTexture && !value.userData?.shared) textures.add(value);
+        }
+      }
+      for (const texture of textures) texture.dispose();
+      for (const material of materials) material.dispose();
+      for (const geometry of geometries) geometry.dispose();
     },
   };
   return circuit;
