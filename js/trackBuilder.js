@@ -785,6 +785,31 @@ export function buildCircuit(trackId, def, scene) {
   const shadeRects = [];   // { x, z, rot, w, d, a }  soft-rect gradient quads
   const shadeBlobs = [];   // { x, z, rot, rx, rz, a } soft-ellipse gradient quads
   const treeShadeSpans = []; // { i0, count, side } forest-wall ground tint strips
+  const canopyShadeStats = { gridM: 6, perCell: 3, alphaBase: 0.18, alphaCeiling: 0.52, input: 0, dropped: 0 };
+  // Pure positional hashes only. Scenery's seeded random stream is a public
+  // deterministic dependency, so ground variation and shade jitter never advance it.
+  const hashGrid = (ix, iz, seed = 0) => {
+    let h = Math.imul(ix | 0, 0x1f123bb5) ^ Math.imul(iz | 0, 0x5f356495) ^ Math.imul(seed | 0, 0x6c8e9cf5);
+    h ^= h >>> 15; h = Math.imul(h, 0x2c1b3c6d);
+    h ^= h >>> 12; h = Math.imul(h, 0x297a2d39);
+    h ^= h >>> 15;
+    return (h >>> 0) / 4294967295;
+  };
+  const positionHash = (x, z, seed = 0) => hashGrid(Math.floor(x * 4), Math.floor(z * 4), seed);
+  const smooth01 = t => {
+    const u = Math.max(0, Math.min(1, t));
+    return u * u * (3 - 2 * u);
+  };
+  const smoothBand = (a, b, x) => smooth01((x - a) / (b - a));
+  const valueNoise = (x, z, wavelength, seed) => {
+    const gx = x / wavelength, gz = z / wavelength;
+    const ix = Math.floor(gx), iz = Math.floor(gz);
+    const tx = smooth01(gx - ix), tz = smooth01(gz - iz);
+    const a = hashGrid(ix, iz, seed), b = hashGrid(ix + 1, iz, seed);
+    const c = hashGrid(ix, iz + 1, seed), d = hashGrid(ix + 1, iz + 1, seed);
+    const ab = a + (b - a) * tx, cd = c + (d - c) * tx;
+    return ab + (cd - ab) * tz;
+  };
   // skirt + sun-offset lobe for one rectangular structure (len x dep, yaw rot)
   const addStructureShade = (x, z, rot, len, dep, hgt, aSkirt = 0.18, aLobe = 0.26) => {
     // sun elevation is atan(380 / |(260,160)|) ~ 51.2deg: a wall of height h
@@ -1132,6 +1157,69 @@ export function buildCircuit(trackId, def, scene) {
       color: new THREE.Color(theme.ground).lerp(new THREE.Color(0xffffff), 0.55),
     });
   }
+  groundMat.vertexColors = true;
+  const groundMass = (VENUE_DEPTH[trackId] || VENUE_DEPTH_DEFAULT).mass;
+  const macroOctaves = [
+    { wavelength: 140, weight: 0.62, seed: 17 },
+    { wavelength: 46, weight: 0.27, seed: 43 },
+    { wavelength: 16, weight: 0.11, seed: 89 },
+  ];
+  const outerGroundTone = {
+    park: [1.055, 1.005, 0.885],
+    woodland: [0.965, 0.945, 0.845],
+    alpine: [0.985, 1.005, 0.925],
+    arid: [1.105, 0.995, 0.785],
+    tropical: [0.965, 1.010, 0.915],
+  }[groundMass] || [1.0, 0.97, 0.88];
+  // Distance is needed only for the 0-180m zoning transition. A bilinearly
+  // sampled 32m field gives smooth bands without making every distant ground
+  // vertex scan outward until it finds the centreline.
+  const groundDistanceNodes = new Map();
+  const ZONE_DISTANCE_CAP = 224;
+  const groundDistanceNode = (ix, iz) => {
+    const key = `${ix},${iz}`;
+    if (groundDistanceNodes.has(key)) return groundDistanceNodes.get(key);
+    const px = ix * GRID, pz = iz * GRID;
+    const reach = Math.ceil(ZONE_DISTANCE_CAP / GRID) + 1;
+    let best = ZONE_DISTANCE_CAP * ZONE_DISTANCE_CAP;
+    for (let cx = ix - reach; cx <= ix + reach; cx++) {
+      for (let cz = iz - reach; cz <= iz + reach; cz++) {
+        const bucket = cells.get(cellKey(cx, cz));
+        if (!bucket) continue;
+        for (let q = 0; q < bucket.length; q++) {
+          const s = samples[bucket[q]];
+          const dx = px - s.p.x, dz = pz - s.p.z;
+          best = Math.min(best, dx * dx + dz * dz);
+        }
+      }
+    }
+    const distance = Math.min(ZONE_DISTANCE_CAP, Math.sqrt(best));
+    groundDistanceNodes.set(key, distance);
+    return distance;
+  };
+  const groundTrackDistance = (x, z) => {
+    const gx = x / GRID, gz = z / GRID;
+    const ix = Math.floor(gx), iz = Math.floor(gz);
+    const tx = smooth01(gx - ix), tz = smooth01(gz - iz);
+    const a = groundDistanceNode(ix, iz), b = groundDistanceNode(ix + 1, iz);
+    const c = groundDistanceNode(ix, iz + 1), d = groundDistanceNode(ix + 1, iz + 1);
+    return (a + (b - a) * tx) + ((c + (d - c) * tx) - (a + (b - a) * tx)) * tz;
+  };
+  const groundMacroColour = (x, z) => {
+    let noise = 0;
+    for (const octave of macroOctaves) {
+      noise += (valueNoise(x, z, octave.wavelength, octave.seed) - 0.5) * octave.weight;
+    }
+    const noiseMul = 1 + noise * 0.26;       // bounded at roughly +/-13 percent
+    const distance = groundTrackDistance(x, z);
+    const verge = 1 - smoothBand(18, 42, distance);
+    const outer = smoothBand(105, 175, distance);
+    const vergeTone = [1.035, 1.050, 1.065];
+    return [0, 1, 2].map(channel => noiseMul
+      * (1 + (vergeTone[channel] - 1) * verge)
+      * (1 + (outerGroundTone[channel] - 1) * outer));
+  };
+  let groundMesh = null;
   // A flat disc cannot carry the relief -- the verges would shear away from the
   // road the moment the lap climbs -- so the disc becomes a radial (ring x
   // segment) mesh sampling terrainAt(). Rings are packed tightly through the
@@ -1171,6 +1259,7 @@ export function buildCircuit(trackId, def, scene) {
     const nv = 1 + (rings - 1) * seg;
     const pos = new Float32Array(nv * 3);
     const uv = new Float32Array(nv * 2);
+    const color = new Float32Array(nv * 3);
     const idx = [];
     const cosT = new Float64Array(seg), sinT = new Float64Array(seg);
     for (let a = 0; a < seg; a++) {
@@ -1180,6 +1269,7 @@ export function buildCircuit(trackId, def, scene) {
     // hub
     pos[1] = terrainAt(centre.x, centre.z);
     uv[0] = 0; uv[1] = 0;
+    color.set(groundMacroColour(centre.x, centre.z), 0);
     for (let k = 1; k < rings; k++) {
       const r = radii[k];
       const base = 1 + (k - 1) * seg;
@@ -1191,6 +1281,7 @@ export function buildCircuit(trackId, def, scene) {
         pos[o + 2] = z;
         uv[(base + a) * 2] = x / groundTileM;
         uv[(base + a) * 2 + 1] = z / groundTileM;
+        color.set(groundMacroColour(centre.x + x, centre.z + z), o);
       }
     }
     for (let a = 0; a < seg; a++) {
@@ -1206,6 +1297,7 @@ export function buildCircuit(trackId, def, scene) {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    g.setAttribute('color', new THREE.BufferAttribute(color, 3));
     g.setIndex(idx);
     g.computeVertexNormals();
     const ground = new THREE.Mesh(g, groundMat);
@@ -1220,8 +1312,64 @@ export function buildCircuit(trackId, def, scene) {
     ground.userData.segments = seg;
     ground.userData.step = step;
     ground.userData.vertices = nv;
+    ground.userData.macroOctaves = macroOctaves.map(({ wavelength, weight }) => ({ wavelength, weight }));
+    ground.userData.zoneBands = { verge: [0, 30], outfield: [30, 140], outer: [140, groundR], mass: groundMass };
+    ground.userData.noiseAmplitude = 0.13;
+    ground.userData.woodlandLayer = { cellM: 48, radiusM: 66, maxDarkening: 0.24, placements: 0 };
+    groundMesh = ground;
     group.add(ground);
   }
+
+  // Tree placements do not exist until section 8b. Apply their broad density
+  // field to the already-built ground colours once, leaving the individual
+  // dapple to the two-draw-call decal pass at the end of the build.
+  const applyWoodlandGround = (placements) => {
+    if (!groundMesh || !placements.length) return;
+    const CELL = 48, RADIUS = 66, SIGMA = 27;
+    const treeCells = new Map();
+    const key = (ix, iz) => `${ix},${iz}`;
+    for (const tree of placements) {
+      const k = key(Math.floor(tree.px / CELL), Math.floor(tree.pz / CELL));
+      let bucket = treeCells.get(k);
+      if (!bucket) treeCells.set(k, bucket = []);
+      bucket.push(tree);
+    }
+    const position = groundMesh.geometry.attributes.position;
+    const colour = groundMesh.geometry.attributes.color;
+    const values = colour.array;
+    const reach = Math.ceil(RADIUS / CELL);
+    for (let i = 0; i < position.count; i++) {
+      const x = groundMesh.position.x + position.getX(i);
+      const z = groundMesh.position.z + position.getZ(i);
+      const cx = Math.floor(x / CELL), cz = Math.floor(z / CELL);
+      let density = 0;
+      for (let ix = cx - reach; ix <= cx + reach; ix++) {
+        for (let iz = cz - reach; iz <= cz + reach; iz++) {
+          const bucket = treeCells.get(key(ix, iz));
+          if (!bucket) continue;
+          for (const tree of bucket) {
+            const dx = x - tree.px, dz = z - tree.pz;
+            const d2 = dx * dx + dz * dz;
+            if (d2 > RADIUS * RADIUS) continue;
+            const layerWeight = tree.layer === 'near' ? 1 : tree.layer === 'mid' ? 0.82 : 0.42;
+            const speciesWeight = tree.sp === 'scrub' ? 0.25 : 1;
+            density += layerWeight * speciesWeight * Math.exp(-d2 / (2 * SIGMA * SIGMA));
+          }
+        }
+      }
+      const woodland = smoothBand(0.75, 4.5, density);
+      if (woodland <= 0) continue;
+      const dark = 1 - 0.24 * woodland;
+      const o = i * 3;
+      // Red/blue retain slightly more energy than green: the floor becomes less
+      // saturated as well as darker instead of reading as emerald lawn in shade.
+      values[o] *= dark * (1 + 0.035 * woodland);
+      values[o + 1] *= dark * (1 - 0.025 * woodland);
+      values[o + 2] *= dark * (1 + 0.050 * woodland);
+    }
+    colour.needsUpdate = true;
+    groundMesh.userData.woodlandLayer.placements = placements.length;
+  };
 
   // ---- 8d. horizon ridge ring (all themes) ---------------------------------
   // A hugely flattened torus, fog-coloured and a touch darker, so the ground
@@ -3427,6 +3575,79 @@ export function buildCircuit(trackId, def, scene) {
         }
       }
 
+      applyWoodlandGround(placements);
+
+      // Dapple remains a decal, but no 6m cell may contribute more than its
+      // first three trunks. Overfull cells widen those survivors slightly, and
+      // a conservative overlap budget guarantees that even the hard supports
+      // of neighbouring ellipses cannot sum past the published alpha ceiling.
+      {
+        const densityCells = new Map();
+        const densityKey = (x, z) => `${Math.floor(x / canopyShadeStats.gridM)},${Math.floor(z / canopyShadeStats.gridM)}`;
+        canopyShadeStats.input = placements.length;
+        for (let order = 0; order < placements.length; order++) {
+          const tree = placements[order];
+          const key = densityKey(tree.px, tree.pz);
+          let cell = densityCells.get(key);
+          if (!cell) densityCells.set(key, cell = { count: 0, items: [] });
+          cell.count++;
+          if (cell.items.length >= canopyShadeStats.perCell) continue;
+          const aspect = spAspect(tree.sp);
+          const baseRadius = tree.h * aspect * 0.42 * 1.15 * 1.30;
+          const offset = Math.min(9, tree.h * 0.52)
+            * (0.55 + positionHash(tree.px, tree.pz, 131) * 0.75);
+          cell.items.push({
+            order,
+            x: tree.px + SHADE_DIR.x * offset,
+            z: tree.pz + SHADE_DIR.z * offset,
+            rx: baseRadius,
+            rz: baseRadius,
+            a: canopyShadeStats.alphaBase * SHADE_MUL,
+          });
+        }
+        const survivors = [];
+        for (const cell of densityCells.values()) {
+          const grow = 1 + Math.min(0.16, Math.max(0, cell.count - canopyShadeStats.perCell) * 0.04);
+          for (const blob of cell.items) {
+            blob.rx *= grow; blob.rz *= grow;
+            blob.support = Math.max(blob.rx, blob.rz);
+            survivors.push(blob);
+          }
+        }
+        canopyShadeStats.dropped = canopyShadeStats.input - survivors.length;
+        survivors.sort((a, b) => a.order - b.order);
+        const OVERLAP_CELL = 32;
+        const overlapCells = new Map();
+        const overlapKey = (ix, iz) => `${ix},${iz}`;
+        let maxSupport = 0;
+        for (const blob of survivors) {
+          const ix = Math.floor(blob.x / OVERLAP_CELL), iz = Math.floor(blob.z / OVERLAP_CELL);
+          const key = overlapKey(ix, iz);
+          let cell = overlapCells.get(key);
+          if (!cell) overlapCells.set(key, cell = []);
+          cell.push(blob);
+          maxSupport = Math.max(maxSupport, blob.support);
+        }
+        for (const blob of survivors) {
+          const cx = Math.floor(blob.x / OVERLAP_CELL), cz = Math.floor(blob.z / OVERLAP_CELL);
+          const reach = Math.ceil((blob.support + maxSupport) / OVERLAP_CELL);
+          let overlaps = 0;
+          for (let ix = cx - reach; ix <= cx + reach; ix++) {
+            for (let iz = cz - reach; iz <= cz + reach; iz++) {
+              const cell = overlapCells.get(overlapKey(ix, iz));
+              if (!cell) continue;
+              for (const other of cell) {
+                const dx = blob.x - other.x, dz = blob.z - other.z;
+                const reach2 = blob.support + other.support;
+                if (dx * dx + dz * dz <= reach2 * reach2) overlaps++;
+              }
+            }
+          }
+          blob.a = Math.min(blob.a, canopyShadeStats.alphaCeiling / Math.max(1, overlaps));
+          shadeBlobs.push(blob);
+        }
+      }
+
       // --- bucket into one InstancedMesh per species+variant ----------------
       const buckets = new Map();
       for (const t of placements) {
@@ -3467,19 +3688,6 @@ export function buildCircuit(trackId, def, scene) {
           scl.set(t.h * aspect * t.widthScale, t.h, t.h * aspect * t.widthScale);
           m4.compose(posv, q, scl);
           mesh.setMatrixAt(k, m4);
-          // canopy shade: round-4 env major called out mowing stripes running at
-          // full sunny brightness directly beneath dense tree walls. One soft
-          // ellipse per trunk, pushed along the fixed sun azimuth and sized to
-          // the canopy — merged into a single mesh below, so ~2.4k of these cost
-          // one draw call.
-          {
-            const cr = t.h * aspect * 0.42;
-            const off = Math.min(7, t.h * 0.5);
-            shadeBlobs.push({
-              x: t.px + SHADE_DIR.x * off, z: t.pz + SHADE_DIR.z * off,
-              rx: cr * 1.15, rz: cr * 1.15, a: 0.30 * SHADE_MUL,
-            });
-          }
           // per-instance tint: a treeline of identical greens reads as wallpaper
           // The middle layer gets the widest palette range; near trunks provide
           // their own colour cue, while far crowns converge toward the fog.
@@ -4066,6 +4274,10 @@ export function buildCircuit(trackId, def, scene) {
           '#include <color_fragment>\ndiffuseColor.a *= vColor.r;\ndiffuseColor.rgb = vec3(0.0);');
       };
       mesh.name = name;
+      if (ellipse) mesh.userData.shadePolicy = {
+        ...canopyShadeStats,
+        output: items.length,
+      };
       mesh.renderOrder = -1;          // under the cars' contact shadows
       mesh.matrixAutoUpdate = false;
       keepOutOfAO(mesh);

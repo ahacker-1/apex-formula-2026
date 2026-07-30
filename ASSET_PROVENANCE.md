@@ -6,7 +6,7 @@ project release and how they were created.
 | Path | Origin | License status |
 | --- | --- | --- |
 | `assets/f1car-2026.glb` | Project-authored model generated from `tools/blender/build_car.py` | Apache-2.0 |
-| `textures/*.png` | Original environment artwork created for this project | Apache-2.0 |
+| `textures/*.png` | Original environment artwork created for this project; `grass.png` is post-processed by `tools/make-ground-tiles.mjs` | Apache-2.0 |
 | `textures/hdri/*.hdr` | Original environment lighting created for this project | Apache-2.0 |
 | `js/textures.js` output | Procedural Canvas textures generated at runtime by project code | Apache-2.0 |
 

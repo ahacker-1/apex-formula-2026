@@ -920,7 +920,9 @@ function run(trackId) {
     visibleFromAbove(e, `edge line #${i}: visible from above`);
   });
 
-  const kerb = meshes.find(m => m.material && m.material.vertexColors === true);
+  // Ground now also carries vertex colours for macro variation, so identify the
+  // authored kerb explicitly rather than relying on vertexColors being unique.
+  const kerb = named('kerbs');
   assert(!!kerb, 'kerb mesh found');
   if (kerb) {
     const r = visibleFromAbove(kerb, 'kerbs: no downward-facing triangles');
