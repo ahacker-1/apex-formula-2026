@@ -12,9 +12,14 @@ import {
 } from './vehicleDynamics.js';
 
 export const COMPOUNDS = {
-  S: { key: 'S', name: 'SOFT', grip: 1.045, wearRate: 1.6 },
-  M: { key: 'M', name: 'MEDIUM', grip: 1.0, wearRate: 1.0 },
-  H: { key: 'H', name: 'HARD', grip: 0.962, wearRate: 0.62 },
+  S: { key: 'S', name: 'SOFT', grip: 1.045, wearRate: 1.6, wetTyre: 0 },
+  M: { key: 'M', name: 'MEDIUM', grip: 1.0, wearRate: 1.0, wetTyre: 0 },
+  H: { key: 'H', name: 'HARD', grip: 0.962, wearRate: 0.62, wetTyre: 0 },
+  // Wet suitability is consumed by TrackState.gripAt. Intermediate remains the
+  // quicker rain tyre until standing water builds; full wet trades dry grip for
+  // the strongest water evacuation and aquaplaning resistance.
+  I: { key: 'I', name: 'INTERMEDIATE', grip: 0.945, wearRate: 1.20, wetTyre: 0.90 },
+  W: { key: 'W', name: 'WET', grip: 0.93, wearRate: 1.35, wetTyre: 1.0 },
 };
 
 const G = 9.81, RHO = 1.2;
@@ -151,7 +156,8 @@ export class CarPhysics {
     this.aeroBalance = THREE.MathUtils.clamp(opts.aeroBalance ?? 0.45, 0.36, 0.55);
     this.rideHeight = THREE.MathUtils.clamp(opts.rideHeight ?? 0.038, 0.012, 0.12);
     this.surface = { grade: 0, camber: 0, bump: 0, grip: 1, wetness: 0,
-      bumpFL: 0, bumpFR: 0, bumpRL: 0, bumpRR: 0 };
+      bumpFL: 0, bumpFR: 0, bumpRL: 0, bumpRR: 0,
+      _gripOptions: { wetTyre: 0 } };
     this._worldVelocity = { x: 0, z: 0 };
     this._dynamicsParams = {};
     this._lastTyreTempAggregate = this.tyreTemp;
@@ -218,7 +224,7 @@ export class CarPhysics {
   }
 
   setTyre(key) {
-    this.compound = key;
+    this.compound = COMPOUNDS[key] ? key : 'M';
     this.wear = 0;
     // a fresh set comes out of the blankets cold — hence the slow out-lap
     this.tyreTemp = TYRE_FRESH_T;
@@ -230,7 +236,7 @@ export class CarPhysics {
     this._lastTyreTempAggregate = TYRE_FRESH_T;
   }
 
-  get compoundData() { return COMPOUNDS[this.compound]; }
+  get compoundData() { return COMPOUNDS[this.compound] || COMPOUNDS.M; }
   get kmh() { return Math.max(0, this.v) * 3.6; }
   get mass() { return 768 + 62 * this.fuel; }
 
@@ -293,6 +299,9 @@ export class CarPhysics {
         wheel.carcassTemp = this.tyreTemp;
       }
     }
+    // readSurfaceSample reuses this object and its TrackState grip scratch, so
+    // changing compound never allocates inside the fixed-step loop.
+    this.surface._gripOptions.wetTyre = this.compoundData.wetTyre || 0;
     readSurfaceSample(c, this.sampleIdx, this.pos, this.surface);
 
     // ---- active aero (X-mode on straights, Z-mode in corners) ----

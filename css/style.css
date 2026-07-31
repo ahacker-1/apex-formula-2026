@@ -256,6 +256,9 @@ body {
 .cp-footer { display: flex; justify-content: space-between; border-top: 1px solid #29404b; padding-top: 4px; font-size: 9px; }
 .cp-footer #cp-flag.green { color:#24d05a }.cp-footer #cp-flag.yellow { color:#ffe14a }
 .cp-footer #cp-flag.blue { color:#4a8dff }.cp-footer #cp-flag.white { color:#fff }
+.cp-footer #cp-compound.compound-S { color:#e10600 }.cp-footer #cp-compound.compound-M { color:#ffd24a }
+.cp-footer #cp-compound.compound-H { color:#f0f0f0 }.cp-footer #cp-compound.compound-I { color:#39b54a }
+.cp-footer #cp-compound.compound-W { color:#5b9cff }
 .cp-footer span { color: #80a0ad; }
 .cockpit-mirror {
   position: absolute; top: 20vh; width: 15vw; min-width: 140px; height: 5.5vh; min-height: 38px;
@@ -338,7 +341,11 @@ body {
   font-size: 9px; font-weight: 800; margin-left: 5px; width: 13px; height: 13px;
   border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; flex: none;
 }
-.tyre.S { background: #d40000; color: #fff; } .tyre.M { background: #ffd24a; color: #000; } .tyre.H { background: #eee; color: #000; }
+.tyre.S { background: #d40000; color: #fff; }
+.tyre.M { background: #ffd24a; color: #000; }
+.tyre.H { background: #eee; color: #000; }
+.tyre.I { background: #39b54a; color: #fff; }
+.tyre.W { background: #2f7bff; color: #fff; }
 
 /* tyre age superscript */
 .tw-row .tyre-age {
@@ -663,14 +670,18 @@ body {
 }
 #pit-overlay.active { display: block; }
 #pit-overlay h3 { font-weight: 900; font-style: italic; margin-bottom: 12px; letter-spacing: 0.05em; }
-.tyre-choices { display: flex; gap: 12px; }
+.tyre-choices { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; max-width: 420px; }
 .tyre-btn {
   width: 74px; padding: 12px 0 10px; background: #1d1d26; border: 2px solid #33333e;
   border-radius: 4px; cursor: pointer; color: var(--text); font-family: inherit;
 }
 .tyre-btn:hover { border-color: #fff; }
 .tyre-btn .ring { width: 34px; height: 34px; border-radius: 50%; margin: 0 auto 6px; border: 5px solid; background: #111; }
-.tyre-btn.S .ring { border-color: #d40000; } .tyre-btn.M .ring { border-color: #ffd24a; } .tyre-btn.H .ring { border-color: #eee; }
+.tyre-btn.S .ring { border-color: #d40000; }
+.tyre-btn.M .ring { border-color: #ffd24a; }
+.tyre-btn.H .ring { border-color: #eee; }
+.tyre-btn.I .ring { border-color: #39b54a; }
+.tyre-btn.W .ring { border-color: #2f7bff; }
 .tyre-btn b { font-size: 12px; }
 .tyre-btn small { display: block; color: var(--text-dim); font-size: 9px; margin-top: 2px; }
 

@@ -7,7 +7,7 @@ import * as CAR from './car.js';
 import { layoutNametags } from './nametags.js';
 import { DRIVERS, TEAMS, POINTS } from './data.js';
 import { fmtTime } from './format.js';
-import { StrategyPlanner, normalizeForecast } from './strategy.js';
+import { StrategyPlanner, chooseWeatherTyre, compoundFamily, normalizeForecast } from './strategy.js';
 import {
   applyImpactDamage,
   applyRepairPlan,
@@ -396,7 +396,7 @@ export class RaceSession {
       phys.setTyre(startC);
       if (CAR.setTyreCompound) CAR.setTyreCompound(carHandle, startC);
       let plannedPitLap = -1, plannedNext = null;
-      if (this.laps >= 12) {
+      if (this.laps >= 12 && compoundFamily(startC) === 'dry') {
         plannedPitLap = Math.max(3, Math.round(this.laps * (0.42 + this.random() * 0.2)));
         plannedNext = startC === 'S' ? (this.random() < 0.6 ? 'M' : 'H') : startC === 'M' ? 'H' : 'M';
       }
@@ -409,7 +409,7 @@ export class RaceSession {
         lap: -1, lapStart: 0, lastLap: 0, bestLap: 0, lapTimes: [],
         position: gi + 1, gridPos: gi + 1, gapText: '', intervalText: '',
         pitStops: 0, pitState: null, plannedPitLap, plannedNext, boxThisLap: false,
-        strategy, strategyDecision: null, strategyCompound: requestedStart,
+        strategy, strategyDecision: null, strategyCompound: startC,
         damage: createVehicleHealth(), reliabilityWarning: null,
         finished: false, finishTime: 0, dnf: false, wheelSpin: 0,
         // ---- race-direction / timing detail (read by the HUD) ----
@@ -1210,7 +1210,8 @@ export class RaceSession {
     e.pitStops++;
     if (e.isPlayer) this._playerPitOpen = true;
     else {
-      const next = e.plannedNext || (e.phys.compound === 'H' ? 'M' : 'H');
+      const next = e.plannedNext || e.strategyDecision?.nextCompound ||
+        defaultNext(e.phys.compound, this.conditions);
       e.pitState.chosen = next;
       e.plannedPitLap = -1;
     }
@@ -1225,8 +1226,10 @@ export class RaceSession {
     if (!Number.isFinite(ps.phaseT) || !Number.isFinite(ps.entrySeconds)) {
       ps.timer -= dt;
       if (ps.timer > 0) return;
-      const chosen = physicalCompound(ps.chosen || defaultNext(e.phys.compound));
+      const chosen = physicalCompound(ps.chosen || defaultNext(e.phys.compound, this.conditions));
       e.phys.setTyre(chosen);
+      e.strategyCompound = chosen;
+      e.strategy?.confirmStop();
       const i = c.pitExitIdx;
       const s = c.samples[i];
       e.phys.placeAt(s.p.clone().addScaledVector(s.n, c.halfWidth * 0.5), Math.atan2(s.t.x, s.t.z), i);
@@ -1259,7 +1262,7 @@ export class RaceSession {
     if (ps.phase === 'stopped') {
       e.phys.v = 0;
       if (ps.phaseT > 0) return;
-      const chosen = physicalCompound(ps.chosen || defaultNext(e.phys.compound));
+      const chosen = physicalCompound(ps.chosen || defaultNext(e.phys.compound, this.conditions));
       e.phys.setTyre(chosen);
       applyRepairPlan(e.damage, ps.repair);
       ps.serviced = true;
@@ -1278,7 +1281,7 @@ export class RaceSession {
       if (ps.phaseT > 0) return;
       const fitted = ps.fittedCompound || e.phys.compound;
       const repaired = ps.wing;
-      e.strategyCompound = ps.chosen || fitted;
+      e.strategyCompound = fitted;
       e.strategy?.confirmStop();
       e.pitState = null;
       e.phys.disabled = false;
@@ -1317,7 +1320,9 @@ export class RaceSession {
   }
 
   playerChooseTyre(key) {
-    if (this.player && this.player.pitState) this.player.pitState.chosen = key;
+    if (!this.player?.pitState || !COMPOUNDS[key]) return false;
+    this.player.pitState.chosen = key;
+    return true;
   }
   playerRequestBox() {
     if (this.player && !this.player.finished && this.mode === 'race' && this.phase === 'racing') {
@@ -1972,12 +1977,13 @@ export class RaceSession {
 
 const ZERO_INPUT = { steer: 0, throttle: 0, brake: 0, boost: false };
 
-function defaultNext(cur) { return cur === 'S' ? 'M' : cur === 'M' ? 'H' : 'M'; }
+function defaultNext(cur, conditions = {}) {
+  const weatherChoice = chooseWeatherTyre(conditions, cur);
+  if (compoundFamily(weatherChoice) === 'wet' || compoundFamily(cur) === 'wet') return weatherChoice;
+  return cur === 'S' ? 'M' : cur === 'M' ? 'H' : 'M';
+}
 
-// CarPhysics currently exposes dry compounds. Strategy may recommend the
-// weather-specific semantic keys now; until dedicated wet curves land in
-// physics, intermediates use medium and full wets use hard as safe fallbacks.
-function physicalCompound(key) { return key === 'I' ? 'M' : key === 'W' ? 'H' : COMPOUNDS[key] ? key : 'M'; }
+function physicalCompound(key) { return COMPOUNDS[key] ? key : 'M'; }
 
 function partLabel(value) {
   return String(value || 'mechanical')

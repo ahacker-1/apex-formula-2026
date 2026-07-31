@@ -100,6 +100,8 @@ export class HUD {
           <button class="tyre-btn S" data-c="S"><div class="ring"></div><b>SOFT</b><small>FAST · HIGH DEG</small></button>
           <button class="tyre-btn M" data-c="M"><div class="ring"></div><b>MEDIUM</b><small>BALANCED</small></button>
           <button class="tyre-btn H" data-c="H"><div class="ring"></div><b>HARD</b><small>DURABLE</small></button>
+          <button class="tyre-btn I" data-c="I"><div class="ring"></div><b>INTER</b><small>DAMP · LIGHT RAIN</small></button>
+          <button class="tyre-btn W" data-c="W"><div class="ring"></div><b>WET</b><small>HEAVY RAIN</small></button>
         </div>
       </div>
       <div id="onboarding" role="dialog" aria-modal="true" aria-labelledby="onboarding-title" aria-hidden="true">

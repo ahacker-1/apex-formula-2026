@@ -352,6 +352,12 @@ ok(matOf(a, 'band').color.getHex() === 0xf0f0f0, "setTyreCompound('H') paints th
 CAR.setTyreCompound(a, 'M');
 ok(matOf(a, 'band').color.getHex() === 0xffd24a && a.compound === 'M',
   "setTyreCompound('M') paints them yellow");
+CAR.setTyreCompound(a, 'I');
+ok(matOf(a, 'band').color.getHex() === 0x39b54a && a.compound === 'I',
+  "setTyreCompound('I') paints them green");
+CAR.setTyreCompound(a, 'W');
+ok(matOf(a, 'band').color.getHex() === 0x2f7bff && a.compound === 'W',
+  "setTyreCompound('W') paints them blue");
 ok(matOf(b, 'band').color.getHex() === 0xffd24a,
   'compound changes do not leak between cars');
 

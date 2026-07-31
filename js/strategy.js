@@ -28,7 +28,8 @@ export function chooseWeatherTyre(forecast, current = 'M') {
 }
 
 export function tyreLifeLaps(compound, totalLaps, aggression = 0.5) {
-  const ratio = compound === 'S' ? 0.34 : compound === 'M' ? 0.53 : compound === 'H' ? 0.72 : 0.42;
+  const ratio = compound === 'S' ? 0.34 : compound === 'M' ? 0.53 : compound === 'H' ? 0.72 :
+    compound === 'I' ? 0.48 : compound === 'W' ? 0.42 : 0.53;
   return Math.max(2, Math.round(totalLaps * ratio * (1.08 - clamp(aggression, 0, 1) * 0.16)));
 }
 
@@ -118,10 +119,7 @@ export class StrategyPlanner {
 }
 
 export function compoundData(key) {
-  if (COMPOUNDS[key]) return COMPOUNDS[key];
-  if (key === 'I') return { key, name: 'INTERMEDIATE', grip: 0.98, wearRate: 1.15 };
-  if (key === 'W') return { key, name: 'WET', grip: 0.94, wearRate: 1.35 };
-  return COMPOUNDS.M;
+  return COMPOUNDS[key] || COMPOUNDS.M;
 }
 
 function clamp(value, lo, hi) {

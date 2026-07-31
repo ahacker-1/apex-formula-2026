@@ -45,7 +45,7 @@ export class CockpitView {
           <div><small>PRESS F</small><b id="cp-pf">—</b></div>
           <div><small>PRESS R</small><b id="cp-pr">—</b></div>
         </div>
-        <div class="cp-footer"><b id="cp-flag">GREEN</b><span id="cp-page-label">RACE 1/2</span></div>
+        <div class="cp-footer"><b id="cp-flag">GREEN</b><b id="cp-compound">M</b><span id="cp-page-label">RACE 1/2</span></div>
       </section>
       <div class="cockpit-actions" role="group" aria-label="Cockpit display controls">
         <button type="button" id="cp-page-button">DASH PAGE <kbd>B</kbd></button>
@@ -95,6 +95,8 @@ export class CockpitView {
     this.$('cp-delta').textContent = Number.isFinite(delta)
       ? `${delta <= 0 ? '−' : '+'}${Math.abs(delta).toFixed(3)}` : '—';
     this.$('cp-delta').className = Number.isFinite(delta) ? (delta <= 0 ? 'gain' : 'loss') : '';
+    this.$('cp-compound').textContent = p.compound || 'M';
+    this.$('cp-compound').className = `compound-${p.compound || 'M'}`;
 
     const wheels = Array.isArray(p.wheels) ? p.wheels : [];
     const fl = wheels[0], fr = wheels[1], rl = wheels[2], rr = wheels[3];

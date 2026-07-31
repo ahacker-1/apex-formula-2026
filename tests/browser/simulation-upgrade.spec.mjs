@@ -230,6 +230,47 @@ test('seeded wet-race, damage, strategy and race-control states are deterministi
   });
 });
 
+test('pit UI fits a real rain tyre across physics, visuals, telemetry and cockpit', async ({ page }) => {
+  const runtimeErrors = monitorRuntime(page);
+  await bootPilot(page);
+
+  const choices = page.locator('#pit-overlay .tyre-btn');
+  await expect(choices).toHaveCount(5);
+  await page.evaluate(() => {
+    const session = window.__game.session;
+    session._enterPit(session.player);
+  });
+  await expect(page.locator('#pit-overlay')).toBeVisible();
+  await page.locator('#pit-overlay .tyre-btn.I').click();
+
+  const fitted = await page.evaluate(() => {
+    const session = window.__game.session;
+    const player = session.player;
+    if (player.pitState?.chosen !== 'I') throw new Error('pit UI did not select Intermediate');
+    player.pitState.phase = 'stopped';
+    player.pitState.phaseT = 0;
+    session._updatePit(player, 0);
+    player.pitState.phaseT = 0;
+    session._updatePit(player, 0);
+    return {
+      physics: player.phys.compound,
+      strategy: player.strategyCompound,
+      visual: player.carHandle.compound,
+      bandColors: player.carHandle.tyreBandMats.map(material => material.color.getHex()),
+    };
+  });
+  expect(fitted).toMatchObject({ physics: 'I', strategy: 'I', visual: 'I' });
+  expect(fitted.bandColors.length).toBeGreaterThanOrEqual(2);
+  expect(fitted.bandColors.every(color => color === 0x39b54a)).toBe(true);
+
+  const snapshot = await debugSnapshot(page);
+  expect(snapshot.player?.physics).toMatchObject({ compound: 'I' });
+  expect(snapshot.telemetry).toMatchObject({ compound: 'I' });
+  await page.keyboard.press('KeyC');
+  await expect(page.locator('#cp-compound')).toHaveText('I');
+  expect(runtimeErrors, `Runtime emitted errors:\n${runtimeErrors.join('\n')}`).toEqual([]);
+});
+
 test('desktop high-quality frame pacing stays inside the acceptance budget', async ({ page }) => {
   await bootPilot(page);
   const result = await page.evaluate(async () => {

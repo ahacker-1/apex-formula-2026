@@ -1185,7 +1185,9 @@ const helmetBandGeo = () => G('helmetBand', () =>
 
 /* ------------------------------------------------------------- build ------ */
 
-const COMPOUND_COLORS = { S: 0xe10600, M: 0xffd24a, H: 0xf0f0f0 };
+const COMPOUND_COLORS = {
+  S: 0xe10600, M: 0xffd24a, H: 0xf0f0f0, I: 0x39b54a, W: 0x2f7bff,
+};
 const WHEEL_WIDTHS = { fl: 0.30, fr: 0.30, rl: 0.38, rr: 0.38 };
 
 function tyreWallMaterial() {
@@ -2182,7 +2184,8 @@ export function buildPrimitiveCarMesh(team, driver) {
   return handle;
 }
 
-// Recolour the sidewall compound band on all four wheels. key: 'S' | 'M' | 'H'.
+// Recolour the sidewall compound band on all four wheels.
+// key: 'S' | 'M' | 'H' | 'I' | 'W'.
 export function setTyreCompound(carHandle, key) {
   const hex = COMPOUND_COLORS[key];
   if (!carHandle || hex === undefined) return false;

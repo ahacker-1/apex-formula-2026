@@ -461,7 +461,6 @@ class Game {
         compound: scenario.strategy.compound || entry.strategyCompound || 'M',
         nextCompound: scenario.strategy.compound || entry.strategyCompound || 'M',
       };
-      entry.strategyCompound = scenario.strategy.compound || entry.strategyCompound;
     }
     const result = this.snapshot();
     this.hud?.updateSimulationState?.(result);
