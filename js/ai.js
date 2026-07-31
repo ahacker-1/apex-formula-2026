@@ -27,6 +27,14 @@ export class AIDriver {
     this.yieldT = 0;          // seconds of blue-flag yielding remaining
     this.scrubT = 0;          // seconds of track-limits pace scrub remaining
 
+    // ---- environment / car state (safe defaults; RaceSession may override) ----
+    this.trackGrip = 1;
+    this.wetness = 0;
+    this.damage = { power: 1, topSpeed: 1, grip: 1, braking: 1, steeringBias: 0, aeroLoss: 0 };
+    this.fuelMode = 'balanced';
+    this.strategy = null;
+    this.raceControlState = 'green';
+
     // ---- racecraft ----
     this.defendOffset = 0;    // metres of defensive line change
     this.defendT = 0;         // seconds of the current defensive move left
@@ -53,6 +61,16 @@ export class AIDriver {
   /** Track-limits sanction for AI: a small, brief pace scrub. */
   penaltyScrub(secs = 3) {
     this.scrubT = Math.max(this.scrubT, secs);
+  }
+
+  /** Additive integration hook for weather, strategy, damage and race control. */
+  setRaceContext(context = {}) {
+    if (Number.isFinite(context.trackGrip)) this.trackGrip = Math.max(0.45, Math.min(1.1, context.trackGrip));
+    if (Number.isFinite(context.wetness)) this.wetness = Math.max(0, Math.min(1, context.wetness));
+    if (context.damage) this.damage = Object.assign({}, this.damage, context.damage);
+    if (context.fuelMode === 'save' || context.fuelMode === 'balanced' || context.fuelMode === 'push') this.fuelMode = context.fuelMode;
+    if (context.strategy) this.strategy = context.strategy;
+    if (typeof context.raceControlState === 'string') this.raceControlState = context.raceControlState;
   }
 
   update(dt, others) {
@@ -183,6 +201,15 @@ export class AIDriver {
       const room = c.halfWidth - 1.6;
       off = Math.max(-room, Math.min(room, baseLat + off + extra)) - baseLat;
     }
+    // In the wet, leave the polished dry apex by a small, width-safe amount.
+    // This is intentionally modest because circuits do not yet expose a
+    // dedicated alternate-line spline.
+    if (this.wetness > 0.18 && targetAvoid === 0 && this.yieldT <= 0) {
+      const wetSide = -Math.sign(c.line[li].curv || 1);
+      const wetOffset = wetSide * Math.min(1.1, this.wetness * 1.25);
+      const room = c.halfWidth - 1.8;
+      off = Math.max(-room, Math.min(room, baseLat + off + wetOffset)) - baseLat;
+    }
     const lp = c.line[li].p, s = c.samples[li];
     const tx = lp.x + s.n.x * off - car.pos.x;
     const tz = lp.z + s.n.z * off - car.pos.z;
@@ -193,17 +220,22 @@ export class AIDriver {
     this.input.steer = Math.max(-1, Math.min(1, steer * 1.15));
 
     // ---- speed target: min over braking horizon ----
-    const horizon = Math.max(20, (car.v * car.v) / (2 * ABRAKE_PLAN) + 30);
+    const brakeAbility = Math.max(0.38, this.damage.braking ?? 1) *
+      Math.sqrt(Math.max(0.45, this.trackGrip));
+    const planBrake = ABRAKE_PLAN * brakeAbility;
+    const horizon = Math.max(20, (car.v * car.v) / (2 * planBrake) + 30);
     const hs = Math.round(horizon / ds);
     let vT = 1e9;
     for (let j = 0; j <= hs; j += 2) {
       const jj = (idx + j) % N;
-      const allow = Math.sqrt(c.line[jj].spd * c.line[jj].spd + 2 * ABRAKE_PLAN * j * ds);
+      const allow = Math.sqrt(c.line[jj].spd * c.line[jj].spd + 2 * planBrake * j * ds);
       if (allow < vT) vT = allow;
     }
     const tyreF = 1 - 0.06 * car.wear;
     const dirt = 1 - 0.035 * car.dirtyAir;
-    vT *= this.skill * this.lapNoise * tyreF * dirt * fightF;
+    const wetGrip = Math.sqrt(Math.max(0.45, this.trackGrip)) * (1 - this.wetness * 0.08);
+    const damageF = Math.max(0.48, Math.min(this.damage.grip ?? 1, this.damage.topSpeed ?? 1));
+    vT *= this.skill * this.lapNoise * tyreF * dirt * fightF * wetGrip * damageF;
     if (mistake) vT *= 1.055;
     if (this.yieldT > 0) vT *= 0.97;              // blue flags: let them by
     if (this.scrubT > 0) vT *= 0.985;             // track-limits sanction
@@ -226,6 +258,8 @@ export class AIDriver {
 
     const err = vT - car.v;
     this.input.throttle = err > 0.4 ? Math.min(1, 0.45 + err * 0.28) : (err > -0.6 ? 0.28 : 0);
+    const powerCap = Math.max(0.5, this.damage.power ?? 1) * (this.fuelMode === 'save' ? 0.86 : 1);
+    this.input.throttle = Math.min(this.input.throttle, powerCap);
     this.input.brake = err < -0.8 ? Math.min(1, -err * 0.22) : 0;
     if (followBrake > 0) {
       this.input.throttle = 0;
@@ -242,8 +276,14 @@ export class AIDriver {
     }
 
     // ---- Manual Override boost: chase within range on straights ----
-    this.input.boost = this.vscFactor === 1 && straight && car.battery > 0.35 && car.v > 45 &&
+    this.input.boost = this.vscFactor === 1 && this.fuelMode !== 'save' && straight && car.battery > 0.35 && car.v > 45 &&
       this.input.brake < 0.03 && ((chase && chaseDist < 26) || car.battery > 0.92);
+    this.input.ersMode = this.strategy?.ersMode ?? (this.noOvertake ? 0
+      : car.battery < 0.25 ? 0
+      : ((chase && chaseDist < 30) || attacker || car.battery > 0.86) ? 2 : 1);
+
+    const steerBias = this.damage.steeringBias ?? 0;
+    if (steerBias) this.input.steer = Math.max(-1, Math.min(1, this.input.steer + steerBias));
 
     return this.input;
   }

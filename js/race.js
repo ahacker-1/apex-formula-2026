@@ -7,6 +7,17 @@ import * as CAR from './car.js';
 import { layoutNametags } from './nametags.js';
 import { DRIVERS, TEAMS, POINTS } from './data.js';
 import { fmtTime } from './format.js';
+import { StrategyPlanner, normalizeForecast } from './strategy.js';
+import {
+  applyImpactDamage,
+  applyRepairPlan,
+  createVehicleHealth,
+  damageSeverity,
+  performanceModifiers,
+  repairPlan,
+  stepReliability,
+} from './damage.js';
+import { RaceControl } from './raceControl.js';
 import {
   applyContactVelocity,
   contactLongitudinalFor,
@@ -261,7 +272,7 @@ export class RaceSession {
     this.random = opts.random || (() => Math.random());
     this.seed = opts.seed;
 
-    this.phase = 'grid';       // grid | lights | racing | finished
+    this.phase = opts.formationLap ? 'formation' : 'grid';
     this.phaseT = 0;
     // constant hazard ≈ 2 mechanical DNFs across the field over a full 90-min GP,
     // proportionally fewer in short races (mechanical stress scales with distance)
@@ -272,6 +283,21 @@ export class RaceSession {
     this.fastestLap = null;    // {driverId, time}
     this.results = null;
     this.jumpStart = false;
+    this.forecast = typeof opts.forecast === 'function'
+      ? opts.forecast
+      : (lap) => Array.isArray(opts.forecast)
+        ? (opts.forecast[Math.min(opts.forecast.length - 1, Math.max(0, lap))] || {})
+        : (opts.forecast || {});
+    this.conditions = normalizeForecast(Object.assign({}, this.forecast(0), {
+      wetness: opts.wetness ?? this.forecast(0)?.wetness,
+      trackGrip: opts.trackGrip ?? this.forecast(0)?.trackGrip,
+    }));
+    this.startProcedure = {
+      formationEnabled: !!opts.formationLap,
+      state: opts.formationLap ? 'formation' : 'grid',
+      lapComplete: false,
+      launchMap: opts.launchMap || 'normal',
+    };
     this._posTimer = 0;
     this._activeContacts = new Set();
     this._impactingContacts = new Set();
@@ -293,6 +319,10 @@ export class RaceSession {
     this._vscViol = 0;          // player VSC over-speed time accumulator
     this._vscPenalised = false;
     this._vscWarned = false;
+    this.raceControl = new RaceControl({
+      random: this.random,
+      onEvent: (event) => this._onRaceControlEvent(event),
+    });
 
     const c = this.circuit;
     this.entries = [];
@@ -304,7 +334,7 @@ export class RaceSession {
     this._carLodSwitches = 0;
     this._carLodInitialized = false;
 
-    if (this.mode === 'quali') {
+    if (this.mode === 'quali' || this.mode === 'practice') {
       this._buildQuali(opts);
       this.resetRenderState();
       return;
@@ -351,8 +381,16 @@ export class RaceSession {
       tag.visible = false;
       group.add(tag);
 
-      // start compound + one-stop strategy
-      const startC = gi < 8 ? (this.random() < 0.7 ? 'S' : 'M') : (this.random() < 0.55 ? 'M' : this.random() < 0.5 ? 'S' : 'H');
+      // Each car owns a deterministic planner. Forecast input is optional and
+      // dry-safe, so legacy sessions reproduce the established compounds.
+      const strategy = new StrategyPlanner({
+        random: this.random,
+        totalLaps: this.laps,
+        aggression: 0.35 + (driver.racecraft ?? driver.pace ?? 0.8) * 0.5,
+        forecast: (lap) => this.forecast(lap),
+      });
+      const requestedStart = strategy.chooseStartCompound(gi + 1);
+      const startC = physicalCompound(requestedStart);
       phys.setTyre(startC);
       if (CAR.setTyreCompound) CAR.setTyreCompound(carHandle, startC);
       let plannedPitLap = -1, plannedNext = null;
@@ -369,6 +407,8 @@ export class RaceSession {
         lap: -1, lapStart: 0, lastLap: 0, bestLap: 0, lapTimes: [],
         position: gi + 1, gridPos: gi + 1, gapText: '', intervalText: '',
         pitStops: 0, pitState: null, plannedPitLap, plannedNext, boxThisLap: false,
+        strategy, strategyDecision: null, strategyCompound: requestedStart,
+        damage: createVehicleHealth(), reliabilityWarning: null,
         finished: false, finishTime: 0, dnf: false, wheelSpin: 0,
         // ---- race-direction / timing detail (read by the HUD) ----
         sectors: [null, null, null],      // live current-lap sector times
@@ -381,7 +421,7 @@ export class RaceSession {
         trackLimits: 0,
         _secStage: 0, _secSplit: [null, null], _offAcc: 0, _offLatched: false,
         _blueFrom: null, _blueT: 0, _contactCool: 0,
-        _wallDamageCool: 0, _carDamageCool: 0,
+      _wallDamageCool: 0, _carDamageCool: 0,
       });
     });
     this.player = this.entries.find(e => e.isPlayer) || null;
@@ -416,6 +456,9 @@ export class RaceSession {
       lap: -1, lapStart: 0, lastLap: 0, bestLap: 0, lapTimes: [],
       position: 1, gridPos: 1, gapText: '', intervalText: '',
       pitStops: 0, pitState: null, boxThisLap: false,
+      strategy: new StrategyPlanner({ random: this.random, totalLaps: this.laps, forecast: (lap) => this.forecast(lap) }),
+      strategyDecision: null, strategyCompound: 'S',
+      damage: createVehicleHealth(), reliabilityWarning: null,
       finished: false, finishTime: 0, dnf: false, wheelSpin: 0,
       sectors: [null, null, null],
       lastSectors: [null, null, null],
@@ -429,24 +472,119 @@ export class RaceSession {
       _blueFrom: null, _blueT: 0, _contactCool: 0,
       _wallDamageCool: 0, _carDamageCool: 0,
     }];
+    // Time trial deliberately remains a single clear-track car. A normal
+    // qualifying/practice session now runs every rival through the same
+    // CarPhysics + AIDriver loop, so their laps are earned rather than sampled.
+    if (!this.trial) {
+      const rivals = DRIVERS.filter(d => d.id !== this.playerDriverId);
+      rivals.forEach((rival, ri) => {
+        const rivalTeam = teamById[rival.team];
+        const rp = new CarPhysics(c, {
+          perf: rivalTeam.perf, isPlayer: false,
+          assists: { tc: true, abs: true, autoGear: true }, random: this.random,
+        });
+        rp.fuelBurnPerMeter = 0;
+        rp.fuel = 0.12;
+        rp.setTyre('S');
+        // Stagger cars around the lap with >100m average separation. Every AI
+        // must cross S/F and then complete a real flying lap.
+        const idx = Math.round(((ri + 1) / (rivals.length + 1)) * c.N) % c.N;
+        const sm = c.samples[idx];
+        rp.placeAt(sm.p.clone(), Math.atan2(sm.t.x, sm.t.z), idx);
+        rp.v = 42;
+        rp.gear = 5;
+        const handle = buildCarMesh(rivalTeam, rival);
+        CAR.attachDistantCarProxy?.(handle);
+        const shadow = makeContactShadow(c.group.userData.lightingRig?.shadowFans || 1);
+        shadow.position.set(0, 0.028, -0.05);
+        handle.group.add(shadow);
+        if (CAR.setTyreCompound) CAR.setTyreCompound(handle, 'S');
+        this.scene.add(handle.group);
+        this.entries.push({
+          driver: rival, team: rivalTeam, phys: rp, isPlayer: false,
+          ai: new AIDriver(rp, c, rival, this.difficulty, this.random), carHandle: handle,
+          mesh: handle.group, wheels: handle.wheels, wheelRadius: handle.wheelRadius,
+          tag: null, contactShadow: shadow, lodLevel: 'full',
+          shadowLobe: shadow.getObjectByName('sunShadowLobe'),
+          lap: -1, lapStart: 0, lastLap: 0, bestLap: 0, lapTimes: [],
+          position: ri + 2, gridPos: ri + 2, gapText: '', intervalText: '',
+          pitStops: 0, pitState: null, boxThisLap: false,
+          strategy: new StrategyPlanner({ random: this.random, totalLaps: this.laps, forecast: (lap) => this.forecast(lap) }),
+          strategyDecision: null, strategyCompound: 'S',
+          damage: createVehicleHealth(), reliabilityWarning: null,
+          finished: false, finishTime: 0, dnf: false, wheelSpin: 0,
+          sectors: [null, null, null], lastSectors: [null, null, null], bestSectors: [null, null, null],
+          tyreAgeLaps: 0, penaltySeconds: 0, positionsGained: 0, wingDamage: 0, trackLimits: 0,
+          _secStage: 0, _secSplit: [null, null], _offAcc: 0, _offLatched: false,
+          _blueFrom: null, _blueT: 0, _contactCool: 0, _wallDamageCool: 0, _carDamageCool: 0,
+        });
+      });
+    }
     this.player = this.entries[0];
     this.phase = 'racing';
-    this.qualiState = 'outlap';   // outlap | flying | done
+    this.qualiState = this.mode === 'practice' ? 'running' : 'outlap';
     this.qualiTime = null;
-    // simulated AI quali times
-    this.aiQualiTimes = DRIVERS.filter(d => d.id !== this.playerDriverId).map(d => {
-      const t = teamById[d.team];
-      const diffF = [0.925, 0.962, 1.0][this.difficulty] ?? 1;
-      const skill = diffF * (0.94 + 0.06 * d.pace) * (0.955 + 0.05 * (t.perf - 0.9) / 0.1 * 0.9);
-      const base = c.idealLap / (skill * 0.965);
-      return { driverId: d.id, time: base * (1 + this.random() * 0.008) };
-    });
+    this.aiQualiTimes = [];
+    this.qualifying = {
+      stage: opts.qualiStage || 'Q1',
+      format: opts.qualiFormat || 'full',
+      eliminated: [],
+      stageResults: {},
+    };
   }
 
   // Legacy alias: penalties are now per-entry, but callers still read/write the
   // player's total through this property.
   get playerPenalty() { return this.player ? this.player.penaltySeconds : 0; }
-  set playerPenalty(v) { if (this.player) this.player.penaltySeconds = v; }
+  set playerPenalty(v) {
+    if (this.player) this.player.penaltySeconds = Number.isFinite(v) ? Math.max(0, v) : 0;
+  }
+
+  getForecast(lap = this.player?.lap || 0) {
+    return normalizeForecast(this.forecast(Math.max(0, lap)) || this.conditions);
+  }
+
+  setTrackConditions(next = {}) {
+    this.conditions = normalizeForecast(Object.assign({}, this.conditions, next));
+    return { ...this.conditions };
+  }
+
+  /** Public offline integration hook for incident directors and scripted races. */
+  requestRaceControl(kind, options = {}) {
+    return this.raceControl.deploy(kind, options);
+  }
+
+  resumeRace(options = {}) { return this.raceControl.resume(options); }
+
+  startFormation() {
+    if (this.mode !== 'race' || (this.phase !== 'grid' && this.phase !== 'formation')) return false;
+    this.phase = 'formation';
+    this.phaseT = 0;
+    this.startProcedure.formationEnabled = true;
+    this.startProcedure.state = 'formation';
+    for (const e of this.entries) if (e.ai) { e.ai.vscFactor = 0.45; e.ai.noOvertake = true; }
+    this.onMessage('FORMATION LAP', 'yellow', { eventKey: 'start:formation' });
+    return true;
+  }
+
+  completeFormation() {
+    if (this.phase !== 'formation') return false;
+    const c = this.circuit;
+    this.entries.forEach((e, i) => {
+      const slot = c.gridSlots[e.gridPos - 1] || c.gridSlots[i];
+      e.phys.placeAt(slot.pos, slot.heading, slot.idx);
+      e.mesh.visible = true;
+      e.phys.disabled = false;
+      if (e.ai) { e.ai.vscFactor = 1; e.ai.noOvertake = false; }
+    });
+    this.resetRenderState();
+    this.phase = 'grid';
+    this.phaseT = 0;
+    this.startProcedure.lapComplete = true;
+    this.startProcedure.state = 'grid';
+    this.onMessage('GRID SET — START PROCEDURE', '', { eventKey: 'start:grid-set' });
+    return true;
+  }
 
   /** Queue an engineer radio line. Contextual chatter is gated to 1 per 12s;
    *  mandated race-control calls pass force=true. */
@@ -469,7 +607,9 @@ export class RaceSession {
     const c = this.circuit;
     this.phaseT += dt;
 
-    if (this.phase === 'grid') {
+    if (this.phase === 'formation' && !this.startProcedure.formationEnabled) {
+      this.completeFormation();
+    } else if (this.phase === 'grid') {
       if (this.phaseT > 2.6) { this.phase = 'lights'; this.phaseT = 0; this.lightsOn = 0; this.lightsHold = 0.5 + this.random(); }
     } else if (this.phase === 'lights') {
       const want = Math.min(5, Math.floor(this.phaseT / 0.9) + 1);
@@ -504,7 +644,7 @@ export class RaceSession {
     }
 
     // ---- step cars ----
-    const liveDrive = this.phase === 'racing' || this.phase === 'finished';
+    const liveDrive = this.phase === 'racing' || this.phase === 'finished' || this.phase === 'formation';
     const allPhys = this.entries.map(x => x.phys);
     for (const e of this.entries) {
       if (e.dnf) continue;
@@ -518,15 +658,30 @@ export class RaceSession {
         }
       }
       let input;
+      const control = this.raceControl.controlForSample(e.phys.sampleIdx, c.N);
+      if (e.ai) {
+        e.ai.vscFactor = this.phase === 'formation' ? 0.45 : control.paceFactor;
+        e.ai.noOvertake = this.phase === 'formation' || control.noOvertake;
+        e.ai.setRaceContext({
+          ...this.conditions,
+          damage: performanceModifiers(e.damage),
+          fuelMode: e.strategyDecision?.fuelMode || 'balanced',
+          strategy: e.strategyDecision,
+          raceControlState: this.raceControl.state,
+        });
+      }
       if (e.isPlayer) {
         input = ((liveDrive && !e.finished) || this.phase === 'lights') ? playerInput : ZERO_INPUT;
       } else {
         input = (liveDrive && !e.finished) ? e.ai.update(dt, allPhys) : ZERO_INPUT;
       }
+      input = this._applyEntrySystems(e, dt, input, control);
       if (e._wallDamageCool > 0) e._wallDamageCool -= dt;
       if (e._carDamageCool > 0) e._carDamageCool -= dt;
       const ev = e.phys.step(dt, input);
-      if (ev.crossedSF && (racing || this.phase === 'lights')) this._onCross(e, ev.crossedSF);
+      if (ev.crossedSF && this.phase === 'formation' && e.isPlayer && ev.crossedSF > 0) {
+        this.completeFormation();
+      } else if (ev.crossedSF && (racing || this.phase === 'lights')) this._onCross(e, ev.crossedSF);
       if (ev.wrongWay && e.isPlayer) this._msgOnce('wrongway', 'WRONG WAY', 'red');
       if (ev.wallHit) this._handleWallImpact(e, ev.wallHit);
       if (ev.shifted && e.isPlayer) this._shiftEvent = ev.shifted; // ±1: up/down for audio character
@@ -535,10 +690,9 @@ export class RaceSession {
         if (this.mode === 'race') this._trackLimits(e, dt);
       }
       // mechanical retirement (AI only, race only)
-      if (!e.isPlayer && this.mode === 'race' && this.phase === 'racing' && !e.finished) {
-        // ~9% chance per car over the chosen race distance, frame-rate independent
-        if (this.random() < this._dnfRate * dt) this._retire(e);
-      }
+      // Reliability is now subsystem-based and applies to every car. The
+      // legacy _dnfRate remains readable for tooling but no longer decides the
+      // failure without a named part and performance degradation first.
       // stranded watchdog: a car off the racing surface and making no real
       // track progress must never hang the session — AI get recovered by the
       // marshals (retired), the player is lifted back onto the track.
@@ -619,47 +773,105 @@ export class RaceSession {
     }
   }
 
+  _applyEntrySystems(e, dt, sourceInput, control) {
+    const input = Object.assign({}, sourceInput || ZERO_INPUT);
+    const mods = performanceModifiers(e.damage);
+    const controlFactor = control?.paceFactor ?? 1;
+    input.throttle = Math.min(input.throttle || 0, mods.power, controlFactor < 1 ? controlFactor + 0.12 : 1);
+    input.brake = Math.max(0, Math.min(1, (input.brake || 0) * mods.braking));
+    input.steer = Math.max(-1, Math.min(1, (input.steer || 0) + mods.steeringBias));
+    if (input.ersMode == null && e.strategyDecision) input.ersMode = e.strategyDecision.ersMode;
+    if (e.strategyDecision?.fuelMode === 'save') input.throttle = Math.min(input.throttle, 0.86);
+    if (controlFactor === 0) {
+      e.phys.v = 0;
+      input.throttle = 0;
+      input.brake = 0;
+      input.boost = false;
+      input.ersMode = 0;
+    }
+    if (e.damage?.puncture) { input.throttle = Math.min(input.throttle, 0.28); input.boost = false; }
+    e.phys.dirtyAir = Math.max(e.phys.dirtyAir, mods.aeroLoss);
+    e.wingDamage = Math.max(e.wingDamage || 0, 1 - (e.damage?.frontWing ?? 1));
+
+    if (this.mode === 'race' && this.phase === 'racing' && !e.finished && !e.dnf) {
+      const outcome = stepReliability(e.damage, dt, {
+        stress: Math.max(input.throttle || 0, input.brake || 0) + (e.phys.tyreTemp > 118 ? 0.2 : 0),
+        raceProgress: Math.max(0, e.lap) / this.laps,
+      }, this.random);
+      if (outcome.warning && outcome.warning !== e.reliabilityWarning) {
+        e.reliabilityWarning = outcome.warning;
+        if (e.isPlayer) this._radio(`${partLabel(outcome.warning)} issue detected — manage the car.`, 'warning', true);
+      }
+      if (outcome.failed && e.isPlayer) {
+        // A local browser race should remain recoverable: terminal telemetry
+        // becomes a severe limp-home state so the player can reach the pits.
+        // AI cars still retire and exercise official DNF classification.
+        e.damage.terminal = false;
+        e.damage.cause = null;
+        e.damage.puncture = true;
+        for (const part of ['suspension', 'powerUnit', 'gearbox', 'brakes', 'cooling']) {
+          e.damage[part] = Math.max(0.34, e.damage[part]);
+        }
+        if (!e._terminalWarning) {
+          e._terminalWarning = true;
+          this._radio('Critical damage — limp back and box for repairs.', 'warning', true);
+        }
+      } else if (outcome.failed) this._retire(e, outcome.cause);
+    }
+    return input;
+  }
+
   // ======== race direction ========
 
-  /** Deploy the VSC for `secs`: the whole field is neutralised, no overtaking. */
-  _startVSC(secs) {
-    if (!this.vsc.active) {
-      this.vsc.cycle++;
-      this.vsc.deployEventKey = `vsc:${this.vsc.cycle}:deploy`;
-      this.vsc.greenEventKey = `vsc:${this.vsc.cycle}:green`;
+  _onRaceControlEvent(event) {
+    const eventKey = event.state === 'vsc' && event.action === 'deploy'
+      ? `vsc:${event.cycle}:deploy`
+      : event.action === 'green' && event.previous === 'vsc'
+        ? `vsc:${event.cycle}:green`
+        : event.eventKey;
+    if (event.action === 'deploy') {
+      const labels = {
+        'local-yellow': 'LOCAL YELLOW', yellow: 'YELLOW FLAG', vsc: 'VIRTUAL SAFETY CAR',
+        'safety-car': 'SAFETY CAR DEPLOYED', 'red-flag': 'RED FLAG — SESSION SUSPENDED',
+      };
+      this.onMessage(labels[event.state] || event.state.toUpperCase(), event.state === 'red-flag' ? 'red' : 'yellow', { eventKey });
+      if (event.state === 'vsc') this._radio('Virtual safety car deployed — hold the delta.', 'warning', true, { eventKey });
+      else if (event.state === 'safety-car') this._radio('Safety car deployed — positive delta, no overtaking.', 'warning', true, { eventKey });
+      else if (event.state === 'red-flag') this._radio('Red flag — slow down and stop safely.', 'warning', true, { eventKey });
+    } else if (event.action === 'restart') {
+      this.onMessage(event.restartType === 'standing' ? 'STANDING RESTART' : 'SAFETY CAR IN — RESTART', 'yellow', { eventKey: event.eventKey });
+    } else if (event.action === 'green') {
+      this.onMessage('GREEN FLAG — RACE RESUMES', 'green', { eventKey });
+      this._radio('Green flag — go, go, go.', 'info', true, { eventKey });
     }
-    this.vsc.active = true;
-    this.vsc.timeLeft = Math.max(this.vsc.timeLeft, secs);
+    this.vsc.active = event.state === 'vsc';
+    this.vsc.timeLeft = this.vsc.active ? event.timeLeft : 0;
+    this.vsc.cycle = event.cycle;
+    this.vsc.deployEventKey = `vsc:${event.cycle}:deploy`;
+    this.vsc.greenEventKey = `vsc:${event.cycle}:green`;
+  }
+
+  /** Legacy VSC hook retained for headless tooling. */
+  _startVSC(secs) {
     this._vscEnding = false;
-    // per-deployment sanction state: one warning + one penalty per VSC period
     this._vscViol = 0;
     this._vscWarned = false;
     this._vscPenalised = false;
-    for (const e of this.entries) if (e.ai) { e.ai.vscFactor = 0.6; e.ai.noOvertake = true; }
-    const meta = { eventKey: this.vsc.deployEventKey };
-    this.onMessage('VIRTUAL SAFETY CAR', 'yellow', meta);
-    this._radio('Virtual safety car deployed — hold the delta.', 'warning', true, meta);
+    return this.requestRaceControl('vsc', { duration: secs, reason: 'stopped-car' });
   }
 
   _updateVSC(dt) {
-    const v = this.vsc;
-    if (!v.active) return;
-    v.timeLeft -= dt;
-    if (v.timeLeft <= 3 && !this._vscEnding) {
+    const wasVsc = this.raceControl.state === 'vsc';
+    if (wasVsc && this.raceControl.timeLeft <= 3 && !this._vscEnding) {
       this._vscEnding = true;
       this.onMessage('VSC ENDING', 'yellow');
       this._radio('VSC ending — get ready.', 'info', true);
     }
-    if (v.timeLeft <= 0) {
-      v.active = false;
-      v.timeLeft = 0;
-      this._vscEnding = false;
-      for (const e of this.entries) if (e.ai) { e.ai.vscFactor = 1; e.ai.noOvertake = false; }
-      const meta = { eventKey: v.greenEventKey };
-      this.onMessage('GREEN FLAG — RACE RESUMES', 'green', meta);
-      this._radio('Green flag — go, go, go.', 'info', true, meta);
-      return;
-    }
+    this.raceControl.update(dt);
+    this.vsc.active = this.raceControl.state === 'vsc';
+    this.vsc.timeLeft = this.vsc.active ? this.raceControl.timeLeft : 0;
+    if (wasVsc && !this.vsc.active) this._vscEnding = false;
+    if (!this.vsc.active) return;
     // the player is expected to slow to the delta; sustained over-speed is a penalty
     const p = this.player;
     if (p && !p.finished && !p.dnf && !p.pitState && p.phys.v > 62) {
@@ -765,6 +977,7 @@ export class RaceSession {
     e[cooldown] = 2;
     if (this.random() >= 0.25) return;
     e.wingDamage = 0.15;
+    if (e.damage) e.damage.frontWing = Math.min(e.damage.frontWing, 0.72);
     if (e.isPlayer) {
       this.onMessage('FRONT WING DAMAGE — BOX TO REPAIR', 'red');
       this._radio('FRONT WING DAMAGE — BOX TO REPAIR', 'warning', true);
@@ -775,6 +988,11 @@ export class RaceSession {
 
   _handleWallImpact(e, intensity) {
     if (!(intensity > 0)) return;
+    applyImpactDamage(e.damage, {
+      severity: intensity,
+      front: !!e.phys.wallImpactFront,
+      side: e.phys.wallImpactFront ? 0.2 : 0.85,
+    }, this.random);
     if (e.isPlayer) {
       const candidate = {
         intensity,
@@ -908,6 +1126,29 @@ export class RaceSession {
     }
     if (this.mode !== 'race') return;
 
+    this.conditions = this.getForecast(e.lap);
+    if (e.strategy) {
+      e.strategyDecision = e.strategy.decide({
+        lap: e.lap,
+        compound: e.strategyCompound || e.phys.compound,
+        wear: e.phys.wear,
+        tyreAgeLaps: e.tyreAgeLaps,
+        fuel: e.phys.fuel,
+        battery: e.phys.battery,
+        damageSeverity: damageSeverity(e.damage),
+        safetyCar: this.raceControl.state === 'safety-car',
+        noOvertake: this.raceControl.noOvertake,
+        attack: e.position > 1,
+        defend: e.position <= 10,
+      });
+      if (!e.isPlayer && e.strategyDecision.shouldPit) {
+        e.boxThisLap = true;
+        e.plannedNext = e.strategyDecision.nextCompound;
+      } else if (e.isPlayer && e.strategyDecision.shouldPit) {
+        this._radio(`Strategy recommends box: ${e.strategyDecision.reason.replace('-', ' ')}.`, 'warning');
+      }
+    }
+
     // pit entry
     if ((e.boxThisLap || (!e.isPlayer && e.lap === e.plannedPitLap) ||
         (!e.isPlayer && e.phys.wear > 0.72 && e.lap < this.laps - 2 && this.laps >= 8))
@@ -936,15 +1177,32 @@ export class RaceSession {
   }
 
   _enterPit(e) {
+    const c = this.circuit;
+    const repair = repairPlan(e.damage);
+    if (e.wingDamage > 0 && !repair.repairs.some(item => item.part === 'frontWing')) {
+      repair.repairs.unshift({ part: 'frontWing', seconds: 3, target: 1 });
+      repair.seconds += 3;
+    }
+    const entrySeconds = Math.max(2.4, pitLaneLoss(c) * 0.34);
+    const exitSeconds = Math.max(2.2, pitLaneLoss(c) * 0.28);
+    const serviceSeconds = 2.2 + this.random() * 2 + (this.random() < 0.06 ? 4 : 0) + repair.seconds;
     e.pitState = {
-      phase: 'stopped',
-      timer: pitLaneLoss(this.circuit) + 2.2 + this.random() * 2 + (this.random() < 0.06 ? 4 : 0)
-             + (e.wingDamage > 0 ? 3 : 0),   // front wing change costs extra
+      phase: 'entry',
+      timer: entrySeconds + serviceSeconds + exitSeconds,
+      phaseT: entrySeconds,
+      entrySeconds,
+      serviceSeconds,
+      exitSeconds,
+      startIdx: e.phys.sampleIdx,
+      serviceIdx: Math.max(1, Math.round(c.pitExitIdx * 0.56)),
+      exitIdx: c.pitExitIdx,
       chosen: null,
       wing: e.wingDamage > 0,
+      repair,
+      serviced: false,
     };
     e.phys.disabled = true;
-    e.mesh.visible = false;
+    e.mesh.visible = true;
     e.boxThisLap = false;
     e.pitStops++;
     if (e.isPlayer) this._playerPitOpen = true;
@@ -956,32 +1214,103 @@ export class RaceSession {
   }
 
   _updatePit(e, dt) {
-    e.pitState.timer -= dt;
-    if (e.pitState.timer <= 0) {
-      const c = this.circuit;
-      const chosen = e.pitState.chosen || defaultNext(e.phys.compound);
+    const ps = e.pitState;
+    const c = this.circuit;
+    // Backward-compatible force-completion shape used by old snapshots and
+    // interpolation tooling. Runtime-created stops always carry phaseT and the
+    // progressive entry/service/exit durations above.
+    if (!Number.isFinite(ps.phaseT) || !Number.isFinite(ps.entrySeconds)) {
+      ps.timer -= dt;
+      if (ps.timer > 0) return;
+      const chosen = physicalCompound(ps.chosen || defaultNext(e.phys.compound));
       e.phys.setTyre(chosen);
       const i = c.pitExitIdx;
       const s = c.samples[i];
       e.phys.placeAt(s.p.clone().addScaledVector(s.n, c.halfWidth * 0.5), Math.atan2(s.t.x, s.t.z), i);
-      e.phys.v = 23; // pit exit speed
+      e.phys.v = 23;
       e.phys.gear = 3;
       e.phys.disabled = false;
-      const repaired = e.pitState.wing;
       e.pitState = null;
       e.mesh.visible = true;
       e.tyreAgeLaps = 0;
-      e.wingDamage = 0;             // new nose fitted
+      e.wingDamage = 0;
+      if (e.damage) e.damage.frontWing = 1;
       e.phys.dirtyAir = 0;
       this._resetSectors(e);
       this.resetRenderState(e);
       if (CAR.setTyreCompound && e.carHandle) CAR.setTyreCompound(e.carHandle, chosen);
+      return;
+    }
+    ps.timer = Math.max(0, ps.timer - dt);
+    ps.phaseT = Math.max(0, ps.phaseT - dt);
+    if (ps.phase === 'entry') {
+      const t = 1 - ps.phaseT / ps.entrySeconds;
+      this._placeInPitLane(e, ps.startIdx, ps.serviceIdx, t, 22 * (0.7 + 0.3 * (1 - t)));
+      if (ps.phaseT <= 0) {
+        ps.phase = 'stopped';
+        ps.phaseT = ps.serviceSeconds;
+        this._placeInPitLane(e, ps.serviceIdx, ps.serviceIdx, 1, 0);
+      }
+      return;
+    }
+    if (ps.phase === 'stopped') {
+      e.phys.v = 0;
+      if (ps.phaseT > 0) return;
+      const chosen = physicalCompound(ps.chosen || defaultNext(e.phys.compound));
+      e.phys.setTyre(chosen);
+      applyRepairPlan(e.damage, ps.repair);
+      ps.serviced = true;
+      ps.phase = 'exit';
+      ps.phaseT = ps.exitSeconds;
+      ps.fittedCompound = chosen;
+      e.tyreAgeLaps = 0;
+      e.wingDamage = 0;             // new nose fitted
+      e.phys.dirtyAir = 0;
+      if (CAR.setTyreCompound && e.carHandle) CAR.setTyreCompound(e.carHandle, chosen);
+      return;
+    }
+    if (ps.phase === 'exit') {
+      const t = 1 - ps.phaseT / ps.exitSeconds;
+      this._placeInPitLane(e, ps.serviceIdx, ps.exitIdx, t, 23);
+      if (ps.phaseT > 0) return;
+      const fitted = ps.fittedCompound || e.phys.compound;
+      const repaired = ps.wing;
+      e.strategyCompound = ps.chosen || fitted;
+      e.strategy?.confirmStop();
+      e.pitState = null;
+      e.phys.disabled = false;
+      e.phys.v = 23;
+      e.phys.gear = 3;
+      this._resetSectors(e);
+      this.resetRenderState(e);
       if (e.isPlayer) {
         this._playerPitOpen = false;
-        this.onMessage(`${COMPOUNDS[chosen].name} TYRES FITTED`, 'green');
+        this.onMessage(`${COMPOUNDS[fitted].name} TYRES FITTED`, 'green');
         if (repaired) this._radio('New nose on, wing damage fixed — push now.', 'info', true);
       }
     }
+  }
+
+  _placeInPitLane(e, fromIdx, toIdx, t, speed) {
+    const c = this.circuit;
+    const span = ((toIdx - fromIdx) % c.N + c.N) % c.N;
+    const idx = (fromIdx + Math.round(span * Math.max(0, Math.min(1, t)))) % c.N;
+    const s = c.samples[idx];
+    const side = c.group?.userData?.pitSide || 1;
+    const lateral = side * Math.max(2.2, c.halfWidth * 0.58);
+    const previousIdx = e.phys.sampleIdx;
+    let dd = idx - previousIdx;
+    if (dd > c.N / 2) dd -= c.N;
+    if (dd < -c.N / 2) dd += c.N;
+    if (dd > 0) e.phys.totalDist += dd * c.ds;
+    e.phys.pos.copy(s.p).addScaledVector(s.n, lateral);
+    e.phys.heading = Math.atan2(s.t.x, s.t.z);
+    e.phys.sampleIdx = idx;
+    e.phys.lat = lateral;
+    e.phys.v = speed;
+    e.phys.gear = speed > 1 ? 3 : 1;
+    e.phys.offTrack = false;
+    e.mesh.visible = true;
   }
 
   playerChooseTyre(key) {
@@ -994,18 +1323,30 @@ export class RaceSession {
     }
   }
 
-  _retire(e) {
+  _retire(e, cause = 'mechanical') {
+    if (!e || e.dnf) return;
     e.dnf = true;
+    e.failureCause = cause || 'mechanical';
+    e.retirementTime = this.raceTime;
+    e.retirementProgress = e.lap * this.circuit.length + e.phys.sampleIdx * this.circuit.ds;
     e.phys.disabled = true;
     e.mesh.visible = false;
     if (e.ai) { e.ai.vscFactor = 1; e.ai.noOvertake = false; }
-    this.onMessage(`${e.driver.code} RETIRES — MECHANICAL`, 'yellow');
+    this.onMessage(`${e.driver.code} RETIRES — ${partLabel(e.failureCause).toUpperCase()}`, 'yellow');
     // a car stopping on track often brings out the VSC, but only when there is
     // still enough of the race left to be worth neutralising
     const leadLap = this.entries.reduce((m, x) => Math.max(m, x.lap), 0);
-    if (this.mode === 'race' && this.phase === 'racing' && !this.vsc.active &&
+    if (this.mode === 'race' && this.phase === 'racing' && !this.raceControl.active &&
         this.laps - leadLap > 2 && this.random() < 0.4) {
       this._startVSC(18 + this.random() * 12);
+    } else if (this.mode === 'race' && this.phase === 'racing' && !this.raceControl.active &&
+        this.laps - leadLap > 1) {
+      const zone = Math.max(2, Math.round(80 / this.circuit.ds));
+      this.requestRaceControl('local-yellow', {
+        duration: 10 + this.random() * 6,
+        reason: cause,
+        zone: { start: e.phys.sampleIdx - zone, end: e.phys.sampleIdx + zone },
+      });
     }
   }
 
@@ -1119,6 +1460,10 @@ export class RaceSession {
             this._maybeWingDamage(B, 'car');
           }
         }
+        const aFront = contactLongitudinalFor(a, contact.nx, contact.nz, true) > 0.45;
+        const bFront = contactLongitudinalFor(b, contact.nx, contact.nz, false) > 0.45;
+        applyImpactDamage(A.damage, { severity: intensity * 0.55, front: aFront, side: aFront ? 0.2 : 0.8 }, this.random);
+        applyImpactDamage(B.damage, { severity: intensity * 0.55, front: bFront, side: bFront ? 0.2 : 0.8 }, this.random);
       }
     }
 
@@ -1176,7 +1521,15 @@ export class RaceSession {
 
   _updateQuali() {
     const e = this.player;
-    if (!e || this.qualiState === 'done') return;
+    this.aiQualiTimes = this.entries
+      .filter(entry => !entry.isPlayer && entry.bestLap > 0)
+      .map(entry => ({ driverId: entry.driver.id, time: entry.bestLap, actual: true, laps: entry.lapTimes.length }));
+    if (!e || this.qualiState === 'done' || this.mode === 'practice') return;
+    if (this.qualiState === 'awaiting-field') {
+      const active = this.entries.filter(entry => !entry.phys.disabled || entry.isPlayer);
+      if (active.every(entry => entry.bestLap > 0)) this.qualiState = 'done';
+      return;
+    }
     // detect SF crossing handled in _onCross via lap counter
     if (this.qualiState === 'outlap' && e.lap >= 0) {
       this.qualiState = 'flying';
@@ -1189,18 +1542,73 @@ export class RaceSession {
           this.onMessage(`LAP ${fmtTime(e.lastLap)}${e.lastLap === e.bestLap ? ' — PERSONAL BEST' : ''}`, e.lastLap === e.bestLap ? 'purple' : '');
         }
       } else {
-        this.qualiState = 'done';
         this.qualiTime = e.lastLap;
+        const fieldComplete = this.entries.every(entry => entry.isPlayer || entry.bestLap > 0);
+        this.qualiState = fieldComplete ? 'done' : 'awaiting-field';
       }
     }
   }
 
   qualiClassification() {
-    const rows = [...this.aiQualiTimes];
-    if (this.qualiTime) rows.push({ driverId: this.playerDriverId, time: this.qualiTime });
-    else rows.push({ driverId: this.playerDriverId, time: 9999 });
-    rows.sort((a, b) => a.time - b.time);
+    const rows = this.entries.map((entry) => ({
+      driverId: entry.driver.id,
+      time: entry.bestLap || (entry.isPlayer ? this.qualiTime : 0) || 9999,
+      actual: !!entry.bestLap,
+      laps: entry.lapTimes.length,
+      eliminated: this.qualifying?.eliminated.includes(entry.driver.id) || false,
+    }));
+    rows.sort((a, b) => Number(a.eliminated) - Number(b.eliminated) ||
+      a.time - b.time || a.driverId.localeCompare(b.driverId));
     return rows;
+  }
+
+  practiceClassification() { return this.qualiClassification(); }
+
+  /** Advance an explicit Q1 → Q2 → Q3 format using only completed track laps. */
+  advanceQualifyingStage() {
+    if (this.mode !== 'quali' || this.trial || !this.qualifying) return null;
+    const current = this.qualifying.stage;
+    const next = current === 'Q1' ? 'Q2' : current === 'Q2' ? 'Q3' : 'done';
+    const rows = this.qualiClassification();
+    const stageRows = rows.filter(row => !this.qualifying.eliminated.includes(row.driverId));
+    this.qualifying.stageResults[current] = stageRows.map(row => ({ ...row }));
+    if (next === 'done') {
+      this.qualifying.stage = 'done';
+      this.qualiState = 'done';
+      return stageRows;
+    }
+    const keep = next === 'Q2' ? 15 : 10;
+    const survivors = new Set(stageRows.slice(0, keep).map(row => row.driverId));
+    this.qualifying.eliminated.push(...stageRows.slice(keep).map(row => row.driverId)
+      .filter(id => !this.qualifying.eliminated.includes(id)));
+    const active = this.entries.filter(entry => survivors.has(entry.driver.id));
+    active.forEach((entry, index) => {
+      const idx = Math.round((index / Math.max(1, active.length)) * this.circuit.N) % this.circuit.N;
+      const sample = this.circuit.samples[idx];
+      entry.phys.placeAt(sample.p.clone(), Math.atan2(sample.t.x, sample.t.z), idx);
+      entry.phys.v = 40;
+      entry.phys.gear = 5;
+      entry.phys.disabled = false;
+      entry.mesh.visible = true;
+      entry.lap = -1;
+      entry.maxLap = -1;
+      entry.lapTimes = [];
+      entry.lastLap = 0;
+      entry.bestLap = 0;
+      entry.tyreAgeLaps = 0;
+      this._resetSectors(entry);
+    });
+    this.entries.filter(entry => !survivors.has(entry.driver.id)).forEach(entry => {
+      entry.phys.disabled = true;
+      entry.mesh.visible = false;
+    });
+    this.qualifying.stage = next;
+    this.qualiState = survivors.has(this.playerDriverId) ? 'outlap' : 'done';
+    this.qualiTime = null;
+    this.aiQualiTimes = [];
+    this.resetRenderState();
+    this.onMessage(`${next} STARTED`, 'green', { eventKey: `quali:${next}` });
+    return { stage: next, survivors: [...survivors], eliminated: [...this.qualifying.eliminated] };
   }
 
   _classify() {
@@ -1210,7 +1618,10 @@ export class RaceSession {
     const ft = e => e.finishTime + (e.penaltySeconds || 0);
     const fin = this.entries.filter(e => e.finished).sort((a, b) => ft(a) - ft(b));
     const run = this.entries.filter(e => !e.finished && !e.dnf).sort((a, b) => progOf(b) - progOf(a));
-    const dnf = this.entries.filter(e => e.dnf);
+    const dnf = this.entries.filter(e => e.dnf).sort((a, b) =>
+      (b.retirementProgress ?? progOf(b)) - (a.retirementProgress ?? progOf(a)) ||
+      (b.retirementTime ?? 0) - (a.retirementTime ?? 0) ||
+      a.driver.id.localeCompare(b.driver.id));
     const order = [...fin, ...run, ...dnf];
     const winner = order[0];
     const refLap = winner.bestLap || (ft(winner) / Math.max(1, winner.lap)) || 90;
@@ -1243,9 +1654,11 @@ export class RaceSession {
         pits: e.pitStops,
         bestLap: e.bestLap,
         gapText,
-        penaltySeconds: e.penaltySeconds || 0,
+        penaltySeconds: Number.isFinite(e.penaltySeconds) ? Math.max(0, e.penaltySeconds) : 0,
         points: (i < POINTS.length && !e.dnf) ? POINTS[i] : 0,
         fastestLap: this.fastestLap && this.fastestLap.driverId === e.driver.id,
+        status: e.dnf ? 'DNF' : e.finished ? 'FINISHED' : 'CLASSIFIED',
+        failureCause: e.dnf ? (e.failureCause || 'retired') : null,
       };
     });
     // post-flag verdict over the radio, using the final classification
@@ -1550,6 +1963,18 @@ export class RaceSession {
 const ZERO_INPUT = { steer: 0, throttle: 0, brake: 0, boost: false };
 
 function defaultNext(cur) { return cur === 'S' ? 'M' : cur === 'M' ? 'H' : 'M'; }
+
+// CarPhysics currently exposes dry compounds. Strategy may recommend the
+// weather-specific semantic keys now; until dedicated wet curves land in
+// physics, intermediates use medium and full wets use hard as safe fallbacks.
+function physicalCompound(key) { return key === 'I' ? 'M' : key === 'W' ? 'H' : COMPOUNDS[key] ? key : 'M'; }
+
+function partLabel(value) {
+  return String(value || 'mechanical')
+    .replace(/-failure$/, '')
+    .replace(/-/g, ' ')
+    .replace(/([a-z])([A-Z])/g, '$1 $2');
+}
 
 function pitLaneLoss(circuit) {
   return 14 + circuit.length / 380;

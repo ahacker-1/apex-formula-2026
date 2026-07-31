@@ -11,6 +11,26 @@ export function pointsFor(pos) {
   return POINTS[pos] || 0;
 }
 
+/** Validate and normalize a complete official classification atomically. */
+export function normalizeClassification(classification) {
+  if (!Array.isArray(classification) || classification.length !== DRIVERS.length) return null;
+  const rows = [];
+  const seen = new Set();
+  let reachedRetirements = false;
+  for (const value of classification) {
+    const row = typeof value === 'string' ? { id: value, dnf: false } : value;
+    if (!isRecord(row) || typeof row.id !== 'string' || !DRIVER_IDS.has(row.id) || seen.has(row.id)) return null;
+    const dnf = !!row.dnf;
+    // Retirements are ordered after every running/finished car. This prevents
+    // malformed callers from awarding a classified position through array order.
+    if (dnf) reachedRetirements = true;
+    else if (reachedRetirements) return null;
+    seen.add(row.id);
+    rows.push({ id: row.id, dnf });
+  }
+  return seen.size === DRIVERS.length ? rows : null;
+}
+
 function storage() {
   try {
     return typeof localStorage !== 'undefined' ? localStorage : null;
@@ -164,20 +184,21 @@ export class Championship {
   }
 
   startNew(playerDriverId) {
+    if (!DRIVER_IDS.has(playerDriverId)) return false;
     this._state = freshState(playerDriverId);
     this._save();
+    return true;
   }
 
   // classification: array (finishing order) of driverId strings OR
   // { id, dnf } objects. DNF entries score nothing (matching the results
   // screen); scoring position stays the classified index — no promotion.
   recordResult(classification, fastestLapDriverId) {
-    if (!this._state || this.finished) return;
-    if (!Array.isArray(classification) || classification.length === 0) return;
-
-    const rows = classification.map((e) =>
-      typeof e === 'string' ? { id: e, dnf: false } : { id: e.id, dnf: !!e.dnf }
-    );
+    if (!this._state || this.finished) return false;
+    const rows = normalizeClassification(classification);
+    if (!rows) return false;
+    if (fastestLapDriverId != null && (!DRIVER_IDS.has(fastestLapDriverId) ||
+        rows.find(row => row.id === fastestLapDriverId)?.dnf)) return false;
     const s = this._state;
     const race = CALENDAR[s.roundIndex];
 
@@ -213,6 +234,7 @@ export class Championship {
 
     s.roundIndex += 1;
     this._save();
+    return true;
   }
 
   driverStandings() {
