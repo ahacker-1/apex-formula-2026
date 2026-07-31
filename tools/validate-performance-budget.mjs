@@ -39,9 +39,12 @@ const SELECTED_GAMEPLAY_MODULES = [
 
 const ALLOWED_MENU_GAMEPLAY_ROOTS = ['three', './data.js', './format.js'];
 
-// These ceilings retain practical headroom over the July 2026 baseline while
-// enforcing the runtime stages separately. The all-theme total is inventory-only:
-// a selected session must still request exactly one HDR theme.
+// These ceilings retain practical byte headroom over the July 2026 baseline
+// while enforcing the runtime stages separately. The selected-session request
+// ceiling includes the three deliberately separate simulation-state modules
+// (track/weather, strategy/damage, and race control); keeping the count exact
+// means any future request still fails this gate. The all-theme total is
+// inventory-only: a selected session must still request exactly one HDR theme.
 const BUDGETS = {
   htmlBytes: 2_000,
   cssBytes: 80_000,
@@ -57,8 +60,8 @@ const BUDGETS = {
   allThemeInventoryBytes: 44_000_000,
   moduleFiles: 55,
   menuBootRequests: 65,
-  selectedSessionRequests: 66,
-  allThemeInventoryRequests: 68,
+  selectedSessionRequests: 69,
+  allThemeInventoryRequests: 71,
 };
 
 function fail(message) {
