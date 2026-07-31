@@ -338,7 +338,9 @@ export class HUD {
     this._resetDerived();
     this._timeTrialDelta = null;
     const race = session.mode === 'race';
-    this.$('tw-title').textContent = session.trial ? 'TIME TRIAL' : session.mode === 'quali' ? 'QUALIFYING' : 'RACE';
+    this.$('tw-title').textContent = session.trial ? 'TIME TRIAL'
+      : session.mode === 'practice' ? 'PRACTICE · FP1'
+        : session.mode === 'quali' ? `QUALIFYING · ${session.qualifying?.stage || 'Q1'}` : 'RACE';
     this.$('tw-lap').textContent = '';
     this.$('tw-gapmode').textContent = race ? 'INT' : '';
     this.$('tt-delta-box').style.display = session.trial ? '' : 'none';
@@ -403,7 +405,10 @@ export class HUD {
       const live = s.phase === 'racing' || s.phase === 'finished';
       this.$('gapwidget').classList.toggle('shown', this._gapWanted && live);
     }
-    const p = s.player;
+    // If the player is eliminated from staged qualifying, keep the physical
+    // session visible by following one of the surviving AI cars. Controls and
+    // player identity remain bound to s.player in the game state machine.
+    const p = s.focusEntry || s.player;
     this._pulse += dt;
     this._uiTimer -= dt;
     const slow = this._uiTimer <= 0;
@@ -427,11 +432,20 @@ export class HUD {
       this.cockpit.update({ session: s, player: p, delta: this._timeTrialDelta, steer: ph.steer });
 
       if (slow) {
+        const stage = s.mode === 'practice' ? 'FP1' : (s.qualifying?.stage || 'Q1');
+        this.$('tw-title').textContent = s.trial ? 'TIME TRIAL'
+          : s.mode === 'practice' ? 'PRACTICE · FP1'
+            : s.mode === 'quali' ? `QUALIFYING · ${stage}` : 'RACE';
         this.$('t-pos').textContent = s.mode === 'race' ? 'P' + p.position : '—';
         this._renderPosDelta(p);
+        const sessionStatus = s.qualiState === 'flying' ? 'FLYING'
+          : s.qualiState === 'done' ? 'DONE'
+            : s.qualiState === 'awaiting-field' ? 'TRACK LIVE' : 'OUT LAP';
         this.$('t-lap').textContent = s.mode === 'race'
-          ? Math.min(Math.max(p.lap + 1, 1), s.laps) + '/' + s.laps
-          : (s.qualiState === 'flying' ? 'FLYING' : s.qualiState === 'done' ? 'DONE' : 'OUT LAP');
+          ? (s.phase === 'formation'
+            ? 'FORMATION'
+            : Math.min(Math.max(p.lap + 1, 1), s.laps) + '/' + s.laps)
+          : s.trial ? sessionStatus : `${stage} ${sessionStatus}`;
         const cur = (s.phase === 'racing' || s.phase === 'finished') && p.lap >= 0 ? s.raceTime - p.lapStart : 0;
         this.$('t-cur').textContent = fmtTime(cur);
         this.$('t-last').textContent = p.lastLap ? fmtTime(p.lastLap) : '—';

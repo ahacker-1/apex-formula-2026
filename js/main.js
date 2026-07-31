@@ -590,7 +590,7 @@ class Game {
     if (!saved || typeof saved !== 'object') return null;
     const race = CALENDAR.find(item => item.trackId === saved.trackId);
     if (!race || !DRIVERS.some(driver => driver.id === saved.driverId)) return null;
-    if (saved.mode !== 'race' && saved.mode !== 'quali') return null;
+    if (!['race', 'quali', 'practice'].includes(saved.mode)) return null;
     const driverIds = new Set(DRIVERS.map(driver => driver.id));
     const gridOrder = Array.isArray(saved.gridOrder) &&
       saved.gridOrder.length === DRIVERS.length &&
@@ -603,6 +603,11 @@ class Game {
       mode: saved.mode,
       trial: saved.trial === true,
       pilot: saved.pilot === true,
+      fullWeekend: saved.fullWeekend === true,
+      weekendSeed: Number.isInteger(saved.weekendSeed) ? saved.weekendSeed : undefined,
+      qualiStage: typeof saved.qualiStage === 'string' ? saved.qualiStage : undefined,
+      qualiFormat: typeof saved.qualiFormat === 'string' ? saved.qualiFormat : undefined,
+      formationLap: saved.formationLap === true,
       champRound: saved.champRound === true,
       gridOrder,
       seed: Number.isInteger(saved.seed) ? saved.seed : undefined,
@@ -619,6 +624,11 @@ class Game {
           mode: cfg.mode,
           trial: cfg.trial === true,
           pilot: cfg.pilot === true,
+          fullWeekend: cfg.fullWeekend === true,
+          weekendSeed: cfg.weekendSeed,
+          qualiStage: cfg.qualiStage,
+          qualiFormat: cfg.qualiFormat,
+          formationLap: cfg.formationLap === true,
           champRound: cfg.champRound === true,
           gridOrder: cfg.gridOrder || null,
           seed: cfg.seed,
@@ -640,11 +650,14 @@ class Game {
           const driverId = DRIVERS.find(d => d.id === 'hacker' && d.team === 'tacn')?.id
             || DRIVERS.find(d => d.team === 'tacn')?.id;
           if (!race || !driverId) break;
-          this.ui.sel.mode = 'trial';
+          this.ui.sel.mode = 'weekend';
           this.ui.sel.driverId = driverId;
           this.ui.sel.trackId = 'spa';
           this.camMode = 1;
-          this.startSession({ race, driverId, mode: 'quali', trial: true, pilot: true });
+          this.startSession({
+            race, driverId, mode: 'practice', pilot: true, fullWeekend: true,
+            qualiStage: 'FP1', qualiFormat: 'staged',
+          });
         }
         else if (payload === 'raceNow') {
           const last = this.ui.lastSelection;
@@ -687,6 +700,56 @@ class Game {
           race: cfg.race, driverId: cfg.driverId, mode: 'race', gridOrder: grid,
           champRound: cfg.champRound, seed: cfg.seed,
         });
+        break;
+      }
+      case 'startPilotQualifying': {
+        const cfg = this.raceConfig;
+        if (!cfg?.fullWeekend) break;
+        const weekendSeed = cfg.weekendSeed ?? cfg.seed;
+        this.startSession({
+          race: cfg.race,
+          driverId: cfg.driverId,
+          mode: 'quali',
+          pilot: true,
+          fullWeekend: true,
+          weekendSeed,
+          qualiStage: 'Q1',
+          qualiFormat: 'staged',
+          seed: deriveSeed(weekendSeed, 'qualifying'),
+        });
+        break;
+      }
+      case 'advancePilotQualifying': {
+        const cfg = this.raceConfig;
+        const session = this.session;
+        if (!cfg?.fullWeekend || session?.mode !== 'quali') break;
+        const advanced = session.advanceQualifyingStage();
+        if (!advanced) break;
+        if (advanced.stage === 'done') {
+          const gridOrder = advanced.classification.map(row => row.driverId);
+          const weekendSeed = cfg.weekendSeed ?? cfg.seed;
+          this.startSession({
+            race: cfg.race,
+            driverId: cfg.driverId,
+            mode: 'race',
+            pilot: true,
+            fullWeekend: true,
+            weekendSeed,
+            formationLap: true,
+            gridOrder,
+            seed: deriveSeed(weekendSeed, 'race'),
+          });
+          break;
+        }
+        this._qualiDoneShown = false;
+        this.state = 'quali';
+        this.ui.hideAll();
+        this.hud.show();
+        this.camMode = advanced.playerActive ? 1 : 2;
+        this.updateTouchControls();
+        this.snapCamera();
+        this.resetSimulationTiming();
+        if (documentIsActive()) this.audio.startEngine();
         break;
       }
       case 'restartRace':
@@ -769,6 +832,7 @@ class Game {
     const requestedSeed = cfg.seed ?? querySeed;
     const sessionSeed = requestedSeed == null ? createRandom().state : normalizeSeed(requestedSeed);
     cfg = { ...cfg, seed: sessionSeed };
+    if (cfg.fullWeekend) cfg.weekendSeed = normalizeSeed(cfg.weekendSeed ?? sessionSeed);
     if (cfg.pilot) this.camMode = 1;
     this.raceConfig = cfg;
     const simulationRandom = createRandom(deriveSeed(sessionSeed, 'simulation'));
@@ -815,6 +879,9 @@ class Game {
         assists: { tc: this.ui.settings.tc, abs: this.ui.settings.abs, autoGear: this.ui.settings.autoGear },
         mode: cfg.mode,
         trial: cfg.trial,
+        qualiStage: cfg.qualiStage,
+        qualiFormat: cfg.qualiFormat,
+        formationLap: cfg.formationLap,
         gridOrder: cfg.gridOrder || null,
         random: simulationRandom,
         seed: sessionSeed,
@@ -823,6 +890,7 @@ class Game {
       this.applyVenueCarLighting();
       this.session.setNametags(this.ui.settings.nametags);
       this.hud.bindSession(this.session, this.circuit);
+      if (cfg.formationLap) this.session.startFormation();
       if (cfg.trial) {
         this.timeTrial = new TimeTrialManager({
           scene: this.scene,
@@ -843,7 +911,7 @@ class Game {
       });
       this.ui.hideAll();
       this.hud.show();
-      this.state = cfg.mode === 'quali' ? 'quali' : 'race';
+      this.state = cfg.mode === 'race' ? 'race' : 'quali';
       this.updateTouchControls();
       this.snapCamera();
       // Circuit/PMREM/car construction is synchronous and can take hundreds of
@@ -1466,7 +1534,7 @@ class Game {
   }
 
   snapCamera() {
-    const e = this.session?.player;
+    const e = this.session?.focusEntry || this.session?.player;
     const p = e?.phys;
     if (!p) return;
     const pose = e.renderPose;
@@ -1509,7 +1577,7 @@ class Game {
   }
 
   updateCamera(dt) {
-    const e = this.session?.player;
+    const e = this.session?.focusEntry || this.session?.player;
     if (!e) return;
     const p = e.phys;
     const pose = e.renderPose;
@@ -1735,7 +1803,28 @@ class Game {
           this.hud.hide();
           this.audio.stopEngine();
           this.state = 'qualiResults';
-          this.ui.showQualiResults(s.qualiClassification(), this.raceConfig.driverId, this.raceConfig.race);
+          if (this.raceConfig.fullWeekend) {
+            const practice = s.mode === 'practice';
+            const stage = practice ? 'FP1' : (s.qualifying?.stage || 'Q1');
+            const rows = practice
+              ? s.practiceClassification()
+              : s.currentQualifyingClassification();
+            const nextLabel = practice ? 'START Q1 →'
+              : stage === 'Q1' ? 'START Q2 →'
+                : stage === 'Q2' ? 'START Q3 →' : 'START FORMATION LAP →';
+            this.ui.showQualiResults(rows, this.raceConfig.driverId, this.raceConfig.race, {
+              title: practice
+                ? 'PRACTICE <small>FP1 CLASSIFICATION</small>'
+                : `QUALIFYING <small>${stage} CLASSIFICATION</small>`,
+              leaderLabel: practice ? 'P1' : 'POLE',
+              primaryLabel: nextLabel,
+              primaryAction: practice ? 'startPilotQualifying' : 'advancePilotQualifying',
+              allowRestart: false,
+              footer: `${this.raceConfig.race.gp} · ${stage} · every time earned on track`,
+            });
+          } else {
+            this.ui.showQualiResults(s.qualiClassification(), this.raceConfig.driverId, this.raceConfig.race);
+          }
         }, 1400);
       }
       // race results

@@ -163,6 +163,44 @@ test('TACN / Greenwood pilot launches without an online dependency', async ({ pa
   expect(runtimeErrors, `Runtime emitted errors:\n${runtimeErrors.join('\n')}`).toEqual([]);
 });
 
+test('TACN full weekend is reachable from the keyboard-first main menu and opens physical FP1', async ({ page }, testInfo) => {
+  const runtimeErrors = monitorRuntime(page);
+  await openMenu(page);
+  const weekend = page.getByRole('button', { name: /TACN RACE WEEKEND · GREENWOOD FOREST/i });
+  await expect(weekend).toBeVisible();
+  await weekend.focus();
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(
+    () => window.__game?.session?.mode === 'practice' &&
+      window.__game?.raceConfig?.fullWeekend === true &&
+      window.__game?.state === 'quali',
+    null,
+    { timeout: 45_000, polling: 50 },
+  );
+  const weekendState = await page.evaluate(() => ({
+    driverId: window.__game.session.player.driver.id,
+    teamId: window.__game.session.player.team.id,
+    trackId: window.__game.circuit.id,
+    mode: window.__game.session.mode,
+    stage: window.__game.session.qualifying.stage,
+    cars: window.__game.session.entries.length,
+    trial: window.__game.session.trial,
+  }));
+  expect(weekendState).toEqual({
+    driverId: 'hacker',
+    teamId: 'tacn',
+    trackId: 'spa',
+    mode: 'practice',
+    stage: 'FP1',
+    cars: 22,
+    trial: false,
+  });
+  await expect(page.locator('#tw-title')).toContainText('PRACTICE · FP1');
+  await expect(page.locator('#t-lap')).toContainText('FP1');
+  await captureEvidence(page, testInfo, 'tacn-full-weekend-fp1');
+  expect(runtimeErrors, `Runtime emitted errors:\n${runtimeErrors.join('\n')}`).toEqual([]);
+});
+
 test('arrow controls, cockpit dash, telemetry, pause and recovery share one stable state', async ({ page }, testInfo) => {
   const runtimeErrors = monitorRuntime(page);
   await bootPilot(page);

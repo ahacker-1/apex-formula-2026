@@ -297,7 +297,10 @@ export class RaceSession {
     this.startProcedure = {
       formationEnabled: !!opts.formationLap,
       state: opts.formationLap ? 'formation' : 'grid',
+      lapStarted: false,
       lapComplete: false,
+      formationElapsed: 0,
+      formationDistance: 0,
       launchMap: opts.launchMap || 'normal',
     };
     this._posTimer = 0;
@@ -328,6 +331,7 @@ export class RaceSession {
 
     const c = this.circuit;
     this.entries = [];
+    this.focusEntry = null;
     this._renderDisposed = false;
     this._carLodMode = 'automatic';
     this._carLodNextAt = -Infinity;
@@ -427,6 +431,7 @@ export class RaceSession {
       });
     });
     this.player = this.entries.find(e => e.isPlayer) || null;
+    this.focusEntry = this.player;
     this.resetRenderState();
   }
 
@@ -523,8 +528,12 @@ export class RaceSession {
       });
     }
     this.player = this.entries[0];
+    this.focusEntry = this.player;
     this.phase = 'racing';
-    this.qualiState = this.mode === 'practice' ? 'running' : 'outlap';
+    // Practice uses the same physical out-lap / flying-lap lifecycle as
+    // qualifying. The mode only changes how the completed classification is
+    // presented by the game shell.
+    this.qualiState = 'outlap';
     this.qualiTime = null;
     this.aiQualiTimes = [];
     this.qualifying = {
@@ -565,6 +574,10 @@ export class RaceSession {
     this.phaseT = 0;
     this.startProcedure.formationEnabled = true;
     this.startProcedure.state = 'formation';
+    this.startProcedure.lapStarted = false;
+    this.startProcedure.lapComplete = false;
+    this.startProcedure.formationElapsed = 0;
+    this.startProcedure.formationDistance = 0;
     for (const e of this.entries) if (e.ai) { e.ai.vscFactor = 0.45; e.ai.noOvertake = true; }
     this.onMessage('FORMATION LAP', 'yellow', { eventKey: 'start:formation' });
     return true;
@@ -573,6 +586,8 @@ export class RaceSession {
   completeFormation() {
     if (this.phase !== 'formation') return false;
     const c = this.circuit;
+    this.startProcedure.formationElapsed = this.phaseT;
+    this.startProcedure.formationDistance = Math.max(0, this.player?.phys?.totalDist || 0);
     this.entries.forEach((e, i) => {
       const slot = c.gridSlots[e.gridPos - 1] || c.gridSlots[i];
       e.phys.placeAt(slot.pos, slot.heading, slot.idx);
@@ -649,6 +664,7 @@ export class RaceSession {
     // ---- step cars ----
     const liveDrive = this.phase === 'racing' || this.phase === 'finished' || this.phase === 'formation';
     const allPhys = this.entries.map(x => x.phys);
+    let formationCompleteAfterStep = false;
     for (const e of this.entries) {
       if (e.dnf) continue;
       if (e.pitState) { this._updatePit(e, dt); continue; }
@@ -683,7 +699,14 @@ export class RaceSession {
       if (e._carDamageCool > 0) e._carDamageCool -= dt;
       const ev = e.phys.step(dt, input);
       if (ev.crossedSF && this.phase === 'formation' && e.isPlayer && ev.crossedSF > 0) {
-        this.completeFormation();
+        // Every grid slot sits before the timing line. The first crossing only
+        // starts the formation lap; completing immediately there would turn a
+        // seven-kilometre Spa lap into a few seconds of driving.
+        if (this.startProcedure.lapStarted) formationCompleteAfterStep = true;
+        else {
+          this.startProcedure.lapStarted = true;
+          this.onMessage('FORMATION LAP UNDERWAY', 'yellow', { eventKey: 'start:formation-underway' });
+        }
       } else if (ev.crossedSF && (racing || this.phase === 'lights')) this._onCross(e, ev.crossedSF);
       if (ev.wrongWay && e.isPlayer) this._msgOnce('wrongway', 'WRONG WAY', 'red');
       if (ev.wallHit) this._handleWallImpact(e, ev.wallHit);
@@ -731,6 +754,11 @@ export class RaceSession {
       } else { e._stuckT = 0; e._stuckRef = null; }
       this._advanceWheelSpin(e, dt);
     }
+
+    // Re-grid only after every car has completed this formation tick. Doing it
+    // inside the player iteration could let cars later in the array drive away
+    // from their freshly assigned grid slots for one frame.
+    if (formationCompleteAfterStep) this.completeFormation();
 
     if (this.mode === 'race') {
       this._collisions();
@@ -1539,10 +1567,17 @@ export class RaceSession {
     this.aiQualiTimes = this.entries
       .filter(entry => !entry.isPlayer && entry.bestLap > 0)
       .map(entry => ({ driverId: entry.driver.id, time: entry.bestLap, actual: true, laps: entry.lapTimes.length }));
-    if (!e || this.qualiState === 'done' || this.mode === 'practice') return;
+    if (!e || this.qualiState === 'done') return;
     if (this.qualiState === 'awaiting-field') {
-      const active = this.entries.filter(entry => !entry.phys.disabled || entry.isPlayer);
+      const active = this.entries.filter(entry => !entry.phys.disabled);
       if (active.every(entry => entry.bestLap > 0)) this.qualiState = 'done';
+      return;
+    }
+    // Once the player has been eliminated, the remaining AI still completes
+    // Q2/Q3 through the normal CarPhysics + AIDriver path. focusEntry gives the
+    // browser a live car to follow without changing player identity.
+    if (e.phys.disabled) {
+      this.qualiState = 'awaiting-field';
       return;
     }
     // detect SF crossing handled in _onCross via lap counter
@@ -1558,7 +1593,9 @@ export class RaceSession {
         }
       } else {
         this.qualiTime = e.lastLap;
-        const fieldComplete = this.entries.every(entry => entry.isPlayer || entry.bestLap > 0);
+        const fieldComplete = this.entries
+          .filter(entry => !entry.phys.disabled)
+          .every(entry => entry.bestLap > 0);
         this.qualiState = fieldComplete ? 'done' : 'awaiting-field';
       }
     }
@@ -1579,18 +1616,50 @@ export class RaceSession {
 
   practiceClassification() { return this.qualiClassification(); }
 
+  currentQualifyingClassification() {
+    const eliminated = new Set(this.qualifying?.eliminated || []);
+    return this.qualiClassification().filter(row => !eliminated.has(row.driverId));
+  }
+
+  /**
+   * Assemble a real staged grid: Q3 order, then the Q2 eliminations, then the
+   * Q1 eliminations. Each row retains the lap actually earned in that stage.
+   */
+  finalQualifyingClassification() {
+    const stages = this.qualifying?.stageResults || {};
+    const q1 = stages.Q1 || [];
+    const q2 = stages.Q2 || [];
+    const q3 = stages.Q3 || [];
+    if (!q1.length || !q2.length || !q3.length) return this.qualiClassification();
+    const q2Ids = new Set(q2.map(row => row.driverId));
+    const q3Ids = new Set(q3.map(row => row.driverId));
+    return [
+      ...q3.map(row => ({ ...row, eliminatedStage: null })),
+      ...q2.filter(row => !q3Ids.has(row.driverId))
+        .map(row => ({ ...row, eliminatedStage: 'Q2' })),
+      ...q1.filter(row => !q2Ids.has(row.driverId))
+        .map(row => ({ ...row, eliminatedStage: 'Q1' })),
+    ];
+  }
+
   /** Advance an explicit Q1 → Q2 → Q3 format using only completed track laps. */
   advanceQualifyingStage() {
     if (this.mode !== 'quali' || this.trial || !this.qualifying) return null;
     const current = this.qualifying.stage;
     const next = current === 'Q1' ? 'Q2' : current === 'Q2' ? 'Q3' : 'done';
-    const rows = this.qualiClassification();
-    const stageRows = rows.filter(row => !this.qualifying.eliminated.includes(row.driverId));
+    const stageRows = this.currentQualifyingClassification();
     this.qualifying.stageResults[current] = stageRows.map(row => ({ ...row }));
     if (next === 'done') {
       this.qualifying.stage = 'done';
       this.qualiState = 'done';
-      return stageRows;
+      this.focusEntry = this.player;
+      return {
+        stage: 'done',
+        survivors: stageRows.map(row => row.driverId),
+        eliminated: [...this.qualifying.eliminated],
+        classification: this.finalQualifyingClassification(),
+        playerActive: stageRows.some(row => row.driverId === this.playerDriverId),
+      };
     }
     const keep = next === 'Q2' ? 15 : 10;
     const survivors = new Set(stageRows.slice(0, keep).map(row => row.driverId));
@@ -1603,6 +1672,9 @@ export class RaceSession {
       entry.phys.placeAt(sample.p.clone(), Math.atan2(sample.t.x, sample.t.z), idx);
       entry.phys.v = 40;
       entry.phys.gear = 5;
+      entry.phys.setTyre('S');
+      if (CAR.setTyreCompound) CAR.setTyreCompound(entry.carHandle, 'S');
+      entry.strategyCompound = 'S';
       entry.phys.disabled = false;
       entry.mesh.visible = true;
       entry.lap = -1;
@@ -1618,12 +1690,19 @@ export class RaceSession {
       entry.mesh.visible = false;
     });
     this.qualifying.stage = next;
-    this.qualiState = survivors.has(this.playerDriverId) ? 'outlap' : 'done';
+    const playerActive = survivors.has(this.playerDriverId);
+    this.focusEntry = playerActive ? this.player : (active[0] || this.player);
+    this.qualiState = playerActive ? 'outlap' : 'awaiting-field';
     this.qualiTime = null;
     this.aiQualiTimes = [];
     this.resetRenderState();
     this.onMessage(`${next} STARTED`, 'green', { eventKey: `quali:${next}` });
-    return { stage: next, survivors: [...survivors], eliminated: [...this.qualifying.eliminated] };
+    return {
+      stage: next,
+      survivors: [...survivors],
+      eliminated: [...this.qualifying.eliminated],
+      playerActive,
+    };
   }
 
   _classify() {

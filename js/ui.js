@@ -252,7 +252,7 @@ export class UI {
       ${seasonStrip(champ)}
       <div class="menu-body"><div class="main-nav">
         ${raceNow}
-        <button type="button" class="nav-item pilot-run" data-a="pilot"><span><h3>PILOT RUN · GREENWOOD FOREST</h3><p>AVI · The AI Consulting Network Racing Team · seated cockpit · time trial</p></span></button>
+        <button type="button" class="nav-item pilot-run" data-a="pilot"><span><h3>TACN RACE WEEKEND · GREENWOOD FOREST</h3><p>AVI · FP1 · physical Q1/Q2/Q3 · formation lap · race</p></span></button>
         <button type="button" class="nav-item" data-a="quick"><span><h3>QUICK RACE</h3><p>Jump straight into a race weekend — any team, any circuit</p></span></button>
         ${champTile}
         <button type="button" class="nav-item" data-a="trial"><span><h3>TIME TRIAL</h3><p>Empty track, low fuel, soft tyres — chase the perfect lap</p></span></button>
@@ -590,14 +590,21 @@ export class UI {
   }
 
   // ============ QUALI RESULTS ============
-  showQualiResults(rows, playerId, race) {
+  showQualiResults(rows, playerId, race, options = {}) {
     this.hideAll();
     const el = this.screens.results;
     el.className = 'screen active menu-screen';
     const pole = rows[0];
     const spread = Math.max(0.001, rows[rows.length - 1].time - pole.time);
+    const title = options.title || 'QUALIFYING <small>CLASSIFICATION</small>';
+    const leaderLabel = options.leaderLabel || 'POLE';
+    const primaryLabel = options.primaryLabel || 'START RACE →';
+    const primaryAction = options.primaryAction || 'startRaceAfterQuali';
+    const restartButton = options.allowRestart === false ? '' :
+      '<button class="f1-btn ghost" id="btn-requali"><span>RE-RUN QUALIFYING</span></button>';
+    const footer = options.footer || `${race.gp} — grid set by qualifying`;
     el.innerHTML = `
-      ${header('QUALIFYING <small>CLASSIFICATION</small>')}
+      ${header(title)}
       <div class="menu-body">
         <table class="results-table">
           <tr><th>POS</th><th>DRIVER</th><th>TEAM</th><th>TIME</th><th>GAP</th></tr>
@@ -610,19 +617,19 @@ export class UI {
               <td><span class="teambar" style="background:${hex(t.color)}"></span>${d.firstName} ${d.lastName}</td>
               <td style="color:var(--text-dim)">${t.name}</td>
               <td class="ftime">${fmtTime(r.time)}</td>
-              <td class="ftime gap-cell">${i === 0 ? '<b class="pole-tag">POLE</b>' : '+' + gap.toFixed(3)}
+              <td class="ftime gap-cell">${i === 0 ? `<b class="pole-tag">${leaderLabel}</b>` : '+' + gap.toFixed(3)}
                 ${i === 0 ? '' : `<span class="gap-bar"><i style="width:${Math.min(100, gap / spread * 100).toFixed(1)}%;background:${hex(t.color)}"></i></span>`}</td></tr>`;
           }).join('')}
         </table>
         <div class="btn-row">
-          <button class="f1-btn" id="btn-race"><span>START RACE →</span></button>
-          <button class="f1-btn ghost" id="btn-requali"><span>RE-RUN QUALIFYING</span></button>
+          <button class="f1-btn" id="btn-race"><span>${primaryLabel}</span></button>
+          ${restartButton}
           <button class="f1-btn ghost" id="btn-menu"><span>MAIN MENU</span></button>
         </div>
       </div>
-      <div class="menu-footer"><span>${race.gp} — grid set by qualifying</span></div>`;
-    el.querySelector('#btn-race').addEventListener('click', () => this.cb('startRaceAfterQuali'));
-    el.querySelector('#btn-requali').addEventListener('click', () => this.cb('restartRace'));
+      <div class="menu-footer"><span>${footer}</span></div>`;
+    el.querySelector('#btn-race').addEventListener('click', () => this.cb(primaryAction));
+    el.querySelector('#btn-requali')?.addEventListener('click', () => this.cb('restartRace'));
     el.querySelector('#btn-menu').addEventListener('click', () => this.cb('back', 'main'));
     this._enter(el);
   }
