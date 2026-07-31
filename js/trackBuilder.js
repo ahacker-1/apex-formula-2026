@@ -3,6 +3,7 @@
 import * as THREE from 'three';
 import * as TEX from './textures.js';
 import { createSurfaceMaps } from './photoTex.js';
+import { createTrackState } from './trackState.js';
 
 const UP = new THREE.Vector3(0, 1, 0);
 
@@ -2227,6 +2228,7 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
 
   // ---- 1b. rubbered-in racing groove along the racing line -----------------
   const GROOVE_W = 3.2;
+  let racingGroove = null;
   {
     const hw = GROOVE_W / 2;
     const vtx = new Float32Array((N + 1) * 2 * 3);
@@ -2266,6 +2268,7 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
     }));
     groove.name = 'racing-groove';
     group.add(groove);
+    racingGroove = groove;
   }
 
   // edge lines (white)
@@ -6126,6 +6129,31 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
 
   const pitExitIdx = Math.round(190 / ds) % N;
 
+  // The environment is a fixed-array simulation owned by the circuit. It does
+  // not start a timer of its own: race/main advances it with simulation dt, so
+  // pause, replay and deterministic tests all retain authority over time.
+  const trackState = createTrackState({
+    trackId,
+    name: def.name,
+    sampleCount: N,
+    length,
+    ds,
+    halfWidth,
+    heights,
+    samples,
+    line,
+    seed: scenerySeed,
+  });
+  trackState.setVisualHook((state) => {
+    // Wet asphalt loses diffuse roughness and gains environment response. No
+    // material is replaced, so adaptive tier changes and GPU resource ownership
+    // remain exactly as they were before the weather subsystem was attached.
+    road.material.roughness = state.roadRoughness;
+    road.material.envMapIntensity = 1 + state.reflectionStrength * 1.35;
+    road.material.userData.wetReflectionStrength = state.reflectionStrength;
+    if (racingGroove) racingGroove.material.opacity = state.racingLineOpacity;
+  });
+
   const circuit = {
     id: trackId, def, theme, isStreet, group,
     samples, N, ds, length, halfWidth, wallOff, line, idealLap,
@@ -6179,6 +6207,7 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
       return (pos.x - s.p.x) * s.n.x + (pos.z - s.p.z) * s.n.z;
     },
     dispose() {
+      trackState.dispose();
       scene.remove(group);
       const geometries = new Set();
       const materials = new Set();
@@ -6214,5 +6243,30 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
       for (const geometry of geometries) geometry.dispose();
     },
   };
+  // These integration hooks are intentionally non-enumerable. Existing replay
+  // and geometry digests enumerate the historic circuit schema, so adding the
+  // environment must not silently alter those serialized contracts.
+  Object.defineProperties(circuit, {
+    publicName: { value: trackState.publicName, enumerable: false },
+    trackState: { value: trackState, enumerable: false },
+    weather: { value: trackState.weather, enumerable: false },
+    surfaceAt: {
+      enumerable: false,
+      value: (sampleIndex, lateral = 0, out = {}) => trackState.sampleSurface(sampleIndex, lateral, out),
+    },
+    surfaceAtDistance: {
+      enumerable: false,
+      value: (distanceM, lateral = 0, out = {}) => trackState.sampleDistance(distanceM, lateral, out),
+    },
+    gripAt: {
+      enumerable: false,
+      value: (sampleIndex, lateral = 0, options = {}, out = {}) =>
+        trackState.gripAt(sampleIndex, lateral, options, out),
+    },
+    advanceEnvironment: {
+      enumerable: false,
+      value: (dt, traffic = []) => trackState.advance(dt, traffic),
+    },
+  });
   return circuit;
 }

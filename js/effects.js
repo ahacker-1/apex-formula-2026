@@ -1,6 +1,7 @@
 // Runtime visual effects: titanium skid sparks (2026 skid blocks), tyre smoke,
-// off-track dust, gravel/rubber debris, and player skid marks. Every effect is
-// procedural and pooled; the hot update path does not grow scene/object counts.
+// off-track dust, gravel/rubber debris, rain and tyre spray, and player skid
+// marks. Every effect is procedural and pooled; the hot update path does not
+// grow scene/object counts.
 import * as THREE from 'three';
 
 export const EFFECT_POOL_LIMITS = Object.freeze({
@@ -8,6 +9,8 @@ export const EFFECT_POOL_LIMITS = Object.freeze({
   smoke: 36,
   dust: 48,
   debris: 180,
+  rain: 320,
+  spray: 80,
   skidSegments: 700,
 });
 
@@ -23,10 +26,18 @@ export const EFFECT_QUALITY_DUST_LIMITS = Object.freeze({
   high: EFFECT_POOL_LIMITS.dust,
 });
 
+export const EFFECT_QUALITY_WEATHER_LIMITS = Object.freeze({
+  low: Object.freeze({ rain: 72, spray: 20 }),
+  medium: Object.freeze({ rain: 168, spray: 44 }),
+  high: Object.freeze({ rain: EFFECT_POOL_LIMITS.rain, spray: EFFECT_POOL_LIMITS.spray }),
+});
+
 const SPARK_POOL = EFFECT_POOL_LIMITS.sparks;
 const SMOKE_POOL = EFFECT_POOL_LIMITS.smoke;
 const DUST_POOL = EFFECT_POOL_LIMITS.dust;
 const DEBRIS_POOL = EFFECT_POOL_LIMITS.debris;
+const RAIN_POOL = EFFECT_POOL_LIMITS.rain;
+const SPRAY_POOL = EFFECT_POOL_LIMITS.spray;
 const SKID_SEGS = EFFECT_POOL_LIMITS.skidSegments;
 
 function clamp01(n) { return Math.max(0, Math.min(1, n)); }
@@ -67,10 +78,14 @@ export class Effects {
     // Lifetime diagnostics are monotonic, unlike ring-buffer cursors. They are
     // intentionally tiny and make density changes observable without exposing
     // or reallocating effect storage.
-    this.emissionCounts = { sparks: 0, smoke: 0, dust: 0, debris: 0, gravel: 0, rubber: 0 };
+    this.emissionCounts = {
+      sparks: 0, smoke: 0, dust: 0, debris: 0, gravel: 0, rubber: 0, rain: 0, spray: 0,
+    };
     this._f = new THREE.Vector3();
     this._l = new THREE.Vector3();
     this._entryState = new WeakMap();
+    this.environment = options.environment || null;
+    this._rainEmission = 0;
     this.setQualityTier(options.qualityTier);
 
     // ---- sparks (Points, additive) ----
@@ -130,6 +145,44 @@ export class Effects {
       });
     }
     this._dustCursor = 0;
+
+    // ---- rain (single point draw; drops are camera-local, not world weather) ----
+    const rg = new THREE.BufferGeometry();
+    const rpos = new Float32Array(RAIN_POOL * 3);
+    rg.setAttribute('position', new THREE.BufferAttribute(rpos, 3));
+    this.rainData = [];
+    for (let i = 0; i < RAIN_POOL; i++) {
+      rpos[i * 3 + 1] = -50;
+      this.rainData.push({ vel: new THREE.Vector3(), life: 0 });
+    }
+    this.rainTex = radialSprite('rgba(225,238,255,0.90)', 'rgba(180,210,240,0)', 16);
+    this.rainMat = new THREE.PointsMaterial({
+      size: 0.12, map: this.rainTex, color: 0xcfe6ff, transparent: true,
+      opacity: 0.72, depthWrite: false, sizeAttenuation: true,
+    });
+    this.rain = new THREE.Points(rg, this.rainMat);
+    this.rain.frustumCulled = false;
+    this.rain.userData.gtaoExcluded = true;
+    scene.add(this.rain);
+    this._rainCursor = 0;
+
+    // ---- tyre spray (soft pooled cards behind wet tyres) -------------------
+    this.sprayTex = radialSprite('rgba(218,229,235,0.46)', 'rgba(160,180,190,0)');
+    this.spray = [];
+    for (let i = 0; i < SPRAY_POOL; i++) {
+      const material = new THREE.SpriteMaterial({
+        map: this.sprayTex, color: 0xc7d4d9, transparent: true,
+        opacity: 0, depthWrite: false,
+      });
+      const sprite = new THREE.Sprite(material);
+      sprite.visible = false;
+      sprite.userData.gtaoExcluded = true;
+      scene.add(sprite);
+      this.spray.push({
+        sprite, vel: new THREE.Vector3(), life: 0, maxLife: 1, startScale: 1, strength: 1,
+      });
+    }
+    this._sprayCursor = 0;
 
     // ---- gravel / rubber flecks (one Points draw, vertex-coloured) ----
     const dg = new THREE.BufferGeometry();
@@ -192,6 +245,8 @@ export class Effects {
     this.qualityTier = next;
     this.motionScale = this.preferenceScale * EFFECT_QUALITY_SCALES[next];
     this.dustLimit = EFFECT_QUALITY_DUST_LIMITS[next];
+    this.rainLimit = EFFECT_QUALITY_WEATHER_LIMITS[next].rain;
+    this.sprayLimit = EFFECT_QUALITY_WEATHER_LIMITS[next].spray;
     if (this.dust) {
       this._dustCursor %= this.dustLimit;
       for (let i = this.dustLimit; i < this.dust.length; i++) {
@@ -199,7 +254,28 @@ export class Effects {
         this.dust[i].sprite.visible = false;
       }
     }
+    if (this.rainData) {
+      this._rainCursor %= this.rainLimit;
+      const positions = this.rain.geometry.attributes.position.array;
+      for (let i = this.rainLimit; i < this.rainData.length; i++) {
+        this.rainData[i].life = 0;
+        positions[i * 3 + 1] = -50;
+      }
+      this.rain.geometry.attributes.position.needsUpdate = true;
+    }
+    if (this.spray) {
+      this._sprayCursor %= this.sprayLimit;
+      for (let i = this.sprayLimit; i < this.spray.length; i++) {
+        this.spray[i].life = 0;
+        this.spray[i].sprite.visible = false;
+      }
+    }
     return this.motionScale;
+  }
+
+  bindEnvironment(environment) {
+    this.environment = environment || null;
+    return this;
   }
 
   _emitSpark(x, y, z, heading, v, floor = 0) {
@@ -255,6 +331,42 @@ export class Effects {
     this.emissionCounts.dust++;
   }
 
+  _emitRain(x, y, z, windSpeed = 0, windDirection = 0, strength = 1) {
+    const i = this._rainCursor;
+    this._rainCursor = (i + 1) % this.rainLimit;
+    const p = this.rain.geometry.attributes.position;
+    p.array[i * 3] = x + (this.random() - 0.5) * 28;
+    p.array[i * 3 + 1] = y + 6 + this.random() * 12;
+    p.array[i * 3 + 2] = z + (this.random() - 0.5) * 34;
+    const d = this.rainData[i];
+    d.life = 0.42 + this.random() * 0.48;
+    d.vel.set(
+      Math.sin(windDirection) * windSpeed * 0.45,
+      -(21 + clamp01(strength) * 9),
+      Math.cos(windDirection) * windSpeed * 0.45
+    );
+    p.needsUpdate = true;
+    this.emissionCounts.rain++;
+  }
+
+  _emitSpray(x, y, z, heading, speed, strength = 1) {
+    const s = this.spray[this._sprayCursor];
+    this._sprayCursor = (this._sprayCursor + 1) % this.sprayLimit;
+    s.life = s.maxLife = 0.42 + this.random() * 0.38;
+    s.strength = clamp01(strength);
+    s.startScale = 0.45 + this.random() * 0.35;
+    s.sprite.visible = true;
+    s.sprite.position.set(x, y, z);
+    s.sprite.scale.set(s.startScale * 0.65, s.startScale, 1);
+    s.sprite.material.opacity = 0.16 + s.strength * 0.24;
+    s.vel.set(
+      -Math.sin(heading) * Math.abs(speed) * 0.085 + (this.random() - 0.5) * 0.65,
+      0.8 + this.random() * 0.55,
+      -Math.cos(heading) * Math.abs(speed) * 0.085 + (this.random() - 0.5) * 0.65
+    );
+    this.emissionCounts.spray++;
+  }
+
   _emitDebris(x, y, z, heading, speed, floor = 0, rubber = false) {
     const i = this._debrisCursor;
     this._debrisCursor = (i + 1) % DEBRIS_POOL;
@@ -294,7 +406,7 @@ export class Effects {
   _stateFor(entry) {
     let state = this._entryState.get(entry);
     if (!state) {
-      state = { sparks: 0, smoke: 0, dust: 0, debris: 0, rubber: 0, wallCooldown: 0 };
+      state = { sparks: 0, smoke: 0, dust: 0, debris: 0, rubber: 0, spray: 0, wallCooldown: 0 };
       this._entryState.set(entry, state);
     }
     return state;
@@ -346,7 +458,7 @@ export class Effects {
 
   skidBreak() { this._hasSkidPrev = false; }
 
-  update(dt, entries) {
+  update(dt, entries, environment = this.environment) {
     const frameDt = Number.isFinite(dt) ? Math.max(0, Math.min(0.1, dt)) : 0;
     // advance sparks
     const pa = this.sparks.geometry.attributes.position;
@@ -417,6 +529,51 @@ export class Effects {
     }
     dp.needsUpdate = true;
 
+    // Rain is camera-local around the player/lead car, which gives dense streaks
+    // without populating the full circuit. The pool and per-frame burst are hard
+    // bounded at every adaptive quality tier.
+    const weather = environment?.weather?.current || environment?.current || environment?.weather || null;
+    const rainStrength = clamp01((weather?.rainfall || 0) / 18);
+    const focal = entries.find(entry => entry.isPlayer && !entry.dnf)?.phys ||
+      entries.find(entry => !entry.dnf)?.phys;
+    if (rainStrength > 0.004 && focal) {
+      this._rainEmission = Math.min(24.99,
+        this._rainEmission + frameDt * (32 + rainStrength * 210) * this.motionScale);
+      const count = Math.min(24, Math.floor(this._rainEmission));
+      this._rainEmission -= count;
+      for (let i = 0; i < count; i++) {
+        this._emitRain(focal.pos.x, 0, focal.pos.z, weather?.windSpeed || 0,
+          weather?.windDirection || 0, rainStrength);
+      }
+    } else this._rainEmission = 0;
+
+    const rainPositions = this.rain.geometry.attributes.position;
+    for (let i = 0; i < RAIN_POOL; i++) {
+      const d = this.rainData[i];
+      if (d.life <= 0) continue;
+      d.life -= frameDt;
+      rainPositions.array[i * 3] += d.vel.x * frameDt;
+      rainPositions.array[i * 3 + 1] += d.vel.y * frameDt;
+      rainPositions.array[i * 3 + 2] += d.vel.z * frameDt;
+      if (d.life <= 0 || rainPositions.array[i * 3 + 1] < -1) {
+        d.life = 0;
+        rainPositions.array[i * 3 + 1] = -50;
+      }
+    }
+    rainPositions.needsUpdate = true;
+
+    for (const s of this.spray) {
+      if (s.life <= 0) continue;
+      s.life -= frameDt;
+      const t = 1 - s.life / s.maxLife;
+      s.sprite.scale.set(s.startScale * (0.65 + t * 1.5), s.startScale + t * (2.4 + s.strength), 1);
+      s.sprite.position.x += s.vel.x * frameDt;
+      s.sprite.position.y += s.vel.y * frameDt;
+      s.sprite.position.z += s.vel.z * frameDt;
+      s.sprite.material.opacity = (0.15 + s.strength * 0.24) * (1 - t) * (1 - t);
+      if (s.life <= 0) s.sprite.visible = false;
+    }
+
     // emissions per car
     for (const e of entries) {
       const p = e.phys;
@@ -435,6 +592,18 @@ export class Effects {
       const left = this._l.set(f.z, 0, -f.x);
       const rx = p.pos.x - f.x * 1.6, rz = p.pos.z - f.z * 1.6;
       const speed = Math.abs(p.v);
+      let surfaceWetness = clamp01(p.surfaceWetness || 0);
+      if (environment?.sampleSurface && Number.isFinite(p.sampleIdx)) {
+        surfaceWetness = clamp01(environment.sampleSurface(p.sampleIdx, p.lat || 0, {}).wetness);
+      }
+      const sprayRate = speed > 9 && surfaceWetness > 0.04
+        ? Math.min(28, (2 + speed * 0.22) * surfaceWetness) : 0;
+      const sprayCount = this._emissions(state, 'spray', frameDt, sprayRate, 3);
+      for (let n = 0; n < sprayCount; n++) {
+        const side = this.random() < 0.5 ? 1 : -1;
+        this._emitSpray(rx + left.x * 0.82 * side, ry + 0.16,
+          rz + left.z * 0.82 * side, p.heading, speed, surfaceWetness);
+      }
       // titanium skid sparks: kerb strikes + heavy braking at speed + bottoming on straights
       const sparkRate = (p.onKerb && speed > 32 ? 10 : 0) +
         (p.brake > 0.75 && speed > 52 ? 4 : 0) +
@@ -508,9 +677,10 @@ export class Effects {
   }
 
   dispose() {
-    this.scene.remove(this.sparks, this.debris, this.skid);
+    this.scene.remove(this.sparks, this.debris, this.rain, this.skid);
     for (const s of this.smoke) this.scene.remove(s.sprite);
     for (const d of this.dust) this.scene.remove(d.sprite);
+    for (const s of this.spray) this.scene.remove(s.sprite);
     this.sparks.geometry.dispose();
     this.sparkMat.map.dispose(); this.sparkMat.dispose();
     this.debris.geometry.dispose(); this.debrisTex.dispose(); this.debrisMat.dispose();
@@ -519,5 +689,8 @@ export class Effects {
     for (const s of this.smoke) s.sprite.material.dispose();
     this.dustTex.dispose();
     for (const d of this.dust) d.sprite.material.dispose();
+    this.rain.geometry.dispose(); this.rainTex.dispose(); this.rainMat.dispose();
+    this.sprayTex.dispose();
+    for (const s of this.spray) s.sprite.material.dispose();
   }
 }
