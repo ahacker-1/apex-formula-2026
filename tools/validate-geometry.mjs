@@ -366,8 +366,10 @@ function rasterise(fn, W, H) {
 const THREE = await import('three');
 // TRACKBUILDER=/abs/path/to/a/copy.js points this at an alternate build, so a
 // deliberately broken copy can be used to confirm these assertions have teeth.
-const { buildCircuit } = await import(process.env.TRACKBUILDER || '../js/trackBuilder.js');
+const trackBuilderModule = await import(process.env.TRACKBUILDER || '../js/trackBuilder.js');
+const { buildCircuit, VENUE } = trackBuilderModule;
 const { TRACKS } = await import('../js/tracks.js');
+const TEX = await import('../js/textures.js');
 
 let failures = 0, checks = 0;
 const log = (...a) => console.log(...a);
@@ -381,8 +383,30 @@ const DOUBLE = THREE.DoubleSide;
 
 // Everything the circuit adds to the scene has to fit this, worst case, on every
 // one of the 24 layouts. Tracked across the whole run and reported at the end.
-const DRAW_BUDGET = 450;
+// Work-order ceiling: preserve headroom below 400 calls at the worst venue.
+const DRAW_BUDGET = 400;
 const worstDraws = { n: 0, id: '' };
+const worstTriangles = { n: 0, id: '' };
+
+function effectivelyVisible(object) {
+  for (let node = object; node; node = node.parent) if (node.visible === false) return false;
+  return true;
+}
+
+function sceneRenderCost(group) {
+  let draws = 0, instances = 0, triangles = 0;
+  group.traverse((object) => {
+    if (!effectivelyVisible(object)) return;
+    if (object.isMesh || object.isSprite || object.isLine || object.isPoints) draws++;
+    if (object.isInstancedMesh) instances += object.count;
+    if (object.isMesh && object.geometry?.attributes?.position) {
+      const primitive = object.geometry.index
+        ? object.geometry.index.count / 3 : object.geometry.attributes.position.count / 3;
+      triangles += primitive * (object.isInstancedMesh ? object.count : 1);
+    } else if (object.isSprite) triangles += 2;
+  });
+  return { draws, instances, triangles };
+}
 
 // Face normals of every triangle of an indexed geometry, as {n, area}.
 function faceNormals(geo) {
@@ -559,7 +583,7 @@ function makeSrc(c) {
 // the point falls in and interpolate it. This is the only honest way to ask "does
 // the verge meet the road" -- comparing vertices would let a coarse mesh pass on
 // the strength of vertices that happen to sit in the right place.
-function groundSampler(c, mesh) {
+function groundSampler(c, mesh, extraPad = 0) {
   const pos = mesh.geometry.attributes.position, index = mesh.geometry.index;
   const ox = mesh.position.x, oy = mesh.position.y, oz = mesh.position.z;
   // Only the triangles that can possibly be near the circuit get indexed; the
@@ -570,7 +594,7 @@ function groundSampler(c, mesh) {
     if (x < bx0) bx0 = x; if (x > bx1) bx1 = x;
     if (z < bz0) bz0 = z; if (z > bz1) bz1 = z;
   }
-  const pad = 4 * c.wallOff + 80;
+  const pad = Math.max(4 * c.wallOff + 80, extraPad);
   bx0 -= pad; bx1 += pad; bz0 -= pad; bz1 += pad;
   const CELL = 48;
   const key = (a, b) => (a + 16384) * 65536 + (b + 16384);
@@ -661,6 +685,29 @@ const EXPECT_AMP = {
 };
 const MAX_GRADE_TOL = 0.075;      // the builder aims at 0.068; this is the ceiling
 const worstRelief = { grade: 0, id: '', verge: 0, vergeId: '', base: 0, baseId: '' };
+const landformRows = [];
+const backdropRows = [];
+let furthestBackdropVertex = 0;
+let steepestBackdropAngle = { angle: 0, track: '', kind: '' };
+const PINNED_BACKDROP_KINDS = Object.freeze({
+  melbourne: ['city-sprawl', 'city-cluster'], shanghai: ['industry'],
+  miami: ['city-sprawl'], montreal: ['ridge-forest', 'city-cluster'],
+  silverstone: ['none'], monza: ['none'], austin: ['none'], yasmarina: ['none'],
+});
+const EXPECTED_LIGHTING_RIGS = Object.freeze({
+  singapore: { label: 'low-truss-clinical', poleHeight: 10, spacingM: 54, kelvin: 5700,
+    spillCeilingM: 8, shadowFans: 1, darknessBeyondM: 420 },
+  lusail: { label: 'high-pole-soft', poleHeight: 19, spacingM: 46, kelvin: 4300,
+    spillCeilingM: 16, shadowFans: 5, darknessBeyondM: 100 },
+  lasvegas: { label: 'facade-wash-dry', poleHeight: 13.2, spacingM: 100, kelvin: 5000,
+    spillCeilingM: 22, shadowFans: 2, darknessBeyondM: 700 },
+  jeddah: { label: 'coastal-cool-amber-inland', poleHeight: 15.5, spacingM: 62, kelvin: 5200,
+    spillCeilingM: 14, shadowFans: 2, darknessBeyondM: 500 },
+  bahrain: { label: 'cool-surface-warm-horizon', poleHeight: 14.5, spacingM: 72, kelvin: 5000,
+    spillCeilingM: 13, shadowFans: 2, darknessBeyondM: 700 },
+  yasmarina: { label: 'cool-surface-warm-horizon', poleHeight: 14.5, spacingM: 72, kelvin: 5000,
+    spillCeilingM: 13, shadowFans: 2, darknessBeyondM: 700 },
+});
 
 // ------------------------------------------------------------------ tests ---
 function run(trackId) {
@@ -868,6 +915,11 @@ function run(trackId) {
   {
     const ALLOWED_UNLIT = new Set(['horizon-ridge', 'horizon-haze', 'racing-groove',
       'rubber-patches', 'track-paint', 'tv-screen', 'floodlight-pools',
+      // Incident-light decals composited over standard-lit barrier/board faces.
+      'floodlight-barrier-spill',
+      // Typed far backdrops are pre-tinted matte paintings with fog disabled;
+      // lighting or scene fog would erase them before the 2600m sky dome.
+      'venue-backdrop',
       // baked ground shading: multiply-style black decals. Lighting them would
       // be circular (a shadow that responds to the light it represents).
       'ground-shade-structures', 'ground-shade-canopy']);
@@ -895,14 +947,11 @@ function run(trackId) {
 
   // ---- 0. draw-call budget -------------------------------------------------
   {
-    let draws = 0, instances = 0;
-    group.traverse(o => {
-      if (o.isMesh || o.isSprite || o.isLine || o.isPoints) draws++;
-      if (o.isInstancedMesh) instances += o.count;
-    });
+    const { draws, instances, triangles } = sceneRenderCost(group);
     if (draws > worstDraws.n) { worstDraws.n = draws; worstDraws.id = trackId; }
+    if (triangles > worstTriangles.n) { worstTriangles.n = triangles; worstTriangles.id = trackId; }
     assert(draws <= DRAW_BUDGET, `circuit stays inside the ${DRAW_BUDGET} draw-call budget`,
-      `[draws=${draws}, instances batched=${instances}]`);
+      `[draws=${draws}, triangles=${Math.round(triangles)}, instances batched=${instances}]`);
   }
 
   // ---- 1. road / edge / kerb triangles must be visible from above ----------
@@ -934,7 +983,9 @@ function run(trackId) {
     visibleFromAbove(e, `edge line #${i}: visible from above`);
   });
 
-  const kerb = meshes.find(m => m.material && m.material.vertexColors === true);
+  // Ground now also carries vertex colours for macro variation, so identify the
+  // authored kerb explicitly rather than relying on vertexColors being unique.
+  const kerb = named('kerbs');
   assert(!!kerb, 'kerb mesh found');
   if (kerb) {
     const r = visibleFromAbove(kerb, 'kerbs: no downward-facing triangles');
@@ -1611,6 +1662,17 @@ function run(trackId) {
         assert(!hoard.isInstancedMesh && hoard.geometry.index, 'hoardings are one merged ribbon');
         assert(!!hoard.material.map && hoard.material.map.isCanvasTexture,
           'hoardings carry the repeating panel texture');
+        const boardEmission = Math.max(hoard.material.emissive.r,
+          hoard.material.emissive.g, hoard.material.emissive.b);
+        if (c.theme.night) {
+          assert(boardEmission <= 0.11,
+            'night hoardings away from a light pool are materially dimmer than daylight print',
+            `[emissive floor=${boardEmission.toFixed(3)} vs daylight 0.88]`);
+        } else if (!c.theme.floodlit) {
+          assert(boardEmission >= 0.85,
+            'daylight hoardings retain their readable print floor',
+            `[emissive floor=${boardEmission.toFixed(3)}]`);
+        }
         // Both sides of the lap are candidates, so full coverage is 2 x length.
         const covered = (hoard.geometry.index.count / 6) * c.ds;
         const frac = covered / (2 * c.length);
@@ -1669,6 +1731,14 @@ function run(trackId) {
       const posts = named('brake-posts');
       assert(!!posts && posts.count === b100.count * 2, 'every board stands on a post',
         `[posts=${posts ? posts.count : 0}]`);
+      if (posts) {
+        const sameSphere = (a, b) => !!a && !!b && a.center.distanceTo(b.center) < 1e-6
+          && Math.abs(a.radius - b.radius) < 1e-6;
+        assert(sameSphere(posts.boundingSphere, b100.boundingSphere)
+          && sameSphere(posts.boundingSphere, b50.boundingSphere)
+          && [posts, b100, b50].every(o => o.userData.cullGroup === 'brake-marker-assembly'),
+        'brake boards and posts share one culling sphere, so no bare post survives alone');
+      }
       const BOARD_OFF = wallOff + 1.1;   // the offset trackBuilder places them at
       let worstLat = Infinity, worstGap = 0, worstFacing = 1, worstDrop = Infinity, worstSrc = 0;
       let notPeak = 0, slowest = Infinity;
@@ -1985,7 +2055,8 @@ function run(trackId) {
     assert(treeMeshes.length > 0, 'billboard vegetation present', `[species/variant meshes=${treeMeshes.length}]`);
     const speciesSeen = new Set(), variantsPerSpecies = new Map();
     let treeTotal = 0, nearest3 = Infinity, furthest = 0, minH = Infinity, maxH = 0;
-    let badMat = 0, notX = 0, intruders = 0, worstIntruder = Infinity, noTint = 0, badNormals = 0;
+    let badMat = 0, badCardGeometry = 0, overheadPlate = 0, badFarFallback = 0;
+    let intruders = 0, worstIntruder = Infinity, noTint = 0, badNormals = 0;
     let overTall = 0, worstRatio = 0;
     const perSpecies = new Map();
     for (const tm of treeMeshes) {
@@ -2001,7 +2072,13 @@ function run(trackId) {
       // canvas billboard, and it must be Standard so scene.environment reaches it.
       if (!(mat.side === THREE.FrontSide && mat.alphaTest >= 0.3 && mat.alphaTest <= 0.5
         && mat.map && mat.map.isCanvasTexture && mat.isMeshStandardMaterial)) badMat++;
-      // Two intersecting quads, EACH wound both ways = 8 triangles, 16 vertices.
+      const farScale = tm.userData.farDrawScale;
+      if (Math.abs(farScale?.width - 0.78) > 1e-9
+        || Math.abs(farScale?.height - 0.94) > 1e-9) badFarFallback++;
+      // c1fb4df deliberately raised the old two-plane X from 8 triangles / 16
+      // vertices to 12 / 24. Real aerial and 27m TV renders showed that any
+      // horizontal cap still read as a separate lid, even with dedicated round
+      // art, so the approved fallback restores the exact old geometry budget.
       // The round-2 "giant smooth green spire" was the lit plane of a crossed
       // billboard seen almost edge-on, standing inside the near-black unlit plane
       // of the SAME tree, because computeVertexNormals() gave the two planes normals
@@ -2009,7 +2086,21 @@ function run(trackId) {
       // winding is what lets the material be FrontSide so DoubleSide can never flip
       // that normal downward on the far half of a card.
       const tris = tm.geometry.index ? tm.geometry.index.count / 3 : 0;
-      if (tris !== 8 || tm.geometry.attributes.position.count !== 16) notX++;
+      if (tris !== 8 || tm.geometry.attributes.position.count !== 16) badCardGeometry++;
+      {
+        // A future horizontal plane must not silently reintroduce the exact visual
+        // regression. Pure vertical cards have zero triangle area in XZ projection.
+        const pos = tm.geometry.attributes.position, ix = tm.geometry.index;
+        let doubledArea = 0;
+        for (let i = 0; i < ix.count; i += 3) {
+          const ia = ix.getX(i), ib = ix.getX(i + 1), ic = ix.getX(i + 2);
+          const ax = pos.getX(ia), az = pos.getZ(ia);
+          const bx = pos.getX(ib), bz = pos.getZ(ib);
+          const cx = pos.getX(ic), cz = pos.getZ(ic);
+          doubledArea += Math.abs((bx - ax) * (cz - az) - (bz - az) * (cx - ax)) * 0.5;
+        }
+        if (doubledArea > 1e-8) overheadPlate++;
+      }
       {
         const nrm = tm.geometry.attributes.normal;
         let notUp = 0;
@@ -2036,8 +2127,15 @@ function run(trackId) {
     }
     assert(badMat === 0, 'every treeline is a front-side alpha-tested canvas billboard on Standard',
       `[bad materials=${badMat}/${treeMeshes.length}]`);
-    assert(notX === 0, 'every tree is two intersecting quads wound both ways (8 tris, 16 verts)',
-      `[wrong geometry=${notX}/${treeMeshes.length}]`);
+    assert(badFarFallback === 0,
+      'every treeline publishes the exact 0.78x0.94 far-layer draw-scale fallback',
+      `[wrong far fallback=${badFarFallback}/${treeMeshes.length}]`);
+    assert(badCardGeometry === 0,
+      'every tree is a two-plane X wound both ways (8 tris, 16 verts; c1fb4df cap was 12/24)',
+      `[wrong geometry=${badCardGeometry}/${treeMeshes.length}]`);
+    assert(overheadPlate === 0,
+      'tree cards contain no horizontal projected plate after the visual fallback',
+      `[meshes with overhead triangle area=${overheadPlate}/${treeMeshes.length}]`);
     assert(badNormals === 0,
       'every foliage normal points straight up, so both planes of a card shade identically',
       `[meshes with a non-up normal=${badNormals}/${treeMeshes.length}]`);
@@ -2055,6 +2153,78 @@ function run(trackId) {
     assert(noTint === 0, 'every treeline carries per-instance tint (instanceColor)',
       `[untinted meshes=${noTint}]`);
 
+    // ---- canopy shade must die before its carrier quad ----------------------
+    // Sample the exact production generator, not its stop literals. The last
+    // non-zero texel must sit inside 60% of the half-extent, and every boundary
+    // texel must be clear, so oblique cameras cannot recover an edge or corner.
+    {
+      const shade = named('ground-shade-canopy');
+      assert(!!shade && !!shade.material.map && shade.material.map.isCanvasTexture,
+        'canopy shade uses its generated alpha texture');
+      const S = 128, cv = rasterise(() => TEX.canopyShadeDecal(S), S, S), px = cv._px;
+      let edgeMax = 0, lastRadius = 0;
+      for (let y = 0; y < S; y++) {
+        for (let x = 0; x < S; x++) {
+          const a = px[(y * S + x) * 4 + 3];
+          if (x === 0 || y === 0 || x === S - 1 || y === S - 1) edgeMax = Math.max(edgeMax, a);
+          if (a > 1 / 255) lastRadius = Math.max(lastRadius, Math.hypot(x + 0.5 - S / 2, y + 0.5 - S / 2));
+        }
+      }
+      const support = lastRadius / (S / 2);
+      assert(edgeMax === 0, 'canopy-shade alpha is zero on every quad edge texel',
+        `[max edge alpha=${edgeMax.toFixed(4)}]`);
+      assert(support <= 0.6, 'canopy-shade last non-zero alpha lies inside 60% of the quad half-extent',
+        `[last non-zero radius=${support.toFixed(3)} half-extents]`);
+      assert(shade?.userData.shadePolicy?.alphaSupportHalfExtent === 0.5
+        && shade?.material.map.userData.alphaSupportHalfExtent === 0.5,
+      'the generated shade and its oversized quad share the 0.5 support contract');
+    }
+
+    // ---- textured shrubs and card/trunk one-to-one consistency --------------
+    {
+      const shrubs = named('vegetation-near-shrubs');
+      assert(!!shrubs && shrubs.isInstancedMesh && shrubs.count > 0,
+        'near shrub foliage is present');
+      assert(!!shrubs?.material.map && shrubs.material.map.isCanvasTexture
+        && shrubs.material.isMeshStandardMaterial,
+      'every vegetation-near-shrubs instance uses a textured Standard foliage material');
+
+      const trunks = named('vegetation-near-trunks');
+      assert(!!trunks && trunks.isInstancedMesh, 'near physical trunks are present');
+      if (trunks) {
+        const cardPositions = new Set();
+        let nearCards = 0, eligibleCards = 0, cullMismatch = 0;
+        const sphereSame = (a, b) => !!a && !!b && a.center.distanceTo(b.center) < 1e-6
+          && Math.abs(a.radius - b.radius) < 1e-6;
+        for (const tm of treeMeshes) {
+          nearCards += tm.userData.nearCount || 0;
+          eligibleCards += tm.userData.trunkEligibleCount || 0;
+          if (!sphereSame(tm.boundingSphere, trunks.boundingSphere)
+            || tm.userData.cullGroup !== trunks.userData.cullGroup) cullMismatch++;
+          for (let k = 0; k < tm.count; k++) {
+            const { pos } = instanceAt(tm, k);
+            cardPositions.add(`${pos.x.toFixed(4)},${pos.z.toFixed(4)}`);
+          }
+        }
+        let orphans = 0;
+        for (let k = 0; k < trunks.count; k++) {
+          const { pos } = instanceAt(trunks, k);
+          if (!cardPositions.has(`${pos.x.toFixed(4)},${pos.z.toFixed(4)}`)) orphans++;
+        }
+        assert(nearCards === trunks.userData.nearCardCount && eligibleCards === trunks.userData.eligibleCardCount,
+          'near-layer card counts agree with the trunk source set',
+          `[near cards=${nearCards}, eligible=${eligibleCards}]`);
+        assert(trunks.count === Math.min(96, eligibleCards),
+          'trunk count is the capped count of eligible near-layer cards',
+          `[trunks=${trunks.count}, eligible near cards=${eligibleCards}, cap=96]`);
+        assert(orphans === 0, 'every physical trunk has a tree card at exactly the same XZ position',
+          `[orphan trunks=${orphans}/${trunks.count}]`);
+        assert(cullMismatch === 0,
+          'trunks and every card batch share one culling sphere, so frustum edges cannot split them',
+          `[mismatched batches=${cullMismatch}/${treeMeshes.length}]`);
+      }
+    }
+
     // ---- the foliage ambient floor must exist, and must not be a glow --------
     // The floor is an albedo-proportional emissive lift, and it is there because
     // MeshLambert scenery went black once scene.environment became an HDRI. But
@@ -2069,21 +2239,21 @@ function run(trackId) {
     // Both ends are asserted. Too much emission is the glow; none of it is the black
     // treeline this floor was introduced to fix.
     {
-      const EMIT_CAP = c.theme.night ? 0.25 : 0.62;
+      const EMIT_CAP = c.theme.night ? 0.20 : 0.42;
       let overCap = 0, noFloor = 0, notAlbedo = 0, worstEmit = 0;
       for (const tm of treeMeshes) {
         const mt = tm.material;
         const e = mt.emissive.r * (mt.emissiveIntensity === undefined ? 1 : mt.emissiveIntensity);
         worstEmit = Math.max(worstEmit, e);
         if (e > EMIT_CAP + 1e-6) overCap++;
-        if (!(e >= 0.2)) noFloor++;
+        if (!(e >= 0.18)) noFloor++;
         if (mt.emissiveMap !== mt.map) notAlbedo++;
       }
       assert(overCap === 0,
         `the foliage ambient floor stays under the ${c.theme.night ? 'night' : 'daylight'} bloom-safe ceiling`,
         `[worst emissive=${worstEmit.toFixed(3)} of albedo, ceiling ${EMIT_CAP}, over=${overCap}/${treeMeshes.length}]`);
       assert(noFloor === 0, 'the foliage ambient floor is still there, so treelines cannot go black again',
-        `[meshes under 0.2=${noFloor}/${treeMeshes.length}, worst=${worstEmit.toFixed(3)}]`);
+        `[meshes under 0.18=${noFloor}/${treeMeshes.length}, worst=${worstEmit.toFixed(3)}]`);
       assert(notAlbedo === 0,
         'the foliage floor is proportional to the artwork (emissiveMap === map), not a flat wash',
         `[meshes with a mismatched emissiveMap=${notAlbedo}/${treeMeshes.length}]`);
@@ -2123,6 +2293,22 @@ function run(trackId) {
         `[meshes left suppressed=${notRestored}/${treeMeshes.length}]`);
       assert(firedOnColour === 0, 'the opt-out never fires during the colour or shadow pass',
         `[meshes disturbed=${firedOnColour}/${treeMeshes.length}]`);
+      const shade = named('ground-shade-canopy');
+      if (shade) {
+        const before = { ...shade.geometry.drawRange };
+        shade.onBeforeRender(null, null, null, shade.geometry, nm);
+        const suppressed = shade.geometry.drawRange.count === 0;
+        shade.onAfterRender(null, null, null, shade.geometry, nm);
+        const restored = shade.geometry.drawRange.start === before.start
+          && shade.geometry.drawRange.count === before.count;
+        shade.onBeforeRender(null, null, null, shade.geometry, shade.material);
+        const colourUntouched = shade.geometry.drawRange.start === before.start
+          && shade.geometry.drawRange.count === before.count;
+        shade.onAfterRender(null, null, null, shade.geometry, shade.material);
+        assert(suppressed && restored && colourUntouched,
+          'canopy shade drops its merged draw range only during the AO normal pass',
+          `[suppressed=${suppressed} restored=${restored} colour untouched=${colourUntouched}]`);
+      }
       nm.dispose();
     }
     assert(intruders === 0, 'no tree canopy overhangs the racing surface',
@@ -2228,23 +2414,199 @@ function run(trackId) {
       assert(speciesSeen.has('pine'), `${trackId} gets conifers`, `[species=${[...speciesSeen]}]`);
     }
 
-    if (!FOREST_IDS.has(trackId)) {
-      const sky = named('city-skyline');
-      assert(!!sky && sky.isInstancedMesh && sky.count > 20, 'far skyline blocks present',
-        `[n=${sky ? sky.count : 0}]`);
-      if (sky) {
-        let near = Infinity, far = 0, tallest = 0;
-        for (let k = 0; k < sky.count; k++) {
-          const { pos, scl } = instanceAt(sky, k);
-          const d = dist(pos.x, pos.z).d;
-          near = Math.min(near, d); far = Math.max(far, d);
-          tallest = Math.max(tallest, scl.y);
-        }
-        assert(near > wallOff && far <= 501, 'skyline sits at 200-500m',
-          `[nearest=${near.toFixed(0)}m furthest=${far.toFixed(0)}m tallest=${tallest.toFixed(0)}m]`);
+    // The old forest/theme skyline rule is intentionally gone. Typed backdrop
+    // identity is validated independently below against VENUE for all 24 tracks.
+    assert(!named('city-skyline'), 'legacy visible city-skyline batch is absent');
+  }
+
+  // ---- 4h.2 typed backdrop identity, containment and elevation angle -------
+  {
+    const expected = VENUE?.[trackId]?.backdrop;
+    const backdrop = named('venue-backdrop');
+    assert(Array.isArray(expected), `${trackId}: VENUE backdrop entry exists`);
+    assert(!!backdrop && backdrop.isGroup, `${trackId}: typed venue-backdrop group exists`);
+    if (expected && backdrop) {
+      const expectedKinds = expected.map(layer => layer.kind);
+      const realisedKinds = backdrop.userData.kinds || [];
+      assert(JSON.stringify(realisedKinds) === JSON.stringify(expectedKinds),
+        `${trackId}: realised backdrop kinds match VENUE in near-to-far order`,
+        `[${realisedKinds.join(' > ') || 'none'}]`);
+      if (PINNED_BACKDROP_KINDS[trackId]) {
+        assert(JSON.stringify(realisedKinds) === JSON.stringify(PINNED_BACKDROP_KINDS[trackId]),
+          `${trackId}: researched skyline correction is independently pinned`,
+          `[${realisedKinds.join(' > ')}]`);
       }
-    } else {
-      assert(!named('city-skyline'), 'wooded circuits do not get a city skyline');
+      const expectedVisible = expected.filter(layer => layer.kind !== 'none');
+      const meshes = backdrop.children.filter(child => child.isMesh && effectivelyVisible(child));
+      assert(meshes.length === expectedVisible.length,
+        `${trackId}: backdrop has one visible matte mesh per non-none layer`,
+        `[${meshes.length}/${expectedVisible.length}]`);
+      let vertexCount = 0, maxSky = 0, maxAngle = 0, minMargin = Infinity;
+      const layerTable = [];
+      for (let layerIndex = 0; layerIndex < meshes.length; layerIndex++) {
+        const mesh = meshes[layerIndex];
+        const authored = expectedVisible[layerIndex];
+        assert(mesh.userData.kind === authored.kind
+          && JSON.stringify(mesh.userData.authored) === JSON.stringify(authored),
+        `${trackId}/${authored.kind}: backdrop metadata matches its VENUE layer`);
+        const isBuilt = authored.kind === 'city-cluster' || authored.kind === 'city-sprawl'
+          || authored.kind === 'industry';
+        const softCrest = !isBuilt;
+        assert(mesh.material.isMeshBasicMaterial && mesh.material.fog === false
+          && mesh.material.toneMapped === false && mesh.material.transparent === softCrest
+          && mesh.userData.fogIndependent === true,
+        `${trackId}/${authored.kind}: backdrop is a pre-tinted, fog-independent matte`,
+        `[transparent=${mesh.material.transparent}, toneMapped=${mesh.material.toneMapped}, soft crest=${softCrest}]`);
+        assert(!softCrest || (mesh.material.alphaMap?.isCanvasTexture === true
+          && mesh.material.alphaTest >= 0.015 && mesh.userData.softCrest === true),
+        `${trackId}/${authored.kind}: natural crest dissolves through the shared height alpha ramp`,
+        `[alphaMap=${!!mesh.material.alphaMap} alphaTest=${mesh.material.alphaTest}]`);
+        if (softCrest) {
+          const before = { ...mesh.geometry.drawRange };
+          mesh.onBeforeRender(null, null, null, mesh.geometry, { isMeshNormalMaterial: true });
+          const suppressed = mesh.geometry.drawRange.count === 0 && mesh.userData.aoSuppressed === true;
+          mesh.onAfterRender();
+          const restored = mesh.geometry.drawRange.start === before.start
+            && mesh.geometry.drawRange.count === before.count && mesh.userData.aoSuppressed === false;
+          assert(suppressed && restored,
+            `${trackId}/${authored.kind}: alpha skirt stays out of GTAO and returns for colour`,
+            `[suppressed=${suppressed} restored=${restored}]`);
+        }
+        const position = mesh.geometry.attributes.position;
+        assert(!!position && position.count >= 8,
+          `${trackId}/${authored.kind}: backdrop layer has real silhouette geometry`,
+          `[vertices=${position?.count || 0}]`);
+        if (softCrest) {
+          const uv = mesh.geometry.attributes.uv;
+          let uvLo = Infinity, uvHi = -Infinity;
+          for (let v = 0; uv && v < uv.count; v++) {
+            uvLo = Math.min(uvLo, uv.getY(v)); uvHi = Math.max(uvHi, uv.getY(v));
+          }
+          assert(!!uv && uvLo < 1e-6 && uvHi > 1 - 1e-6,
+            `${trackId}/${authored.kind}: crest ramp spans opaque body to transparent top`,
+            `[v=${uvLo.toFixed(3)}..${uvHi.toFixed(3)}]`);
+        }
+        assert(typeof authored.tint === 'number' && authored.dist > 0,
+          `${trackId}/${authored.kind}: VENUE declares a local tint and researched distance`,
+          `[tint=#${Number(authored.tint).toString(16).padStart(6, '0')} dist=${authored.dist}m]`);
+        const distanceT = THREE.MathUtils.clamp((authored.dist - 1500) / 23500, 0, 1);
+        const distanceFade = distanceT * distanceT * (3 - 2 * distanceT);
+        const expectedFade = authored.nightCutout ? 0
+          : c.theme.night ? 0.05 + distanceFade * 0.15
+            : 0.08 + distanceFade * 0.87;
+        const expectedColour = new THREE.Color(authored.tint).lerp(new THREE.Color(c.theme.fog), expectedFade);
+        const colourDistance = (a, b) => Math.hypot(a.r - b.r, a.g - b.g, a.b - b.b);
+        const colourError = colourDistance(mesh.material.color, expectedColour);
+        assert(colourError < 1e-7 && Math.abs(mesh.userData.atmosphereFade - expectedFade) < 1e-9,
+          `${trackId}/${authored.kind}: material tint realises its distance fade toward theme fog`,
+          `[dist=${authored.dist}m fade=${expectedFade.toFixed(3)} error=${colourError.toExponential(1)}]`);
+        const finalHex = mesh.material.color.getHex();
+        if (!c.theme.night) {
+          const r = (finalHex >> 16) & 255, g = (finalHex >> 8) & 255, b = finalHex & 255;
+          const srgbLuma = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+          assert(srgbLuma >= 0.30,
+            `${trackId}/${authored.kind}: daylight backdrop stays above the near-black floor`,
+            `[#${finalHex.toString(16).padStart(6, '0')} sRGB luma=${srgbLuma.toFixed(3)}]`);
+          if (authored.dist > 20000) {
+            const fogDistance = colourDistance(mesh.material.color, new THREE.Color(c.theme.fog));
+            assert(fogDistance <= 0.10,
+              `${trackId}/${authored.kind}: layer beyond 20 km is very close to theme fog`,
+              `[dist=${authored.dist}m linear-RGB distance=${fogDistance.toFixed(4)}]`);
+          }
+        }
+        if (trackId === 'lasvegas' && authored.kind === 'mountain') {
+          assert(finalHex === 0x000000 && authored.nightCutout === true,
+            'lasvegas: researched night ridge remains the explicit pure-black exception');
+        }
+        layerTable.push(`${authored.kind}@${(authored.dist / 1000).toFixed(1)}km #${finalHex.toString(16).padStart(6, '0')} base=${mesh.userData.baseY.toFixed(0)}m`);
+        mesh.updateWorldMatrix(true, false);
+        const world = new THREE.Vector3();
+        for (let v = 0; v < position.count; v++) {
+          world.fromBufferAttribute(position, v).applyMatrix4(mesh.matrixWorld);
+          vertexCount++;
+          const skyR = world.length();
+          maxSky = Math.max(maxSky, skyR);
+          furthestBackdropVertex = Math.max(furthestBackdropVertex, skyR);
+          minMargin = Math.min(minMargin, dist(world.x, world.z).d - c.halfWidth);
+          for (let i = 0; i < N; i++) {
+            const plan = Math.hypot(world.x - samples[i].p.x, world.z - samples[i].p.z);
+            const angle = Math.atan2(world.y - (c.heights[i] + 2.6), Math.max(plan, 1e-6));
+            maxAngle = Math.max(maxAngle, angle);
+          }
+        }
+      }
+      if (c.theme.night && meshes.length) {
+        assert(expectedVisible.every(layer => typeof layer.tint === 'number'),
+          `${trackId}: night theme is explicitly exempt from the daylight tint floor`,
+          `[layers=${meshes.length}, fog=#${new THREE.Color(c.theme.fog).getHexString()}]`);
+      }
+
+      // The old check only bounded backdrop vertices in a sphere; an 18m skirt
+      // could pass it while hanging above the actual horizon. This projects each
+      // sampled skirt edge from 16 chase eyes and independently samples the real
+      // ground mesh along that azimuth. The terrain silhouette must be above the
+      // backdrop base, leaving no angular interval in which sky can leak under it.
+      let minSkirtClearance = Infinity, projectedChecks = 0;
+      if (meshes.length) {
+        const ground = named('ground');
+        const terrainHeight = groundSampler(c, ground, 650);
+        const eye = new THREE.Vector3(), base = new THREE.Vector3();
+        for (let eyeStep = 0; eyeStep < 16; eyeStep++) {
+          const sampleIndex = Math.floor(eyeStep * N / 16) % N;
+          eye.set(samples[sampleIndex].p.x, c.heights[sampleIndex] + 2.6,
+            samples[sampleIndex].p.z);
+          for (const mesh of meshes) {
+            const position = mesh.geometry.attributes.position;
+            const baseIndices = [];
+            for (let v = 0; v < position.count; v++) {
+              if (Math.abs(position.getY(v) - mesh.userData.baseY) < 1e-4) baseIndices.push(v);
+            }
+            assert(baseIndices.length >= 4,
+              `${trackId}/${mesh.userData.kind}: backdrop publishes a continuous deep skirt`,
+              `[base vertices=${baseIndices.length} y=${mesh.userData.baseY.toFixed(1)}m]`);
+            const stride = Math.max(1, Math.ceil(baseIndices.length / 28));
+            for (let k = 0; k < baseIndices.length; k += stride) {
+              base.fromBufferAttribute(position, baseIndices[k]).applyMatrix4(mesh.matrixWorld);
+              const dx = base.x - eye.x, dz = base.z - eye.z;
+              const plan = Math.hypot(dx, dz);
+              if (plan < 1) continue;
+              const probeReach = Math.min(600, plan * 0.72);
+              let terrainAngle = -Infinity;
+              for (let probe = 1; probe <= 16; probe++) {
+                const d = probeReach * probe / 16;
+                const y = terrainHeight(eye.x + dx / plan * d, eye.z + dz / plan * d);
+                if (y === null) continue;
+                terrainAngle = Math.max(terrainAngle, Math.atan2(y - eye.y, d));
+              }
+              if (!Number.isFinite(terrainAngle)) continue;
+              const baseAngle = Math.atan2(base.y - eye.y, plan);
+              minSkirtClearance = Math.min(minSkirtClearance, terrainAngle - baseAngle);
+              projectedChecks++;
+            }
+          }
+        }
+        assert(projectedChecks >= meshes.length * 16 * 4 && minSkirtClearance > 0,
+          `${trackId}: no sky fits below any sampled backdrop edge from a chase eye`,
+          `[${projectedChecks} projections, minimum terrain-over-base clearance=${(minSkirtClearance * 180 / Math.PI).toFixed(2)}deg]`);
+      }
+      const maxAngleDeg = maxAngle * 180 / Math.PI;
+      if (maxAngle > steepestBackdropAngle.angle) {
+        steepestBackdropAngle = { angle: maxAngle, track: trackId,
+          kind: meshes.find(mesh => mesh.userData.kind)?.userData.kind || 'none' };
+      }
+      assert(maxSky < 2600, `${trackId}: every backdrop vertex stays inside SKY_R`,
+        `[furthest=${maxSky.toFixed(1)}m/2600m]`);
+      assert(meshes.length === 0 || minMargin >= 0.95,
+        `${trackId}: backdrop geometry clears the racing surface`,
+        `[minimum outer-road margin=${Number.isFinite(minMargin) ? minMargin.toFixed(1) : 'none'}m]`);
+      assert(maxAngleDeg <= 22,
+        `${trackId}: no backdrop rises above a sane 22-degree chase-eye angle anywhere on the lap`,
+        `[maximum=${maxAngleDeg.toFixed(2)}deg]`);
+      const noneIds = new Set(['silverstone', 'monza', 'austin', 'yasmarina']);
+      assert(noneIds.has(trackId) ? expectedKinds.length === 1 && expectedKinds[0] === 'none'
+        && meshes.length === 0 : !expectedKinds.includes('none'),
+      `${trackId}: none is realised only for the four intentionally empty horizons`);
+      backdropRows.push(`${trackId}: ${layerTable.join(' | ') || 'none'}; layers=${meshes.length}; vertices=${vertexCount}; max=${maxSky.toFixed(1)}m/${maxAngleDeg.toFixed(2)}deg`);
     }
   }
 
@@ -2752,7 +3114,13 @@ function run(trackId) {
     const glows = [];
     group.traverse(o => { if (o.isSprite) glows.push(o); });
     const heads = named('floodlight-heads');
-    if (c.theme.night) {
+    if (c.theme.night || c.theme.floodlit) {
+      const expectedRig = EXPECTED_LIGHTING_RIGS[trackId];
+      const realisedRig = group.userData.lightingRig;
+      assert(!!expectedRig && !!realisedRig
+        && Object.entries(expectedRig).every(([key, value]) => realisedRig[key] === value),
+      'venue lighting rig matches its independently pinned height, colour, falloff, and shadow character',
+      `[${realisedRig?.label || 'missing'}]`);
       assert(!!heads && heads.isInstancedMesh, 'floodlight poles/heads stay instanced');
       assert(glows.length === heads.count, 'every floodlight head gets a glow sprite',
         `[glows=${glows.length} heads=${heads.count}]`);
@@ -2800,9 +3168,9 @@ function run(trackId) {
           'the lamp faces are visibly emissive without overpowering the housing',
           `[emissive #${lm.emissive.getHexString()} x${lm.emissiveIntensity}]`);
         const hm = heads.material;
-        assert(hm.isMeshStandardMaterial && (!hm.emissive || hm.emissive.getHex() === 0x000000),
-          'the fixture housing is a LIT dark shell, not an unlit white box',
-          `[${hm.type} emissive #${hm.emissive && hm.emissive.getHexString()}]`);
+        assert(hm.isMeshStandardMaterial && hm.emissiveIntensity > 0 && hm.emissiveIntensity <= 0.2,
+          'the standard-lit fixture housing catches a restrained amount of its own spill',
+          `[${hm.type} emissive #${hm.emissive.getHexString()} x${hm.emissiveIntensity}]`);
         // every lamp must sit on its own head
         let worstLamp = 0;
         for (let k = 0; k < heads.count; k++) {
@@ -2826,8 +3194,8 @@ function run(trackId) {
           && pm.depthWrite === false && pm.polygonOffset === true,
           'light pools are additive, offset decals that do not write depth',
           `[blending=${pm.blending} depthWrite=${pm.depthWrite} offset=${pm.polygonOffsetFactor}]`);
-        assert(pm.opacity >= 0.18 && pm.opacity <= 0.25 && pm.fog === true,
-          'light pools preserve asphalt contrast and fade into venue fog',
+        assert(pm.opacity >= 0.14 && pm.opacity <= 0.34 && pm.fog === true,
+          'venue-specific light pools preserve surface contrast and fade into venue fog',
           `[opacity=${pm.opacity} fog=${pm.fog}]`);
         const poolShader = { fragmentShader: 'void main() {\n#include <fog_fragment>\n}' };
         pm.onBeforeCompile(poolShader);
@@ -2842,24 +3210,52 @@ function run(trackId) {
         'light-pool extinction shader has a stable custom program cache key', `[key=${poolCacheKey}]`);
         assert(pool.userData.pools === heads.count, 'one light pool per floodlight',
           `[pools=${pool.userData.pools} floodlights=${heads.count}]`);
-        // the pool has to land ON the road, under the tower
+        // The old ribbon ended at +/-5m. The new pool deliberately spans the
+        // road, both run-off aprons and both barrier faces; only its light reaches
+        // the racing surface, never collision geometry or furniture.
         const pp = pool.geometry.attributes.position;
-        let off = 0, lo = Infinity, hi = -Infinity;
+        let onRoad = 0, beyondRoad = 0, beyondBarrier = 0, lo = Infinity, hi = -Infinity;
         for (let i = 0; i < pp.count; i++) {
           const d = dist(pp.getX(i), pp.getZ(i));
-          if (d.d > c.halfWidth) off++;
-          const ride = pp.getY(i) - roadY(d.i);
-          lo = Math.min(lo, ride); hi = Math.max(hi, ride);
+          if (d.d > c.halfWidth) beyondRoad++;
+          if (d.d > c.wallOff) beyondBarrier++;
+          if (d.d <= c.halfWidth + 0.25) {
+            onRoad++;
+            const ride = pp.getY(i) - roadY(d.i);
+            lo = Math.min(lo, ride); hi = Math.max(hi, ride);
+          }
         }
-        assert(off === 0, 'no light-pool vertex spills off the racing surface',
-          `[off-road vertices=${off}/${pp.count}]`);
-        assert(lo > 0.028 && hi < 0.045, 'light pools lie in the road surface',
+        assert(onRoad > 0 && beyondRoad > 0 && beyondBarrier > 0,
+          'pool mesh contains road, run-off, barrier, and ground samples',
+          `[road=${onRoad} beyond road=${beyondRoad} beyond barrier=${beyondBarrier}]`);
+        assert(pool.userData.coverage?.includesRunoff === true
+          && pool.userData.coverage?.includesBarrier === true,
+        'pool metadata pins run-off and barrier coverage');
+        assert(lo > 0.028 && hi < 0.045, 'the road columns lie just above the racing surface',
           `[height over the road=${lo.toFixed(4)}..${hi.toFixed(4)}m]`);
+
+        const spill = named('floodlight-barrier-spill');
+        assert(!!spill && spill.material.isMeshBasicMaterial
+          && spill.material.blending === THREE.AdditiveBlending
+          && spill.material.depthWrite === false,
+        'one allowed additive decal lights the standard-lit barrier and hoarding faces');
+        if (spill) {
+          assert(spill.userData.pools === heads.count,
+            'each mast contributes one spatial barrier pool',
+            `[pools=${spill.userData.pools} heads=${heads.count}]`);
+          assert(spill.userData.nearLuminance >= 0.14
+            && spill.userData.farLuminance === 0
+            && spill.userData.nearLuminance > spill.userData.farLuminance + 0.1,
+          'barrier and board surfaces near a mast receive measurably more light than the same faces between pools',
+          `[near=${spill.userData.nearLuminance} far=${spill.userData.farLuminance}]`);
+        }
       }
       // ---- and there have to be ENOUGH of them ------------------------------
       // "It is still the ONLY floodlight in the frame."
       const spacing = c.length / heads.count;
-      assert(spacing <= 70, 'floodlights are close enough together that several are in frame',
+      const rigSpacing = group.userData.lightingRig?.spacingM;
+      assert(Number.isFinite(rigSpacing) && spacing <= Math.max(rigSpacing + 5, c.length / 90),
+        'floodlights realise the venue-specific marching interval',
         `[${heads.count} towers, ${spacing.toFixed(0)}m apart over ${c.length.toFixed(0)}m]`);
       // each glow must actually sit on a head
       let worst = 0;
@@ -2873,7 +3269,7 @@ function run(trackId) {
       assert(worst < 1e-3, 'every glow sprite sits on a floodlight head',
         `[worst xz offset=${worst.toExponential(2)}m]`);
     } else {
-      assert(glows.length === 0, 'daylight circuits have no glow sprites', `[n=${glows.length}]`);
+      assert(glows.length === 0, 'non-floodlit daylight circuits have no glow sprites', `[n=${glows.length}]`);
     }
   }
 
@@ -2976,10 +3372,85 @@ function run(trackId) {
       assert(worstEdge <= 0.5, 'ground meets the road height at the road edge',
         `[worst gap=${worstEdge.toFixed(3)}m over ${tested} probes]`);
       if (worstEdge > worstRelief.verge) { worstRelief.verge = worstEdge; worstRelief.vergeId = trackId; }
-      if (farTested > 20) {
+      if (farTested > 20 && VENUE?.[trackId]?.landform === 'flat') {
         assert(worstFar < 0.25, 'ground has faded back to the flat datum well past the barriers',
           `[worst residual=${worstFar.toFixed(3)}m over ${farTested} probes]`);
       }
+
+      // Measure the actual rendered ground vertices beyond the road-relief handoff.
+      // This is deliberately independent of landformAt(): a metadata-only flag or
+      // a function that never reaches the mesh cannot satisfy the identity gate.
+      const landform = g.userData.landform;
+      const expectedKind = VENUE?.[trackId]?.landform;
+      assert(landform?.kind === expectedKind,
+        `${trackId}: realised ground publishes the VENUE landform`,
+        `[${landform?.kind || 'missing'}]`);
+      const terrainPosition = g.geometry.attributes.position;
+      let terrainMin = Infinity, terrainMax = -Infinity, terrainSamples = 0;
+      for (let v = 0; v < terrainPosition.count; v++) {
+        const x = terrainPosition.getX(v) + g.position.x;
+        const z = terrainPosition.getZ(v) + g.position.z;
+        if (dist(x, z).d <= (landform?.fadeOut ?? Infinity) + 2) continue;
+        const y = terrainPosition.getY(v) + g.position.y;
+        terrainMin = Math.min(terrainMin, y);
+        terrainMax = Math.max(terrainMax, y);
+        terrainSamples++;
+      }
+      const terrainRange = terrainSamples ? terrainMax - terrainMin : 0;
+      const floors = { 'cut-bank': 6, dune: 4, bowl: 8, hillside: 10, terrace: 6 };
+      if (expectedKind === 'flat') {
+        assert(terrainRange <= 0.25,
+          `${trackId}: flat outfield remains below the 0.25m relief ceiling`,
+          `[range=${terrainRange.toFixed(2)}m across ${terrainSamples} vertices]`);
+      } else {
+        assert(terrainRange >= floors[expectedKind],
+          `${trackId}: ${expectedKind} outfield exceeds its ${floors[expectedKind]}m relief floor`,
+          `[range=${terrainRange.toFixed(2)}m across ${terrainSamples} vertices]`);
+      }
+      assert(terrainSamples > 100 && landform?.samples > 100
+        && Math.abs(terrainRange - (landform?.range ?? -1)) < 0.25,
+      `${trackId}: published landform range matches the realised ground geometry`,
+      `[measured=${terrainRange.toFixed(3)}m published=${(landform?.range ?? -1).toFixed(3)}m]`);
+      landformRows.push(`${trackId}: ${expectedKind} ${terrainMin.toFixed(2)}..${terrainMax.toFixed(2)}m (range ${terrainRange.toFixed(2)}m)`);
+
+      // Ground-sited infrastructure is authored around a terrainAt() anchor. At
+      // that anchor its lowest vertex must still meet the rendered terrain mesh;
+      // this catches a new landform leaving a paddock, road, fence or bank visibly
+      // floating or buried even though its placement code ran successfully.
+      const groundSited = new Set([
+        'infra-paddock-aprons', 'infra-perimeter-posts', 'infra-perimeter-panels',
+        'infra-parking-surfaces', 'infra-access-roads', 'infra-surface-margins',
+        'infra-spectator-banks',
+      ]);
+      let anchorTests = 0, worstAnchorGap = 0, worstAnchor = 'none', worstAnchorSigned = 0;
+      const instanceMatrix = new THREE.Matrix4(), worldMatrix = new THREE.Matrix4();
+      const anchor = new THREE.Vector3(), vertex = new THREE.Vector3();
+      group.traverse((mesh) => {
+        if (!mesh.isInstancedMesh || !groundSited.has(mesh.name)) return;
+        const position = mesh.geometry.attributes.position;
+        for (let instance = 0; instance < mesh.count; instance++) {
+          mesh.getMatrixAt(instance, instanceMatrix);
+          worldMatrix.multiplyMatrices(mesh.matrixWorld, instanceMatrix);
+          anchor.setFromMatrixPosition(worldMatrix);
+          let baseY = Infinity;
+          for (let v = 0; v < position.count; v++) {
+            vertex.fromBufferAttribute(position, v).applyMatrix4(worldMatrix);
+            baseY = Math.min(baseY, vertex.y);
+          }
+          const terrainY = at(anchor.x, anchor.z);
+          if (terrainY == null) continue;
+          anchorTests++;
+          const signedGap = baseY - terrainY;
+          if (Math.abs(signedGap) > worstAnchorGap) {
+            worstAnchorGap = Math.abs(signedGap);
+            worstAnchorSigned = signedGap;
+            worstAnchor = `${mesh.name}#${instance}`;
+          }
+        }
+      });
+      assert(anchorTests > 100 && worstAnchorGap <= 0.55,
+        `${trackId}: ground-sited infrastructure remains planted on the realised landform`,
+        `[worst=${worstAnchorSigned.toFixed(3)}m at ${worstAnchor} over ${anchorTests} instances]`);
     }
   }
 
@@ -3084,6 +3555,7 @@ function run(trackId) {
 // the front axles tilt out of plane; 'YXZ' applies steer first and fixes it.
 async function runCar() {
   const { buildCarMesh, buildNameTag } = await import('../js/car.js');
+  const { makeContactShadow } = await import('../js/race.js');
   log('\n=== car mesh ===');
   const team = { color: 0xe10600, accent: 0xffffff };
   const driver = { num: 44, code: 'HAM' };
@@ -3120,6 +3592,13 @@ async function runCar() {
   }
   assert(worstTilt < 1e-9, 'steered + spinning front axles stay horizontal',
     `[max |axle.y|=${worstTilt.toExponential(2)}${worstAt ? ' at ' + worstAt : ''}]`);
+
+  const lusailShadow = makeContactShadow(5);
+  const fanLobe = lusailShadow.getObjectByName('sunShadowLobe');
+  assert(fanLobe?.userData.shadowFans === 5
+    && fanLobe.geometry.attributes.position.count === 30,
+  'Lusail represents five fanned high-pole shadows in one merged car-shadow draw',
+  `[fans=${fanLobe?.userData.shadowFans} vertices=${fanLobe?.geometry.attributes.position.count}]`);
 
   // ...and the tyre itself must be built around that axle: its bounding box has to
   // be thinnest along the spin axis, or the wheel renders rolling sideways.
@@ -3270,7 +3749,6 @@ async function runCar() {
 // every species/variant and require: real alpha cut-out (not a filled rect), a
 // ragged top edge (never a cone or a ball), and genuine tonal range in the green.
 async function runCanopyArt() {
-  const TEX = await import('../js/textures.js');
   log('\n=== vegetation art ===');
   if (dumpArt) fsMod.mkdirSync(dumpArt, { recursive: true });
   const species = ['broadleaf', 'poplar', 'pine', 'palm', 'scrub'];
@@ -3325,6 +3803,7 @@ async function runCanopyArt() {
         `[green-dominant opaque px=${solidGreen}]`);
       assert(tones.size >= 3, `${label}: >=3 distinct green tones (dappled, not flat)`,
         `[distinct quantised greens=${tones.size}]`);
+
       fingerprints.add(`${solidGreen}:${toneSum}`);
     }
     assert(fingerprints.size === variants, `${sp}: every variant is a genuinely different sprite`,
@@ -3494,12 +3973,34 @@ if (process.env.API_BASELINE) {
   process.exit(diff === 0 ? 0 : 1);
 }
 
+// Lightweight cost-only mode is also usable against a historical builder that
+// predates VENUE. It is how work orders report a like-for-like before/after
+// triangle count without weakening or bypassing the full current validation.
+if (process.env.METRICS_ONLY) {
+  const peakDraws = { n: 0, id: '' }, peakTriangles = { n: 0, id: '' };
+  for (const id of Object.keys(TRACKS)) {
+    const circuit = buildCircuit(id, TRACKS[id], new THREE.Scene());
+    const cost = sceneRenderCost(circuit.group);
+    if (cost.draws > peakDraws.n) Object.assign(peakDraws, { n: cost.draws, id });
+    if (cost.triangles > peakTriangles.n) Object.assign(peakTriangles, { n: cost.triangles, id });
+    circuit.dispose();
+  }
+  log(`worst-case draw calls: ${peakDraws.n} (${peakDraws.id})`);
+  log(`worst-case triangles: ${Math.round(peakTriangles.n)} (${peakTriangles.id})`);
+  process.exit(0);
+}
+
 const list = artOnly ? [] : (ids.length ? ids : Object.keys(TRACKS)); // every circuit by default
 for (const id of list) run(id);
 if (!artOnly) await runCar();
 await runCanopyArt();
+for (const row of landformRows) log(`landform ${row}`);
+for (const row of backdropRows) log(`backdrop ${row}`);
 if (worstDraws.n) {
   log(`\nworst-case draw calls: ${worstDraws.n} (${worstDraws.id}), budget ${DRAW_BUDGET}`);
+  log(`worst-case triangles: ${Math.round(worstTriangles.n)} (${worstTriangles.id})`);
+  log(`furthest backdrop vertex: ${furthestBackdropVertex.toFixed(1)}m of 2600m sky radius`);
+  log(`steepest backdrop chase-eye angle: ${(steepestBackdropAngle.angle * 180 / Math.PI).toFixed(2)}deg (${steepestBackdropAngle.track})`);
 }
 if (worstRelief.id) {
   log(`worst grade: ${(worstRelief.grade * 100).toFixed(2)}% (${worstRelief.id}), ceiling ${(MAX_GRADE_TOL * 100).toFixed(1)}%`);

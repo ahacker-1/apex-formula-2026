@@ -15,19 +15,65 @@ const STREET = new Set(['monaco', 'baku', 'singapore', 'jeddah', 'lasvegas', 'mi
 // theme now shares that 2.25 ceiling so park circuits retain grass/paint detail.
 const THEMES = {
   desert:  { skyTop: 0x2e4f8f, skyBot: 0xd9b98a, ground: 0xb59a6a, sun: 0xffe0b0, sunI: 2.25, hemi: 0.75, fog: 0xcbb08a, night: false },
-  night:   { skyTop: 0x05070f, skyBot: 0x1a2038, ground: 0x2a2d33, sun: 0xbfd4ff, sunI: 1.15, hemi: 0.55, fog: 0x0c1020, night: true },
+  jeddahNight: { skyTop: 0x07111e, skyBot: 0x713819, ground: 0x252a31, sun: 0xdceaff, sunI: 1.05, hemi: 0.48,
+    fog: 0x17151a, fogNear: 240, fogFar: 1250, night: true, nightRig: 'jeddah', stars: true, proceduralSky: true },
+  singaporeNight: { skyTop: 0x24170f, skyBot: 0x754326, ground: 0x252b2d, sun: 0xe5f0ff, sunI: 0.82, hemi: 0.68,
+    fog: 0x2b1d18, fogNear: 220, fogFar: 1050, night: true, nightRig: 'singapore', stars: false, proceduralSky: true },
+  lusailNight: { skyTop: 0x010205, skyBot: 0x080708, ground: 0x171716, sun: 0xffe4bc, sunI: 0.92, hemi: 0.30,
+    fog: 0x000000, fogNear: 100, fogFar: 240, night: true, nightRig: 'lusail', stars: true, proceduralSky: true },
+  lasvegasNight: { skyTop: 0x12090b, skyBot: 0x9a4520, ground: 0x29252a, sun: 0xf6f2ff, sunI: 0.72, hemi: 0.40,
+    fog: 0x1a0d0d, fogNear: 420, fogFar: 1500, night: true, nightRig: 'lasvegas', stars: false, proceduralSky: true },
   classic: { skyTop: 0x3577d4, skyBot: 0xbfd9f2, ground: 0x3f7d3a, sun: 0xfff2d8, sunI: 2.25, hemi: 0.85, fog: 0xc4d7ea, night: false },
-  dusk:    { skyTop: 0x25336e, skyBot: 0xe89a5f, ground: 0x8a7a58, sun: 0xffb070, sunI: 1.9, hemi: 0.6, fog: 0xc79a74, night: false },
+  dusk:    { skyTop: 0x25336e, skyBot: 0xe89a5f, ground: 0x8a7a58, sun: 0xffb070, sunI: 1.9, hemi: 0.6,
+    fog: 0xc79a74, night: false, floodlit: true },
   city:    { skyTop: 0x2f6cc4, skyBot: 0xb9d2ea, ground: 0x565b60, sun: 0xfff0d0, sunI: 2.25, hemi: 0.8, fog: 0xb6c8da, night: false },
 };
 const TRACK_THEME = {
-  bahrain: 'dusk', jeddah: 'night', lusail: 'night', singapore: 'night', lasvegas: 'night',
-  yasmarina: 'dusk', qatar: 'night', mexico: 'classic', miami: 'city', baku: 'city',
+  bahrain: 'dusk', jeddah: 'jeddahNight', lusail: 'lusailNight', singapore: 'singaporeNight', lasvegas: 'lasvegasNight',
+  yasmarina: 'dusk', qatar: 'lusailNight', mexico: 'classic', miami: 'city', baku: 'city',
   monaco: 'city', madrid: 'city', montreal: 'classic', melbourne: 'classic', shanghai: 'classic',
   suzuka: 'classic', barcelona: 'classic', spielberg: 'classic', silverstone: 'classic',
   spa: 'classic', hungaroring: 'classic', zandvoort: 'classic', monza: 'classic',
   austin: 'classic', interlagos: 'classic',
 };
+
+// The night venues are four lighting systems, not one colour grade. All values
+// are deterministic physical/art-direction inputs; none consume scenery RNG.
+// `shadowFans` records the multiple high-pole directions the car renderer may
+// represent, while the track mesh owns the pooled surface/barrier contribution.
+export const NIGHT_LIGHTING_RIGS = Object.freeze({
+  singapore: Object.freeze({
+    label: 'low-truss-clinical', poleHeight: 10, spacingM: 54, kelvin: 5700,
+    lamp: 0xe5f0ff, pool: 0xc7dcff, poolOpacity: 0.31, poolHalfLengthM: 25,
+    poolBeyondBarrierM: 4.5, barrierOpacity: 0.34, spillCeilingM: 8,
+    mastEmissive: 0.16, shadowFans: 1, darknessBeyondM: 420, washColors: null,
+  }),
+  lusail: Object.freeze({
+    label: 'high-pole-soft', poleHeight: 19, spacingM: 46, kelvin: 4300,
+    lamp: 0xffe5bf, pool: 0xffd6a0, poolOpacity: 0.22, poolHalfLengthM: 34,
+    poolBeyondBarrierM: 5.5, barrierOpacity: 0.20, spillCeilingM: 16,
+    mastEmissive: 0.11, shadowFans: 5, darknessBeyondM: 100, washColors: null,
+  }),
+  lasvegas: Object.freeze({
+    label: 'facade-wash-dry', poleHeight: 13.2, spacingM: 100, kelvin: 5000,
+    lamp: 0xe7e4ff, pool: 0xffffff, poolOpacity: 0.17, poolHalfLengthM: 27,
+    poolBeyondBarrierM: 6.5, barrierOpacity: 0.27, spillCeilingM: 22,
+    mastEmissive: 0.09, shadowFans: 2, darknessBeyondM: 700,
+    washColors: Object.freeze([0xff2f92, 0x24c8ff, 0x8b5cff, 0xff8b24]),
+  }),
+  jeddah: Object.freeze({
+    label: 'coastal-cool-amber-inland', poleHeight: 15.5, spacingM: 62, kelvin: 5200,
+    lamp: 0xdceaff, pool: 0xbdd8ff, poolOpacity: 0.24, poolHalfLengthM: 30,
+    poolBeyondBarrierM: 5, barrierOpacity: 0.25, spillCeilingM: 14,
+    mastEmissive: 0.12, shadowFans: 2, darknessBeyondM: 500, washColors: null,
+  }),
+  dusk: Object.freeze({
+    label: 'cool-surface-warm-horizon', poleHeight: 14.5, spacingM: 72, kelvin: 5000,
+    lamp: 0xd9e8ff, pool: 0xb8d2ff, poolOpacity: 0.16, poolHalfLengthM: 30,
+    poolBeyondBarrierM: 4.5, barrierOpacity: 0.14, spillCeilingM: 13,
+    mastEmissive: 0.08, shadowFans: 2, darknessBeyondM: 700, washColors: null,
+  }),
+});
 
 // ---------------------------------------------------------------- scenery --
 // Circuits whose barriers back straight onto woodland. These get staggered,
@@ -75,18 +121,19 @@ const SPECIES_H = {
 
 // Structural identity for the three scenery depths. These are intentionally
 // original compositions rather than replicas of branded real-world landmarks:
-// the cue controls the little service compound beside the barrier, `mass` the
-// distant vegetation silhouette, and `skyline` the rhythm of generic buildings.
+// the cue controls the little service compound beside the barrier and `mass` the
+// distant vegetation silhouette. `rngSkyline` is retained only to consume the
+// historical non-classic RNG stream; VENUE.backdrop is the visible authority.
 // Every circuit gets a distinct combination even when it shares a climate.
 const VENUE_DEPTH = {
   melbourne:   { cue: 'park-workshop',    mass: 'park',     accent: 0x4f8c78 },
   shanghai:    { cue: 'river-garden-post', mass: 'park',     accent: 0xb75b3e },
   suzuka:      { cue: 'hillside-post',    mass: 'alpine',   accent: 0xd06a43 },
-  bahrain:     { cue: 'desert-canopy',    mass: 'arid',     accent: 0xc18a48, skyline: 'low' },
-  jeddah:      { cue: 'coastal-service',  mass: 'tropical', accent: 0x4a9ca6, skyline: 'needle' },
-  miami:       { cue: 'pastel-courtyard', mass: 'tropical', accent: 0xdb806f, skyline: 'low' },
+  bahrain:     { cue: 'desert-canopy',    mass: 'arid',     accent: 0xc18a48, rngSkyline: 'low' },
+  jeddah:      { cue: 'coastal-service',  mass: 'tropical', accent: 0x4a9ca6, rngSkyline: 'needle' },
+  miami:       { cue: 'pastel-courtyard', mass: 'tropical', accent: 0xdb806f, rngSkyline: 'low' },
   montreal:    { cue: 'island-post',      mass: 'park',     accent: 0x4c7898 },
-  monaco:      { cue: 'hillside-terrace', mass: 'tropical', accent: 0xd1a06e, skyline: 'terrace' },
+  monaco:      { cue: 'hillside-terrace', mass: 'tropical', accent: 0xd1a06e, rngSkyline: 'terrace' },
   barcelona:   { cue: 'dry-park-post',    mass: 'park',     accent: 0xb86c45 },
   spielberg:   { cue: 'alpine-workshop',  mass: 'alpine',   accent: 0xa95245 },
   silverstone: { cue: 'airfield-service', mass: 'park',     accent: 0x668ca1 },
@@ -94,17 +141,329 @@ const VENUE_DEPTH = {
   hungaroring: { cue: 'bowl-lookout',     mass: 'park',     accent: 0x796c9f },
   zandvoort:   { cue: 'dune-service',     mass: 'arid',     accent: 0x57908d },
   monza:       { cue: 'park-pavilion',    mass: 'woodland', accent: 0xa57642 },
-  madrid:      { cue: 'expo-courtyard',   mass: 'park',     accent: 0xc2734c, skyline: 'slab' },
-  baku:        { cue: 'stone-workshop',   mass: 'arid',     accent: 0xb28d5c, skyline: 'slender' },
-  singapore:   { cue: 'night-garden-post', mass: 'tropical', accent: 0x4ba89a, skyline: 'vertical' },
+  madrid:      { cue: 'expo-courtyard',   mass: 'park',     accent: 0xc2734c, rngSkyline: 'slab' },
+  baku:        { cue: 'stone-workshop',   mass: 'arid',     accent: 0xb28d5c, rngSkyline: 'slender' },
+  singapore:   { cue: 'night-garden-post', mass: 'tropical', accent: 0x4ba89a, rngSkyline: 'vertical' },
   austin:      { cue: 'scrub-lookout',    mass: 'arid',     accent: 0x8c658f },
   mexico:      { cue: 'highland-courtyard', mass: 'park',     accent: 0x8d7651 },
   interlagos:  { cue: 'hillside-workshop',  mass: 'tropical', accent: 0x568064 },
-  lasvegas:    { cue: 'desert-night-depot', mass: 'arid',     accent: 0x8b70b1, skyline: 'vertical' },
-  lusail:      { cue: 'dune-light-post',     mass: 'arid',     accent: 0x5c83a8, skyline: 'low' },
-  yasmarina:   { cue: 'marina-service',      mass: 'tropical', accent: 0x4d9ca3, skyline: 'terrace' },
+  lasvegas:    { cue: 'desert-night-depot', mass: 'arid',     accent: 0x8b70b1, rngSkyline: 'vertical' },
+  lusail:      { cue: 'dune-light-post',     mass: 'arid',     accent: 0x5c83a8, rngSkyline: 'low' },
+  yasmarina:   { cue: 'marina-service',      mass: 'tropical', accent: 0x4d9ca3, rngSkyline: 'terrace' },
 };
-const VENUE_DEPTH_DEFAULT = { cue: 'circuit-service', mass: 'woodland', accent: 0x687b71, skyline: 'mixed' };
+const VENUE_DEPTH_DEFAULT = { cue: 'circuit-service', mass: 'woodland', accent: 0x687b71, rngSkyline: 'mixed' };
+
+// Venue identity authored from the real setting, ordered outwards from the
+// OUTER KERB. Ground `surface` is semantic (and therefore useful to validators
+// and later art passes); GROUND_SURFACE_TILE below maps it onto one of the four
+// original, unbranded project tiles. Backdrops are matte-painting silhouettes,
+// never replicas of named architecture.
+export const VENUE = Object.freeze({
+  melbourne: {
+    ground: [
+      { to: 24, surface: 'mown-park-turf', tint: 0x77985f },
+      { to: 76, surface: 'worn-park-turf', tint: 0x748158 },
+      { to: Infinity, surface: 'open-parkland', tint: 0x66865b },
+    ], landform: 'flat',
+    backdrop: [
+      { kind: 'city-sprawl', dist: 1800, height: 20, spread: 2200, tint: 0x9aa9b6 },
+      { kind: 'city-cluster', dist: 3000, height: 112, spread: 420, tint: 0x8fa3b8 },
+    ],
+  },
+  shanghai: {
+    ground: [
+      { to: 92, surface: 'humid-mown-grass', tint: 0x72865a },
+      { to: Infinity, surface: 'reed-fringed-marsh', tint: 0x69775a },
+    ], landform: 'flat',
+    backdrop: [{ kind: 'industry', dist: 1500, height: 34, spread: 2600, tint: 0x89979f }],
+  },
+  suzuka: {
+    ground: [
+      { to: 25, surface: 'mown-green-verge', tint: 0x5d7f52 },
+      { to: 84, surface: 'graded-green-earth-bank', tint: 0x526b49 },
+      { to: Infinity, surface: 'damp-forest-floor', tint: 0x38493a },
+    ], landform: 'cut-bank',
+    backdrop: [
+      { kind: 'ridge-forest', dist: 3000, height: 76, spread: 4200, tint: 0x587064 },
+      { kind: 'mountain', dist: 15000, height: 122, spread: 3600, tint: 0x7e93a0 },
+      { kind: 'mountain', dist: 25000, height: 138, spread: 3300, tint: 0x94a6b0 },
+    ],
+  },
+  bahrain: {
+    ground: [
+      { to: 34, surface: 'pale-sand-apron', tint: 0xc9b284 },
+      { to: 96, surface: 'raked-sand-berm', tint: 0xbda06d },
+      { to: Infinity, surface: 'desert-pavement', tint: 0x9e8a68 },
+    ], landform: 'flat',
+    backdrop: [{ kind: 'ridge-bare', dist: 6000, height: 42, spread: 3400, tint: 0xa79579 }],
+  },
+  jeddah: {
+    ground: [
+      { to: 16, surface: 'narrow-promenade', tint: 0xa9aaa5 },
+      { to: 88, surface: 'empty-pale-sand-lot', tint: 0xc6b997 },
+      { to: Infinity, surface: 'coastal-rubble', tint: 0x9f9a8e },
+    ], landform: 'flat',
+    backdrop: [
+      { kind: 'city-sprawl', dist: 700, height: 68, spread: 1800, tint: 0x313849 },
+      { kind: 'industry', dist: 1200, height: 46, spread: 1300, tint: 0x2d3034 },
+      { kind: 'sea', dist: 2500, height: 8, spread: 4200, tint: 0x142334 },
+    ],
+  },
+  miami: {
+    ground: [
+      { to: 46, surface: 'painted-car-park-asphalt', tint: 0x8d999c },
+      { to: 94, surface: 'artificial-turf-bed', tint: 0x638c62 },
+      { to: Infinity, surface: 'mulch-island', tint: 0x795e4d },
+    ], landform: 'flat',
+    backdrop: [{ kind: 'city-sprawl', dist: 1800, height: 18, spread: 3000, tint: 0x93a6b2 }],
+  },
+  montreal: {
+    ground: [
+      { to: 20, surface: 'narrow-mown-grass', tint: 0x718f61 },
+      { to: 72, surface: 'leafy-tree-screen', tint: 0x536849 },
+      { to: Infinity, surface: 'riprap-bank', tint: 0x777a72 },
+    ], landform: 'flat',
+    backdrop: [
+      { kind: 'ridge-forest', dist: 1200, height: 52, spread: 1200, tint: 0x6f8875 },
+      { kind: 'city-cluster', dist: 3000, height: 96, spread: 760, tint: 0x8fa3b8 },
+    ],
+  },
+  monaco: {
+    ground: [
+      { to: 18, surface: 'street-pavement-kerb', tint: 0x898f91 },
+      { to: 58, surface: 'quay-slab', tint: 0xaaa69d },
+      { to: Infinity, surface: 'stone-retaining-wall', tint: 0x9c8e7d },
+    ], landform: 'terrace',
+    backdrop: [
+      { kind: 'city-sprawl', dist: 500, height: 72, spread: 2500, tint: 0x8799a9 },
+      { kind: 'ridge-bare', dist: 1500, height: 118, spread: 1900, tint: 0x8b95a1 },
+      { kind: 'sea', dist: 2500, height: 8, spread: 2200, tint: 0x85a8bd },
+    ],
+  },
+  barcelona: {
+    ground: [
+      { to: 96, surface: 'dry-straw-grass', tint: 0x778153 },
+      { to: Infinity, surface: 'catalan-dusty-earth', tint: 0x735b46 },
+    ], landform: 'hillside',
+    backdrop: [
+      { kind: 'industry', dist: 500, height: 30, spread: 1300, tint: 0x8b9294 },
+      { kind: 'ridge-forest', dist: 10000, height: 64, spread: 3600, tint: 0x6e7e79 },
+      { kind: 'mountain', dist: 25000, height: 112, spread: 2600, tint: 0x7c8ca0 },
+    ],
+  },
+  spielberg: {
+    ground: [
+      { to: 104, surface: 'mown-emerald-meadow', tint: 0x5c8b4f },
+      { to: Infinity, surface: 'black-spruce-floor', tint: 0x414f3e },
+    ], landform: 'hillside',
+    backdrop: [
+      { kind: 'ridge-forest', dist: 3000, height: 94, spread: 5000, tint: 0x3f5a4b },
+      { kind: 'mountain', dist: 12000, height: 132, spread: 5200, tint: 0x6e8496 },
+      { kind: 'mountain', dist: 30000, height: 152, spread: 4800, tint: 0x9daec1 },
+    ],
+  },
+  silverstone: {
+    ground: [
+      { to: 112, surface: 'mown-pasture', tint: 0x6f8d5a },
+      { to: Infinity, surface: 'rough-windblown-pasture', tint: 0x7d8560 },
+    ], landform: 'flat',
+    backdrop: [{ kind: 'none', dist: 0, height: 0, spread: 0 }],
+  },
+  spa: {
+    ground: [
+      { to: 90, surface: 'wet-upland-grass', tint: 0x285b3e },
+      { to: Infinity, surface: 'ardennes-forest-floor', tint: 0x152f27 },
+    ], landform: 'cut-bank',
+    backdrop: [
+      { kind: 'ridge-forest', dist: 2000, height: 88, spread: 5200, tint: 0x3f5a4b },
+      { kind: 'ridge-forest', dist: 4000, height: 102, spread: 5000, tint: 0x6e8496 },
+      { kind: 'ridge-forest', dist: 6000, height: 112, spread: 4700, tint: 0x9daec1 },
+    ],
+  },
+  hungaroring: {
+    ground: [
+      { to: 104, surface: 'burnt-straw-grass', tint: 0xa29359 },
+      { to: Infinity, surface: 'bare-sandy-soil', tint: 0x9a7659 },
+    ], landform: 'bowl',
+    backdrop: [{ kind: 'ridge-bare', dist: 4000, height: 72, spread: 4600, tint: 0x9a8b70 }],
+  },
+  zandvoort: {
+    ground: [
+      { to: 32, surface: 'north-sea-sand-apron', tint: 0xc3b78e },
+      { to: 108, surface: 'marram-tufted-dune', tint: 0x999566 },
+      { to: Infinity, surface: 'bare-drifting-sand', tint: 0xc0af82 },
+    ], landform: 'dune',
+    backdrop: [
+      { kind: 'city-sprawl', dist: 1000, height: 28, spread: 700, tint: 0x96a3aa },
+      { kind: 'dune-ridge', dist: 1200, height: 44, spread: 3600, tint: 0xada88e },
+      { kind: 'sea', dist: 3000, height: 7, spread: 4200, tint: 0x8fa9b8 },
+    ],
+  },
+  monza: {
+    ground: [
+      { to: 120, surface: 'dappled-parkland-grass', tint: 0x5c7d4a },
+      { to: Infinity, surface: 'high-canopy-floor', tint: 0x384334 },
+    ], landform: 'flat',
+    backdrop: [{ kind: 'none', dist: 0, height: 0, spread: 0 }],
+  },
+  madrid: {
+    ground: [
+      { to: 40, surface: 'expo-concrete-paving', tint: 0xaaa69f },
+      { to: 102, surface: 'new-raw-subsoil', tint: 0x9c765d },
+      { to: Infinity, surface: 'grid-planted-mulch', tint: 0x6f5949 },
+    ], landform: 'terrace',
+    backdrop: [
+      { kind: 'industry', dist: 500, height: 38, spread: 1800, tint: 0x87949d },
+      { kind: 'city-cluster', dist: 17000, height: 92, spread: 620, tint: 0x8d9fb1 },
+      { kind: 'mountain', dist: 50000, height: 82, spread: 2200, tint: 0xa1adba },
+    ],
+  },
+  baku: {
+    ground: [
+      { to: 20, surface: 'granite-kerb-cobble', tint: 0x8e8c87 },
+      { to: 66, surface: 'caspian-paved-promenade', tint: 0xa39c90 },
+      { to: Infinity, surface: 'seaward-irrigated-lawn', tint: 0x698361 },
+    ], landform: 'terrace',
+    backdrop: [
+      { kind: 'city-sprawl', dist: 400, height: 64, spread: 2200, tint: 0x85949f },
+      { kind: 'city-cluster', dist: 1200, height: 118, spread: 520, tint: 0x74899d },
+      { kind: 'ridge-bare', dist: 9000, height: 70, spread: 3000, tint: 0xa28f76 },
+      { kind: 'sea', dist: 3000, height: 7, spread: 2500, tint: 0x7f9fb0 },
+    ],
+  },
+  singapore: {
+    ground: [
+      { to: 22, surface: 'granite-sett-paving', tint: 0x858b8b },
+      { to: 70, surface: 'civic-concrete-plaza', tint: 0xa4a39e },
+      { to: Infinity, surface: 'padang-turf', tint: 0x4f7955 },
+    ], landform: 'flat',
+    backdrop: [
+      { kind: 'city-sprawl', dist: 700, height: 54, spread: 1500, tint: 0x2b3342 },
+      { kind: 'city-cluster', dist: 1100, height: 104, spread: 2300, tint: 0x354154 },
+    ],
+  },
+  austin: {
+    ground: [
+      { to: 24, surface: 'dry-prairie-verge', tint: 0x6f794f },
+      { to: 108, surface: 'graded-earth-bank', tint: 0x9a684c },
+      { to: Infinity, surface: 'dormant-prairie-black-clay', tint: 0x75674d },
+    ], landform: 'hillside',
+    backdrop: [{ kind: 'none', dist: 0, height: 0, spread: 0 }],
+  },
+  mexico: {
+    ground: [
+      { to: 98, surface: 'dusty-patchy-park-grass', tint: 0x777758 },
+      { to: Infinity, surface: 'bare-lakebed-clay', tint: 0x8d705f },
+    ], landform: 'flat',
+    backdrop: [
+      { kind: 'city-sprawl', dist: 2000, height: 52, spread: 5600, tint: 0x9c928a },
+      { kind: 'mountain', dist: 70000, height: 102, spread: 1800, tint: 0xaab2bd },
+    ],
+  },
+  interlagos: {
+    ground: [
+      { to: 18, surface: 'narrow-rain-darkened-grass', tint: 0x55704f },
+      { to: 82, surface: 'red-laterite-bank', tint: 0x713b2d },
+      { to: Infinity, surface: 'dense-secondary-forest', tint: 0x3f5742 },
+    ], landform: 'bowl',
+    backdrop: [
+      { kind: 'city-sprawl', dist: 1000, height: 58, spread: 3000, tint: 0x758077 },
+      { kind: 'city-cluster', dist: 10000, height: 82, spread: 1800, tint: 0x8898a5 },
+    ],
+  },
+  lasvegas: {
+    ground: [
+      { to: 24, surface: 'strip-concrete-sidewalk', tint: 0xa9a69f },
+      { to: 58, surface: 'decorative-paver', tint: 0x987f70 },
+      { to: Infinity, surface: 'gravel-mulch-bed', tint: 0x75685f },
+    ], landform: 'flat',
+    backdrop: [
+      { kind: 'city-sprawl', dist: 600, height: 34, spread: 3400, tint: 0x252b39 },
+      { kind: 'city-cluster', dist: 1000, height: 142, spread: 2700, tint: 0x313846 },
+      { kind: 'mountain', dist: 18000, height: 92, spread: 3000, tint: 0x000000,
+        nightCutout: true },
+    ],
+  },
+  lusail: {
+    ground: [
+      { to: 18, surface: 'hard-edge-artificial-turf', tint: 0x4f805e },
+      { to: 86, surface: 'pale-gravel-hardpan', tint: 0xb4aa92 },
+      { to: Infinity, surface: 'flat-stony-desert', tint: 0x938976 },
+    ], landform: 'flat',
+    backdrop: [{ kind: 'city-cluster', dist: 12000, height: 48, spread: 420, tint: 0x232d3e }],
+  },
+  yasmarina: {
+    ground: [
+      { to: 28, surface: 'white-crushed-limestone', tint: 0xc8c2ae },
+      { to: 90, surface: 'sculpted-sand-berm', tint: 0xc0a979 },
+      { to: Infinity, surface: 'over-green-irrigated-turf', tint: 0x56835b },
+    ], landform: 'flat',
+    backdrop: [{ kind: 'none', dist: 0, height: 0, spread: 0 }],
+  },
+});
+
+const GROUND_SURFACE_TILE = Object.freeze({
+  'mown-park-turf': 'grass', 'worn-park-turf': 'grass', 'open-parkland': 'grass',
+  'wide-concrete-apron': 'asphalt', 'humid-mown-grass': 'grass', 'reed-fringed-marsh': 'grass',
+  'mown-green-verge': 'grass', 'graded-green-earth-bank': 'grass', 'damp-forest-floor': 'grass',
+  'pale-sand-apron': 'gravel', 'raked-sand-berm': 'gravel', 'desert-pavement': 'asphalt',
+  'narrow-promenade': 'asphalt', 'empty-pale-sand-lot': 'gravel', 'coastal-rubble': 'gravel',
+  'painted-car-park-asphalt': 'asphalt', 'artificial-turf-bed': 'grass', 'mulch-island': 'gravel',
+  'narrow-mown-grass': 'grass', 'leafy-tree-screen': 'grass', 'riprap-bank': 'gravel',
+  'street-pavement-kerb': 'asphalt', 'quay-slab': 'asphalt', 'stone-retaining-wall': 'gravel',
+  'pale-gravel-apron': 'gravel', 'dry-straw-grass': 'grass', 'catalan-dusty-earth': 'grass',
+  'alpine-asphalt-apron': 'asphalt', 'mown-emerald-meadow': 'grass', 'black-spruce-floor': 'grass',
+  'airfield-asphalt-apron': 'asphalt', 'mown-pasture': 'grass', 'rough-windblown-pasture': 'grass',
+  'wet-gravel-trap': 'gravel', 'wet-upland-grass': 'grass', 'ardennes-forest-floor': 'grass',
+  'chalky-pale-gravel': 'gravel', 'burnt-straw-grass': 'grass', 'bare-sandy-soil': 'grass',
+  'north-sea-sand-apron': 'gravel', 'marram-tufted-dune': 'grass', 'bare-drifting-sand': 'gravel',
+  'park-gravel-trap': 'gravel', 'dappled-parkland-grass': 'grass', 'high-canopy-floor': 'grass',
+  'expo-concrete-paving': 'asphalt', 'new-raw-subsoil': 'gravel', 'grid-planted-mulch': 'gravel',
+  'granite-kerb-cobble': 'asphalt', 'caspian-paved-promenade': 'asphalt', 'seaward-irrigated-lawn': 'grass',
+  'granite-sett-paving': 'asphalt', 'civic-concrete-plaza': 'asphalt', 'padang-turf': 'grass',
+  'dry-prairie-verge': 'grass', 'graded-earth-bank': 'grass', 'dormant-prairie-black-clay': 'grass',
+  'highland-asphalt-apron': 'asphalt', 'dusty-patchy-park-grass': 'grass', 'bare-lakebed-clay': 'grass',
+  'narrow-rain-darkened-grass': 'grass', 'red-laterite-bank': 'grass', 'dense-secondary-forest': 'grass',
+  'strip-concrete-sidewalk': 'asphalt', 'decorative-paver': 'asphalt', 'gravel-mulch-bed': 'gravel',
+  'hard-edge-artificial-turf': 'grass', 'pale-gravel-hardpan': 'gravel', 'flat-stony-desert': 'gravel',
+  'white-crushed-limestone': 'gravel', 'sculpted-sand-berm': 'gravel', 'over-green-irrigated-turf': 'grass',
+});
+
+// Mid-ground venue infrastructure. This table is deliberately data, rather
+// than a set of per-circuit branches: the same placement machinery scales the
+// paddock, parking/staging, spectator banks and venue boundary to each host.
+// `carParks` means open spectator fields; street venues instead get one compact
+// asphalt `staging` court behind the temporary paddock.
+const INFRASTRUCTURE_PROFILE = {
+  melbourne:   { mode: 'permanent', paddock: 'large',   carParks: 3, surface: 'grass',  camping: false, banks: 4, fence: 'mesh',     fenceRadius: 230 },
+  shanghai:    { mode: 'permanent', paddock: 'large',   carParks: 3, surface: 'gravel', camping: false, banks: 3, fence: 'mesh',     fenceRadius: 260 },
+  suzuka:      { mode: 'permanent', paddock: 'large',   carParks: 4, surface: 'gravel', camping: true,  banks: 5, fence: 'mesh',     fenceRadius: 235 },
+  bahrain:     { mode: 'permanent', paddock: 'xlarge',  carParks: 3, surface: 'gravel', camping: false, banks: 4, fence: 'mesh',     fenceRadius: 285 },
+  jeddah:      { mode: 'street',    paddock: 'compact', carParks: 0, surface: 'none',   camping: false, banks: 0, fence: 'hoarding', fenceRadius: 92,  staging: 1 },
+  miami:       { mode: 'street',    paddock: 'compact', carParks: 0, surface: 'none',   camping: false, banks: 0, fence: 'hoarding', fenceRadius: 105, staging: 1 },
+  montreal:    { mode: 'street',    paddock: 'compact', carParks: 0, surface: 'none',   camping: false, banks: 1, fence: 'hoarding', fenceRadius: 88,  staging: 1 },
+  monaco:      { mode: 'street',    paddock: 'compact', carParks: 0, surface: 'none',   camping: false, banks: 0, fence: 'hoarding', fenceRadius: 72,  staging: 1 },
+  barcelona:   { mode: 'permanent', paddock: 'large',   carParks: 3, surface: 'gravel', camping: true,  banks: 4, fence: 'mesh',     fenceRadius: 245 },
+  spielberg:   { mode: 'permanent', paddock: 'medium',  carParks: 4, surface: 'grass',  camping: true,  banks: 6, fence: 'mesh',     fenceRadius: 225 },
+  silverstone: { mode: 'permanent', paddock: 'xlarge',  carParks: 4, surface: 'grass',  camping: true,  banks: 4, fence: 'mesh',     fenceRadius: 300 },
+  spa:         { mode: 'permanent', paddock: 'large',   carParks: 4, surface: 'grass',  camping: true,  banks: 6, fence: 'mesh',     fenceRadius: 285 },
+  hungaroring: { mode: 'permanent', paddock: 'medium',  carParks: 3, surface: 'grass',  camping: true,  banks: 5, fence: 'mesh',     fenceRadius: 220 },
+  zandvoort:   { mode: 'permanent', paddock: 'medium',  carParks: 3, surface: 'gravel', camping: true,  banks: 5, fence: 'mesh',     fenceRadius: 215 },
+  monza:       { mode: 'permanent', paddock: 'large',   carParks: 4, surface: 'grass',  camping: true,  banks: 5, fence: 'mesh',     fenceRadius: 275 },
+  madrid:      { mode: 'street',    paddock: 'compact', carParks: 0, surface: 'none',   camping: false, banks: 0, fence: 'hoarding', fenceRadius: 96,  staging: 1 },
+  baku:        { mode: 'street',    paddock: 'compact', carParks: 0, surface: 'none',   camping: false, banks: 0, fence: 'hoarding', fenceRadius: 78,  staging: 1 },
+  singapore:   { mode: 'street',    paddock: 'compact', carParks: 0, surface: 'none',   camping: false, banks: 0, fence: 'hoarding', fenceRadius: 82,  staging: 1 },
+  austin:      { mode: 'permanent', paddock: 'large',   carParks: 4, surface: 'grass',  camping: true,  banks: 6, fence: 'mesh',     fenceRadius: 275 },
+  mexico:      { mode: 'permanent', paddock: 'large',   carParks: 3, surface: 'gravel', camping: false, banks: 4, fence: 'mesh',     fenceRadius: 240 },
+  interlagos:  { mode: 'permanent', paddock: 'medium',  carParks: 3, surface: 'grass',  camping: false, banks: 5, fence: 'mesh',     fenceRadius: 215 },
+  lasvegas:    { mode: 'street',    paddock: 'compact', carParks: 0, surface: 'none',   camping: false, banks: 0, fence: 'hoarding', fenceRadius: 112, staging: 1 },
+  lusail:      { mode: 'permanent', paddock: 'large',   carParks: 3, surface: 'gravel', camping: false, banks: 3, fence: 'mesh',     fenceRadius: 290 },
+  yasmarina:   { mode: 'permanent', paddock: 'large',   carParks: 3, surface: 'gravel', camping: false, banks: 3, fence: 'mesh',     fenceRadius: 250 },
+};
+const INFRASTRUCTURE_PROFILE_DEFAULT = {
+  mode: 'permanent', paddock: 'medium', carParks: 2, surface: 'gravel',
+  camping: false, banks: 3, fence: 'mesh', fenceRadius: 230,
+};
 
 // Hard caps are independent of lap length. The forest wall may contain thousands
 // of cheap billboard instances, but the geometry-rich near layer and the broad
@@ -113,6 +472,12 @@ const DEPTH_CAP = Object.freeze({
   trunks: 96, shrubs: 120, serviceBays: 8, serviceParts: 64,
   tyreStacks: 20, farMass: 36, cityNear: 96, citySkyline: 112, skylineCaps: 20,
   identityBatches: 3, identityInstances: 15, identityTriangles: 260,
+  infraPaddockAprons: 1, infraPaddockVehicleParts: 36, infraPaddockBuildingParts: 28,
+  infraPaddockTents: 4, infraPerimeterPosts: 384, infraPerimeterPanels: 384,
+  infraPerimeterGates: 8, infraParkingSurfaces: 4, infraParkedCarParts: 320,
+  infraAccessRoads: 384, infraSurfaceMargins: 400,
+  infraSpectatorBanks: 6, infraSpectatorCrowds: 18,
+  infraSupportClutter: 40, infraCampingTents: 24,
 });
 // Classic circuits keep real gravel traps; the modern venues have paved,
 // painted run-off areas instead.
@@ -471,6 +836,9 @@ function rng(seed) {
 export function buildCircuit(trackId, def, scene) {
   const themeName = TRACK_THEME[trackId] || 'classic';
   const theme = THEMES[themeName];
+  const lightingRig = theme.nightRig
+    ? NIGHT_LIGHTING_RIGS[theme.nightRig]
+    : (theme.floodlit ? NIGHT_LIGHTING_RIGS.dusk : null);
   const isStreet = STREET.has(trackId);
   const halfWidth = def.width / 2;
   const runoff = isStreet ? 2.2 : 9.5;
@@ -574,7 +942,10 @@ export function buildCircuit(trackId, def, scene) {
 
   // ================= MESHES =================
   const group = new THREE.Group();
-  const rnd = rng(trackId.split('').reduce((a, c) => a * 31 + c.charCodeAt(0), 7) | 0);
+  const scenerySeed = trackId.split('').reduce((a, c) => a * 31 + c.charCodeAt(0), 7) | 0;
+  const rnd = rng(scenerySeed);
+  const venue = VENUE[trackId];
+  if (!venue) throw new Error(`Missing VENUE model for circuit: ${trackId}`);
   const idxAt = (i) => ((i % N) + N) % N;
   const stepOf = (metres) => Math.max(1, Math.round(metres / ds));
 
@@ -658,30 +1029,44 @@ export function buildCircuit(trackId, def, scene) {
   // suppresses an InstancedMesh draw from inside onBeforeRender (which three calls
   // before submitting the buffer), and WebGL*BufferRenderer.renderInstances
   // returns immediately on primcount 0. Nothing else in the pipeline overrides
-  // materials, so this cannot fire during the colour or shadow passes.
+  // materials, so this cannot fire during the colour or shadow passes. Regular
+  // merged decals use the equivalent zero draw-range path below.
   const keepOutOfAO = (mesh) => {
     mesh.onBeforeRender = (rend, sc, cam, geo, mat) => {
-      if (mat && mat.isMeshNormalMaterial && mesh.userData.aoCount === undefined) {
-        mesh.userData.aoCount = mesh.count;
-        mesh.count = 0;
+      if (mat && mat.isMeshNormalMaterial && !mesh.userData.aoSuppressed) {
+        mesh.userData.aoSuppressed = true;
+        if (mesh.isInstancedMesh) {
+          mesh.userData.aoCount = mesh.count;
+          mesh.count = 0;
+        } else {
+          // Merged shade decals are regular Meshes, so an instance count cannot
+          // suppress them. Zero their private geometry draw range for the normal
+          // pass instead; otherwise GTAO sees every transparent decal as a solid
+          // rectangle even though its colour-pass texture is genuinely radial.
+          mesh.userData.aoDrawRange = { ...geo.drawRange };
+          geo.setDrawRange(0, 0);
+        }
       }
     };
     mesh.onAfterRender = () => {
-      if (mesh.userData.aoCount !== undefined) {
+      if (!mesh.userData.aoSuppressed) return;
+      if (mesh.isInstancedMesh) {
         mesh.count = mesh.userData.aoCount;
         mesh.userData.aoCount = undefined;
+      } else if (mesh.userData.aoDrawRange) {
+        mesh.geometry.setDrawRange(mesh.userData.aoDrawRange.start, mesh.userData.aoDrawRange.count);
+        mesh.userData.aoDrawRange = undefined;
       }
+      mesh.userData.aoSuppressed = false;
     };
   };
 
   // How much of a scenery surface is normal-independent.
   //
-  // K_BOARD is high on purpose. A printed advertising board has to be legible from
-  // the track wherever it stands, and the WebGL harness measures it: at k = 0.55
-  // the same hoarding run came back 1.43x brighter on the sunward side of the
-  // circuit than on the shaded side, against a 1.25x acceptance bar. At k = 0.82
-  // the diffuse term is small enough that the two sides land inside it.
-  const K_BOARD = theme.night ? 0.9 : 0.88;
+  // Day boards retain their normal-independent print floor. Night boards do not:
+  // away from a mast they are dark printed surfaces, and the spatial barrier
+  // spill below is what makes a panel bright near a pool.
+  const K_BOARD = theme.night ? 0.10 : (theme.floodlit ? 0.52 : 0.88);
   // Foliage keeps more of its diffuse response (it is a lit surface, not a print),
   // but enough of a floor that the darkest leaf pixel clears rgb(40,55,40).
   const K_FOLIAGE = theme.night ? 0.5 : 0.62;
@@ -704,14 +1089,13 @@ export function buildCircuit(trackId, def, scene) {
   // K_FOLIAGE: handing that back instead re-brightens the floodlit fronds and the
   // halo returns (measured: pull-down 0.4 -> worst ring pixel 1.0886, 0.25 -> 1.65).
   //
-  // Daylight and dusk keep the full floor. They are not affected: the threshold is
-  // 0.86 and the strength 0.18, the same ring measures EXACTLY 1.0000 at Monza,
-  // Spa and Bahrain today, and bloom's whole contribution in that band is at most
-  // 1.79/255. Cutting their floor to 0.25 would drop Bahrain's darkest foliage
-  // pixel from 54.1 to 42.5, back under the rgb(40,55,40) = 50.7 bar the previous
-  // fix exists to hold, in exchange for no measurable change on screen.
-  const K_FOLIAGE_EMIT = theme.night ? 0.25 : K_FOLIAGE;
-  const K_FACADE = theme.night ? 0.5 : 0.4;
+  // Daylight bloom was already safe, but the full 0.62 emission flattened the
+  // newly-authored canopy contrast before direct light could shape it. A restrained
+  // 0.42 floor retains the floor without the wash: the final Monza harness measures
+  // darkest foliage at 53.0 against the rgb(40,55,40)=50.7 bar and p05..p95 at
+  // 2.40x. Night stays below the already bloom-safe 0.25 point at 0.20.
+  const K_FOLIAGE_EMIT = theme.night ? 0.20 : 0.42;
+  const K_FACADE = theme.night ? (theme.nightRig === 'lasvegas' ? 0.18 : 0.10) : 0.4;
 
   // Fill lights. main.js keeps its sun and its sky hemisphere; these two add a
   // NEUTRAL floor with a real red channel plus a soft counter-light from the far
@@ -751,9 +1135,9 @@ export function buildCircuit(trackId, def, scene) {
   // the vegetation cannot be scattered on top of it or in front of it. Filled in
   // as the furniture is placed; consumed by the treeline builder further down.
   const keepOut = [];
-  const addKeepOut = (p, fz, halfLen, halfDep) => {
+  const addKeepOut = (p, fz, halfLen, halfDep, tag = 'structure') => {
     const fx = new THREE.Vector3().crossVectors(UP, fz).normalize();
-    keepOut.push({ x: p.x, z: p.z, fx, fz: fz.clone().normalize(), halfLen, halfDep });
+    keepOut.push({ x: p.x, z: p.z, fx, fz: fz.clone().normalize(), halfLen, halfDep, tag });
   };
   const inKeepOut = (px, pz) => {
     for (const k of keepOut) {
@@ -785,15 +1169,41 @@ export function buildCircuit(trackId, def, scene) {
   const shadeRects = [];   // { x, z, rot, w, d, a }  soft-rect gradient quads
   const shadeBlobs = [];   // { x, z, rot, rx, rz, a } soft-ellipse gradient quads
   const treeShadeSpans = []; // { i0, count, side } forest-wall ground tint strips
+  const canopyShadeStats = { gridM: 6, perCell: 3, alphaBase: 0.18, alphaCeiling: 0.52, input: 0, dropped: 0 };
+  // Pure positional hashes only. Scenery's seeded random stream is a public
+  // deterministic dependency, so ground variation and shade jitter never advance it.
+  const hashGrid = (ix, iz, seed = 0) => {
+    let h = Math.imul(ix | 0, 0x1f123bb5) ^ Math.imul(iz | 0, 0x5f356495) ^ Math.imul(seed | 0, 0x6c8e9cf5);
+    h ^= h >>> 15; h = Math.imul(h, 0x2c1b3c6d);
+    h ^= h >>> 12; h = Math.imul(h, 0x297a2d39);
+    h ^= h >>> 15;
+    return (h >>> 0) / 4294967295;
+  };
+  const positionHash = (x, z, seed = 0) => hashGrid(Math.floor(x * 4), Math.floor(z * 4), seed);
+  const smooth01 = t => {
+    const u = Math.max(0, Math.min(1, t));
+    return u * u * (3 - 2 * u);
+  };
+  const smoothBand = (a, b, x) => smooth01((x - a) / (b - a));
+  const valueNoise = (x, z, wavelength, seed) => {
+    const gx = x / wavelength, gz = z / wavelength;
+    const ix = Math.floor(gx), iz = Math.floor(gz);
+    const tx = smooth01(gx - ix), tz = smooth01(gz - iz);
+    const a = hashGrid(ix, iz, seed), b = hashGrid(ix + 1, iz, seed);
+    const c = hashGrid(ix, iz + 1, seed), d = hashGrid(ix + 1, iz + 1, seed);
+    const ab = a + (b - a) * tx, cd = c + (d - c) * tx;
+    return ab + (cd - ab) * tz;
+  };
   // skirt + sun-offset lobe for one rectangular structure (len x dep, yaw rot)
-  const addStructureShade = (x, z, rot, len, dep, hgt, aSkirt = 0.18, aLobe = 0.26) => {
+  const addStructureShade = (x, z, rot, len, dep, hgt, aSkirt = 0.18, aLobe = 0.26,
+    groundLift = 0.045) => {
     // sun elevation is atan(380 / |(260,160)|) ~ 51.2deg: a wall of height h
     // throws a shadow ~0.8h; capped so a 14m stand does not shade half the verge
     const off = Math.min(9, hgt * 0.55);
-    shadeRects.push({ x, z, rot, w: len + 5, d: dep + 5, a: aSkirt * SHADE_MUL });
+    shadeRects.push({ x, z, rot, w: len + 5, d: dep + 5, a: aSkirt * SHADE_MUL, groundLift });
     shadeRects.push({
       x: x + SHADE_DIR.x * off, z: z + SHADE_DIR.z * off,
-      rot, w: len + 7, d: dep + 8, a: aLobe * SHADE_MUL,
+      rot, w: len + 7, d: dep + 8, a: aLobe * SHADE_MUL, groundLift,
     });
   };
 
@@ -922,9 +1332,51 @@ export function buildCircuit(trackId, def, scene) {
   // verge over a metre off its own road. Out in the open, where the crease would
   // actually be visible, the slack grows to several metres and smooths it away.
   const FADE_IN = 2 * wallOff;                                  // full relief to here
-  const FADE_OUT = FADE_IN + Math.max(24, wallOff * 1.6);        // flat ground past here
+  const FADE_OUT = FADE_IN + Math.max(24, wallOff * 1.6);        // local road relief ends here
   const BLEND_MIN = 0.6, BLEND_REL = 0.10;
   const BLEND_REACH = FADE_OUT * (1 + 3 * BLEND_REL) + 3 * BLEND_MIN;
+  // Outfield relief is positional-hash terrain, never seeded scenery RNG. The
+  // road still owns the height field through FADE_IN; between FADE_IN/FADE_OUT
+  // it hands off smoothly to the venue landform. Values stay deliberately low
+  // enough to read as land rather than a fantasy mountain range.
+  const landformAngle = ((scenerySeed >>> 0) / 4294967295) * Math.PI * 2;
+  const landformAxis = { x: Math.cos(landformAngle), z: Math.sin(landformAngle) };
+  const landformAt = (px, pz) => {
+    if (venue.landform === 'flat') return 0;
+    const dx = px - centre.x, dz = pz - centre.z;
+    const radial = Math.hypot(dx, dz);
+    const axis = dx * landformAxis.x + dz * landformAxis.z;
+    const across = -dx * landformAxis.z + dz * landformAxis.x;
+    const broad = valueNoise(px, pz, 310, 131) - 0.5;
+    if (venue.landform === 'cut-bank') {
+      const wave = Math.sin((axis + across * 0.22) / 150);
+      const folded = wave * wave; // smooth bank crests; no abs() cusp for the mesh to bridge
+      return 3.5 + folded * 10.5 + broad * 4.0;
+    }
+    if (venue.landform === 'dune') {
+      const ridge = Math.sin(axis / 82 + Math.sin(across / 230) * 0.8);
+      const cross = Math.sin(across / 155 + 1.4);
+      return 2.8 + ridge * 3.2 + cross * 1.35 + broad * 1.8;
+    }
+    if (venue.landform === 'bowl') {
+      const rimStart = Math.max(160, extent * 0.48);
+      const rim = smoothBand(rimStart, rimStart + Math.max(320, extent * 0.52), radial);
+      return rim * (15.5 + 2.5 * Math.sin(radial / 145 + axis / 370)) + broad * 1.5;
+    }
+    if (venue.landform === 'hillside') {
+      const climb = Math.max(-1, Math.min(1, axis / Math.max(520, extent + 260)));
+      return 7.5 + climb * 9.5 + broad * 3.0 + Math.sin(across / 270) * 1.4;
+    }
+    // Terraces use broad, softened height shelves. Quantisation is applied to a
+    // low-frequency ramp, so the radial ground tessellation resolves each ledge
+    // without narrow spikes or any change to the physical racing surface.
+    const ramp = 7.0 + Math.max(-7, Math.min(13, axis / 72));
+    const terraceCoord = (ramp + 18) / 3;
+    const terraceBase = Math.floor(terraceCoord);
+    const terraceBlend = smoothBand(0.30, 0.70, terraceCoord - terraceBase);
+    const shelf = (terraceBase + terraceBlend) * 3 - 18;
+    return shelf + broad * 1.4;
+  };
   // One byte per bucket saying "some sample is close enough to matter", so the
   // overwhelming majority of ground vertices (open country) cost one array read.
   const nearMask = (() => {
@@ -951,11 +1403,11 @@ export function buildCircuit(trackId, def, scene) {
   // nearest sample, then a second sweep limited to the slack that actually
   // matters. Right by the track that second sweep is a single ring, where a
   // one-pass version over the whole blend reach would touch 81 buckets.
-  const terrainAt = (px, pz) => {
+  let terrainAt = (px, pz) => {
     const cx = Math.floor(px / GRID), cz = Math.floor(pz / GRID);
     const ix = cx - nearMask.x0, iz = cz - nearMask.z0;
-    if (ix < 0 || iz < 0 || ix >= nearMask.w || iz >= nearMask.hgt) return 0;
-    if (!nearMask.m[iz * nearMask.w + ix]) return 0;
+    if (ix < 0 || iz < 0 || ix >= nearMask.w || iz >= nearMask.hgt) return landformAt(px, pz);
+    if (!nearMask.m[iz * nearMask.w + ix]) return landformAt(px, pz);
     const rMax = nearMask.pad;
     let best2 = Infinity;
     for (let r = 0; r <= rMax; r++) {
@@ -976,7 +1428,7 @@ export function buildCircuit(trackId, def, scene) {
       if (best2 < Infinity && Math.sqrt(best2) <= r * GRID) break;
     }
     const best = Math.sqrt(best2);
-    if (best > FADE_OUT) return 0;
+    if (best > FADE_OUT) return landformAt(px, pz);
     const sigma = Math.max(BLEND_MIN, best * BLEND_REL);
     const lim = best + 3 * sigma;
     const rr = Math.min(rMax, Math.ceil(lim / GRID) + 1);
@@ -998,9 +1450,10 @@ export function buildCircuit(trackId, def, scene) {
     }
     const local = ws > 0 ? hs / ws : 0;
     if (best <= FADE_IN) return local;
-    // smootherstep down to the flat datum
+    // smootherstep from the road-correlated field into the authored landform
     const t = 1 - (best - FADE_IN) / (FADE_OUT - FADE_IN);
-    return local * t * t * t * (t * (t * 6 - 15) + 10);
+    const roadWeight = t * t * t * (t * (t * 6 - 15) + 10);
+    return local * roadWeight + landformAt(px, pz) * (1 - roadWeight);
   };
 
   // Surface-aligned orientation for a road decal at sample `i`: local +x along
@@ -1104,10 +1557,11 @@ export function buildCircuit(trackId, def, scene) {
   // Anisotropy is 16 everywhere: the ground tile is the surface that runs from
   // under the front wing all the way to the fog, so it is the one that aliases
   // into moire stripes toward the horizon at low anisotropy.
-  let groundMat, groundTileM = 20;
+  let groundMat, groundTileM = 20, groundBaseSurface = 'grass';
   if (themeName === 'classic') {
     const surface = surfaceSet('grass', { aniso: 16 });
     groundTileM = 20;                                   // 20m grass tiles
+    groundBaseSurface = 'grass';
     groundMat = std({ ...surfaceProps(surface), roughness: 1 });
   } else if (themeName === 'desert' || themeName === 'dusk') {
     // Round 2 measured the desert ground's clods at 30-50cm ("bark mulch or
@@ -1115,6 +1569,7 @@ export function buildCircuit(trackId, def, scene) {
     // denser tile than grass does; 8m puts a clod at 8-12cm.
     const surface = surfaceSet('gravel', { aniso: 16 });
     groundTileM = 8;
+    groundBaseSurface = 'gravel';
     groundMat = std({
       ...surfaceProps(surface),
       roughness: 1,
@@ -1126,21 +1581,287 @@ export function buildCircuit(trackId, def, scene) {
     // backdrop wall. It is paved, so it gets the asphalt tile, tinted to theme.
     const surface = surfaceSet('asphalt', { aniso: 16 });
     groundTileM = 20;
+    groundBaseSurface = 'asphalt';
     groundMat = std({
       ...surfaceProps(surface, 0.28),
       roughness: 1,
       color: new THREE.Color(theme.ground).lerp(new THREE.Color(0xffffff), 0.55),
     });
   }
+  groundMat.vertexColors = true;
+  const groundMass = (VENUE_DEPTH[trackId] || VENUE_DEPTH_DEFAULT).mass;
+  const realisedGroundBands = venue.ground.map((band) => {
+    const tile = GROUND_SURFACE_TILE[band.surface];
+    if (!tile) throw new Error(`Unknown VENUE ground surface: ${trackId}/${band.surface}`);
+    return { ...band, tile };
+  });
+  if (realisedGroundBands.length < 2 || realisedGroundBands.length > 3
+    || realisedGroundBands.at(-1).to !== Infinity
+    || realisedGroundBands.slice(0, -1).some((band, index, bands) =>
+      !Number.isFinite(band.to) || band.to <= (index ? bands[index - 1].to : 0))) {
+    throw new Error(`VENUE ${trackId} must carry two or three ordered ground bands ending at Infinity`);
+  }
+  const groundBandBlendM = trackId === 'lusail' ? 1.5 : 8;
+  const white = new THREE.Color(0xffffff);
+  const strongerEarthTint = ['barcelona', 'hungaroring', 'austin', 'mexico', 'interlagos'].includes(trackId);
+  const groundBandWhiteMix = trackId === 'spa' ? 0.28 : (strongerEarthTint ? 0.38 : 0.58);
+  const groundBandFragmentStrength = trackId === 'spa' || trackId === 'interlagos'
+    ? 0.62 : (strongerEarthTint ? 0.54 : 0.42);
+  const groundBandVertexStrength = trackId === 'spa' || trackId === 'interlagos'
+    ? 0.32 : (strongerEarthTint ? 0.29 : 0.24);
+  const groundBandTints = realisedGroundBands.map(band =>
+    new THREE.Color(band.tint).lerp(white, groundBandWhiteMix));
+  // The shader has three fixed sampler slots to keep one stable program across
+  // all venues. A genuine two-band venue repeats its outer band in the dormant
+  // third slot; the authored metadata remains two bands and the second boundary
+  // sits beyond the encoded distance field, so no fake surface appears.
+  const shaderGroundBands = realisedGroundBands.length === 2
+    ? [realisedGroundBands[0], realisedGroundBands[1], realisedGroundBands[1]]
+    : realisedGroundBands;
+  const shaderGroundBandTints = realisedGroundBands.length === 2
+    ? [groundBandTints[0], groundBandTints[1], groundBandTints[1]]
+    : groundBandTints;
+  const groundBandTintChannels = [
+    shaderGroundBandTints.map(tint => tint.r),
+    shaderGroundBandTints.map(tint => tint.g),
+    shaderGroundBandTints.map(tint => tint.b),
+  ];
+  const groundBandTextureCache = new Map();
+  const groundBandTexture = (tile) => {
+    if (groundBandTextureCache.has(tile)) return groundBandTextureCache.get(tile);
+    const map = tile === groundBaseSurface
+      ? groundMat.map : ctex(surfaceCanvas(tile), { aniso: 16, repeat: [1, 1] });
+    groundBandTextureCache.set(tile, map);
+    return map;
+  };
+  const groundBandMaps = shaderGroundBands.map(band => groundBandTexture(band.tile));
+  // Only a very-low-frequency field belongs in vertex colours. The old 140m,
+  // 46m and 16m fields were evaluated on vertices spaced from 12m to 220m, so
+  // Gouraud interpolation exposed the radial mesh as a regular tonal grid. The
+  // two detail octaves now run per fragment from world position; 560m is four
+  // times the former longest wavelength and remains safe on the coarse outfield.
+  const vertexMacroOctaves = [
+    { wavelength: 560, weight: 0.62, seed: 17 },
+  ];
+  const fragmentMacroOctaves = [
+    { wavelength: 46, weight: 0.27, seed: 43 },
+    { wavelength: 16, weight: 0.11, seed: 89 },
+  ];
+  const macroOctaves = [...vertexMacroOctaves, ...fragmentMacroOctaves];
+  const GROUND_MACRO_AMPLITUDE = 0.26;
+  groundMat.onBeforeCompile = (shader) => {
+    const common = '#include <common>';
+    const begin = '#include <begin_vertex>';
+    const mapFragment = '#include <map_fragment>';
+    if (!shader.vertexShader.includes(common) || !shader.vertexShader.includes(begin)
+      || !shader.fragmentShader.includes(common) || !shader.fragmentShader.includes(mapFragment)) {
+      throw new Error('Ground macro shader chunks changed; refusing an unpinned shader patch');
+    }
+    shader.vertexShader = shader.vertexShader
+      .replace(common, `${common}\nvarying vec2 vApexGroundWorldXZ;`)
+      .replace(begin, `${begin}\n  vApexGroundWorldXZ = (modelMatrix * vec4(transformed, 1.0)).xz;`);
+    shader.fragmentShader = shader.fragmentShader
+      .replace(common, `${common}
+varying vec2 vApexGroundWorldXZ;
+uniform sampler2D apexWoodlandMap;
+uniform vec4 apexWoodlandBounds;
+uniform sampler2D apexGroundDistanceMap;
+uniform vec4 apexGroundDistanceBounds;
+uniform sampler2D apexGroundBandMap0;
+uniform sampler2D apexGroundBandMap1;
+uniform sampler2D apexGroundBandMap2;
+uniform vec2 apexGroundBandEnds;
+uniform float apexGroundBandBlendM;
+uniform vec3 apexGroundBandTint0;
+uniform vec3 apexGroundBandTint1;
+uniform vec3 apexGroundBandTint2;
+float apexGroundHash(vec2 cell, float seed) {
+  return fract(sin(dot(cell, vec2(127.1, 311.7)) + seed * 74.7) * 43758.5453123);
+}
+float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
+  vec2 grid = worldXZ / wavelength;
+  vec2 cell = floor(grid);
+  vec2 f = fract(grid);
+  f = f * f * (3.0 - 2.0 * f);
+  float a = apexGroundHash(cell, seed);
+  float b = apexGroundHash(cell + vec2(1.0, 0.0), seed);
+  float c = apexGroundHash(cell + vec2(0.0, 1.0), seed);
+  float d = apexGroundHash(cell + vec2(1.0, 1.0), seed);
+  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}`)
+      .replace(mapFragment, `#ifdef USE_MAP
+  vec4 apexGroundSample0 = texture2D(apexGroundBandMap0, vMapUv);
+  vec4 apexGroundSample1 = texture2D(apexGroundBandMap1, vMapUv);
+  vec4 apexGroundSample2 = texture2D(apexGroundBandMap2, vMapUv);
+  vec2 apexGroundDistanceUV = (vApexGroundWorldXZ - apexGroundDistanceBounds.xy)
+    * apexGroundDistanceBounds.zw;
+  float apexGroundDistance = texture2D(apexGroundDistanceMap, apexGroundDistanceUV).r
+    * ${ZONE_DISTANCE_CAP.toFixed(1)};
+  float apexGroundBlend01 = smoothstep(apexGroundBandEnds.x - apexGroundBandBlendM,
+    apexGroundBandEnds.x + apexGroundBandBlendM, apexGroundDistance);
+  float apexGroundBlend12 = smoothstep(apexGroundBandEnds.y - apexGroundBandBlendM,
+    apexGroundBandEnds.y + apexGroundBandBlendM, apexGroundDistance);
+  vec4 apexGroundSurface = mix(mix(apexGroundSample0, apexGroundSample1, apexGroundBlend01),
+    apexGroundSample2, apexGroundBlend12);
+  vec3 apexGroundTint = mix(mix(apexGroundBandTint0, apexGroundBandTint1, apexGroundBlend01),
+    apexGroundBandTint2, apexGroundBlend12);
+  diffuseColor *= apexGroundSurface;
+  diffuseColor.rgb *= mix(vec3(1.0), apexGroundTint, ${groundBandFragmentStrength.toFixed(2)});
+  ${trackId === 'suzuka' ? `
+  // Sparse exposed clay appears only as cut scars inside the graded bank band;
+  // it can never replace the green verge or forest floor as a field surface.
+  float apexSuzukaBank = smoothstep(25.0, 33.0, apexGroundDistance)
+    * (1.0 - smoothstep(74.0, 84.0, apexGroundDistance));
+  float apexSuzukaScarNoise = apexGroundNoise(vApexGroundWorldXZ, 13.0, 113.0)
+    * 0.68 + apexGroundNoise(vApexGroundWorldXZ, 31.0, 157.0) * 0.32;
+  float apexSuzukaClayScar = apexSuzukaBank * smoothstep(0.70, 0.82, apexSuzukaScarNoise) * 0.34;
+  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.24, 0.105, 0.052), apexSuzukaClayScar);` : ''}
+#endif
+  float apexGroundMacro =
+      (apexGroundNoise(vApexGroundWorldXZ, 46.0, 43.0) - 0.5) * 0.27
+    + (apexGroundNoise(vApexGroundWorldXZ, 16.0, 89.0) - 0.5) * 0.11;
+  diffuseColor.rgb *= 1.0 + apexGroundMacro * ${GROUND_MACRO_AMPLITUDE.toFixed(2)};
+  vec2 apexWoodlandUV = (vApexGroundWorldXZ - apexWoodlandBounds.xy) * apexWoodlandBounds.zw;
+  float apexWoodland = texture2D(apexWoodlandMap, apexWoodlandUV).r;
+  float apexWoodlandDark = 1.0 - 0.24 * apexWoodland;
+  diffuseColor.rgb *= apexWoodlandDark * vec3(
+    1.0 + 0.035 * apexWoodland,
+    1.0 - 0.025 * apexWoodland,
+    1.0 + 0.050 * apexWoodland);`);
+    shader.uniforms.apexWoodlandMap = { value: groundMat.userData.woodlandTexture };
+    shader.uniforms.apexWoodlandBounds = { value: groundMat.userData.woodlandBounds };
+    shader.uniforms.apexGroundDistanceMap = { value: groundMat.userData.groundDistanceTexture };
+    shader.uniforms.apexGroundDistanceBounds = { value: groundMat.userData.groundDistanceBounds };
+    shader.uniforms.apexGroundBandMap0 = { value: groundBandMaps[0] };
+    shader.uniforms.apexGroundBandMap1 = { value: groundBandMaps[1] };
+    shader.uniforms.apexGroundBandMap2 = { value: groundBandMaps[2] };
+    shader.uniforms.apexGroundBandEnds = { value: new THREE.Vector2(
+      realisedGroundBands[0].to,
+      realisedGroundBands.length === 2 ? ZONE_DISTANCE_CAP + groundBandBlendM * 2 : realisedGroundBands[1].to) };
+    shader.uniforms.apexGroundBandBlendM = { value: groundBandBlendM };
+    shader.uniforms.apexGroundBandTint0 = { value: shaderGroundBandTints[0] };
+    shader.uniforms.apexGroundBandTint1 = { value: shaderGroundBandTints[1] };
+    shader.uniforms.apexGroundBandTint2 = { value: shaderGroundBandTints[2] };
+  };
+  groundMat.customProgramCacheKey = () => 'apex-ground-world-macro-bands-v2-560-46-16';
+  groundMat.userData.macroShader = {
+    stage: 'fragment', coordinate: 'world-xz', amplitude: GROUND_MACRO_AMPLITUDE,
+    octaves: fragmentMacroOctaves.map(({ wavelength, weight }) => ({ wavelength, weight })),
+    bandSelection: 'fragment-world-distance',
+  };
+  groundMat.userData.woodlandTexture = null;
+  groundMat.userData.woodlandBounds = new THREE.Vector4(0, 0, 1, 1);
+  groundMat.userData.groundBandTextures = [...new Set(groundBandMaps)];
+  groundMat.userData.groundDistanceTexture = null;
+  groundMat.userData.groundDistanceBounds = new THREE.Vector4(0, 0, 1, 1);
+  const outerGroundTone = {
+    park: [1.055, 1.005, 0.885],
+    woodland: [0.965, 0.945, 0.845],
+    alpine: [0.985, 1.005, 0.925],
+    arid: [1.105, 0.995, 0.785],
+    tropical: [0.965, 1.010, 0.915],
+  }[groundMass] || [1.0, 0.97, 0.88];
+  // Distance is needed only for the 0-180m zoning transition. A bilinearly
+  // sampled 32m field gives smooth bands without making every distant ground
+  // vertex scan outward until it finds the centreline.
+  const groundDistanceNodes = new Map();
+  const ZONE_DISTANCE_CAP = 224;
+  const groundDistanceNode = (ix, iz) => {
+    const key = `${ix},${iz}`;
+    if (groundDistanceNodes.has(key)) return groundDistanceNodes.get(key);
+    const px = ix * GRID, pz = iz * GRID;
+    const reach = Math.ceil(ZONE_DISTANCE_CAP / GRID) + 1;
+    let best = ZONE_DISTANCE_CAP * ZONE_DISTANCE_CAP;
+    for (let cx = ix - reach; cx <= ix + reach; cx++) {
+      for (let cz = iz - reach; cz <= iz + reach; cz++) {
+        const bucket = cells.get(cellKey(cx, cz));
+        if (!bucket) continue;
+        for (let q = 0; q < bucket.length; q++) {
+          const s = samples[bucket[q]];
+          const dx = px - s.p.x, dz = pz - s.p.z;
+          best = Math.min(best, dx * dx + dz * dz);
+        }
+      }
+    }
+    const distance = Math.min(ZONE_DISTANCE_CAP, Math.sqrt(best));
+    groundDistanceNodes.set(key, distance);
+    return distance;
+  };
+  const groundTrackDistance = (x, z) => {
+    const gx = x / GRID, gz = z / GRID;
+    const ix = Math.floor(gx), iz = Math.floor(gz);
+    const tx = smooth01(gx - ix), tz = smooth01(gz - iz);
+    const a = groundDistanceNode(ix, iz), b = groundDistanceNode(ix + 1, iz);
+    const c = groundDistanceNode(ix, iz + 1), d = groundDistanceNode(ix + 1, iz + 1);
+    return (a + (b - a) * tx) + ((c + (d - c) * tx) - (a + (b - a) * tx)) * tz;
+  };
+  const groundOutwardDistance = (x, z) => Math.max(0, groundTrackDistance(x, z) - halfWidth);
+  // A linearly-filtered world-distance field lets the fragment shader select
+  // bands without bending, scaling or adding a second UV set. It encodes metres
+  // OUTWARD FROM THE OUTER KERB, capped beyond the last finite band.
+  {
+    const SIZE = 256, CAP = ZONE_DISTANCE_CAP;
+    const data = new Uint8Array(SIZE * SIZE);
+    const diameter = groundR * 2;
+    const minX = centre.x - groundR, minZ = centre.z - groundR;
+    for (let py = 0; py < SIZE; py++) for (let px = 0; px < SIZE; px++) {
+      const x = minX + (px + 0.5) * diameter / SIZE;
+      const z = minZ + (py + 0.5) * diameter / SIZE;
+      data[py * SIZE + px] = Math.round(Math.min(CAP, groundOutwardDistance(x, z)) / CAP * 255);
+    }
+    const texture = new THREE.DataTexture(data, SIZE, SIZE, THREE.RedFormat, THREE.UnsignedByteType);
+    texture.wrapS = texture.wrapT = THREE.ClampToEdgeWrapping;
+    texture.minFilter = texture.magFilter = THREE.LinearFilter;
+    texture.generateMipmaps = false;
+    texture.colorSpace = THREE.NoColorSpace;
+    texture.needsUpdate = true;
+    groundMat.userData.groundDistanceTexture = texture;
+    groundMat.userData.groundDistanceBounds.set(minX, minZ, 1 / diameter, 1 / diameter);
+  }
+  const groundMacroColour = (x, z) => {
+    let noise = 0;
+    for (const octave of vertexMacroOctaves) {
+      noise += (valueNoise(x, z, octave.wavelength, octave.seed) - 0.5) * octave.weight;
+    }
+    const noiseMul = 1 + noise * GROUND_MACRO_AMPLITUDE;
+    const trackDistance = groundTrackDistance(x, z);
+    const distance = Math.max(0, trackDistance - halfWidth);
+    const verge = 1 - smoothBand(18, 42, trackDistance);
+    const outer = smoothBand(105, 175, trackDistance);
+    const vergeTone = [1.035, 1.050, 1.065];
+    const t01 = smoothBand(realisedGroundBands[0].to - groundBandBlendM,
+      realisedGroundBands[0].to + groundBandBlendM, distance);
+    const secondBandEnd = realisedGroundBands.length === 2
+      ? ZONE_DISTANCE_CAP + groundBandBlendM * 2 : realisedGroundBands[1].to;
+    const t12 = smoothBand(secondBandEnd - groundBandBlendM,
+      secondBandEnd + groundBandBlendM, distance);
+    return [0, 1, 2].map((channel) => {
+      const values = groundBandTintChannels[channel];
+      const band01 = values[0] + (values[1] - values[0]) * t01;
+      const bandTint = band01 + (values[2] - band01) * t12;
+      return noiseMul
+        * (1 + (vergeTone[channel] - 1) * verge)
+        * (1 + (outerGroundTone[channel] - 1) * outer)
+        * (1 + (bandTint - 1) * groundBandVertexStrength);
+    });
+  };
+  let groundMesh = null;
   // A flat disc cannot carry the relief -- the verges would shear away from the
   // road the moment the lap climbs -- so the disc becomes a radial (ring x
   // segment) mesh sampling terrainAt(). Rings are packed tightly through the
-  // annulus the circuit actually occupies and coarsen away from it, because
-  // everything outside FADE_OUT is flat and needs no detail at all. Tiling moves
+  // annulus the circuit actually occupies. Flat venues can still coarsen hard in
+  // the distance; authored landforms retain a 96m ceiling so bowls, banks and
+  // dunes do not collapse into a handful of giant planar wedges. Tiling moves
   // from texture.repeat into the UVs, since the UVs are now generated here.
   {
     const bandIn = Math.max(0, innermost - FADE_OUT - 24);
-    const bandOut = Math.min(groundR, extent + FADE_OUT + 24);
+    const groundInfrastructureProfile = INFRASTRUCTURE_PROFILE[trackId] || INFRASTRUCTURE_PROFILE_DEFAULT;
+    // Perimeter posts and the venue's outer service surfaces also sample
+    // terrainAt(). Keep the rendered mesh dense through that authored radius or
+    // a correct terrain anchor can still float over a coarsely interpolated
+    // triangle (the old 96-220m outfield rings missed by metres at terraces).
+    const plantedReach = groundInfrastructureProfile.fenceRadius + 72;
+    const bandOut = Math.min(groundR, extent + Math.max(FADE_OUT + 24, plantedReach));
     // Edge length inside the band. Measured worst gap between the ground surface
     // and the road at the road edge, over all 24 circuits: 12m -> 0.060m,
     // 16m -> 0.098m, 20m -> 0.534m (monaco, whose hairpins put the medial axis
@@ -1156,14 +1877,15 @@ export function buildCircuit(trackId, def, scene) {
         let dr;
         if (r >= bandIn - step && r <= bandOut) dr = step;
         else {
-          dr = Math.max(step, Math.min(r * 0.45, 220));
+          dr = Math.max(step, Math.min(r * 0.45, venue.landform === 'flat' ? 220 : 96));
           // never let a coarse ring stride straight over the band entry
           if (r < bandIn) dr = Math.min(dr, Math.max(step, bandIn - step - r));
         }
         r += dr;
       }
       if (groundR - radii[radii.length - 1] > 1e-6) radii.push(groundR);
-      seg = Math.min(1024, Math.max(96, Math.round(2 * Math.PI * bandOut / step / 8) * 8));
+      const segmentRadius = venue.landform === 'flat' ? bandOut : groundR;
+      seg = Math.min(1024, Math.max(96, Math.round(2 * Math.PI * segmentRadius / step / 8) * 8));
       if ((radii.length - 1) * seg + 1 <= BUDGET) break;
       step *= 1.35;
     }
@@ -1171,6 +1893,7 @@ export function buildCircuit(trackId, def, scene) {
     const nv = 1 + (rings - 1) * seg;
     const pos = new Float32Array(nv * 3);
     const uv = new Float32Array(nv * 2);
+    const color = new Float32Array(nv * 3);
     const idx = [];
     const cosT = new Float64Array(seg), sinT = new Float64Array(seg);
     for (let a = 0; a < seg; a++) {
@@ -1180,6 +1903,7 @@ export function buildCircuit(trackId, def, scene) {
     // hub
     pos[1] = terrainAt(centre.x, centre.z);
     uv[0] = 0; uv[1] = 0;
+    color.set(groundMacroColour(centre.x, centre.z), 0);
     for (let k = 1; k < rings; k++) {
       const r = radii[k];
       const base = 1 + (k - 1) * seg;
@@ -1191,6 +1915,7 @@ export function buildCircuit(trackId, def, scene) {
         pos[o + 2] = z;
         uv[(base + a) * 2] = x / groundTileM;
         uv[(base + a) * 2 + 1] = z / groundTileM;
+        color.set(groundMacroColour(centre.x + x, centre.z + z), o);
       }
     }
     for (let a = 0; a < seg; a++) {
@@ -1206,8 +1931,19 @@ export function buildCircuit(trackId, def, scene) {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    g.setAttribute('color', new THREE.BufferAttribute(color, 3));
     g.setIndex(idx);
     g.computeVertexNormals();
+    let landformMin = Infinity, landformMax = -Infinity, landformSamples = 0;
+    for (let i = 0; i < nv; i++) {
+      const x = centre.x + pos[i * 3], z = centre.z + pos[i * 3 + 2];
+      if (groundTrackDistance(x, z) <= FADE_OUT + 2) continue;
+      const y = pos[i * 3 + 1];
+      landformMin = Math.min(landformMin, y);
+      landformMax = Math.max(landformMax, y);
+      landformSamples++;
+    }
+    if (!landformSamples) landformMin = landformMax = 0;
     const ground = new THREE.Mesh(g, groundMat);
     ground.name = 'ground';
     ground.position.set(centre.x, -0.08, centre.z);
@@ -1220,8 +1956,132 @@ export function buildCircuit(trackId, def, scene) {
     ground.userData.segments = seg;
     ground.userData.step = step;
     ground.userData.vertices = nv;
+    ground.userData.macroOctaves = macroOctaves.map(({ wavelength, weight }) => ({ wavelength, weight }));
+    ground.userData.vertexMacroOctaves = vertexMacroOctaves.map(({ wavelength, weight }) => ({ wavelength, weight }));
+    ground.userData.fragmentMacroOctaves = fragmentMacroOctaves.map(({ wavelength, weight }) => ({ wavelength, weight }));
+    ground.userData.zoneBands = { verge: [0, 30], outfield: [30, 140], outer: [140, groundR], mass: groundMass };
+    ground.userData.groundBands = realisedGroundBands.map(band => ({ ...band }));
+    ground.userData.groundBandTints = groundBandTints.map(tint => tint.clone());
+    ground.userData.groundBandTintResponse = {
+      whiteMix: groundBandWhiteMix,
+      fragmentStrength: groundBandFragmentStrength,
+      vertexStrength: groundBandVertexStrength,
+      cutScars: trackId === 'suzuka' ? { surface: 'graded-green-earth-bank', coverage: 'sparse' } : null,
+    };
+    ground.userData.groundBandBlendM = groundBandBlendM;
+    ground.userData.groundBandCoordinate = 'metres-outward-from-outer-kerb';
+    ground.userData.groundDistanceField = { textureSize: 256, capM: ZONE_DISTANCE_CAP, stage: 'fragment' };
+    ground.userData.landform = {
+      kind: venue.landform, fadeIn: FADE_IN, fadeOut: FADE_OUT,
+      min: landformMin, max: landformMax, range: landformMax - landformMin,
+      samples: landformSamples,
+    };
+    ground.userData.noiseAmplitude = 0.13;
+    ground.userData.woodlandLayer = {
+      cellM: 48, radiusM: 66, maxDarkening: 0.24, placements: 0,
+      stage: 'fragment', textureSize: 256,
+    };
+    groundMesh = ground;
     group.add(ground);
+
+    // From this point on, scenery anchors read the REAL rendered triangle, not
+    // the continuous source function that was sampled to create it. That removes
+    // the last way a correct terrainAt() placement could float over a coarse
+    // triangle where elevated road relief hands off to an outfield landform.
+    // The sampler returns geometry y (before ground.position.y = -0.08), retaining
+    // the deliberate 8cm anti-z-fighting clearance used throughout the builder.
+    const terrainFieldAt = terrainAt;
+    const triangleHeight = (ia, ib, ic, x, z) => {
+      const ax = pos[ia * 3], az = pos[ia * 3 + 2];
+      const bx = pos[ib * 3], bz = pos[ib * 3 + 2];
+      const cx = pos[ic * 3], cz = pos[ic * 3 + 2];
+      const den = (bz - cz) * (ax - cx) + (cx - bx) * (az - cz);
+      if (Math.abs(den) < 1e-12) return null;
+      const wa = ((bz - cz) * (x - cx) + (cx - bx) * (z - cz)) / den;
+      const wb = ((cz - az) * (x - cx) + (ax - cx) * (z - cz)) / den;
+      const wc = 1 - wa - wb;
+      if (wa < -1e-6 || wb < -1e-6 || wc < -1e-6) return null;
+      return wa * pos[ia * 3 + 1] + wb * pos[ib * 3 + 1] + wc * pos[ic * 3 + 1];
+    };
+    terrainAt = (px, pz) => {
+      const x = px - centre.x, z = pz - centre.z;
+      const r = Math.hypot(x, z);
+      if (r > groundR + 1e-6) return terrainFieldAt(px, pz);
+      let angle = Math.atan2(z, x);
+      if (angle < 0) angle += Math.PI * 2;
+      const af = angle / (Math.PI * 2) * seg;
+      const a = Math.floor(af) % seg, a2 = (a + 1) % seg;
+      if (r <= radii[1]) {
+        return triangleHeight(0, 1 + a2, 1 + a, x, z) ?? terrainFieldAt(px, pz);
+      }
+      let lo = 1, hi = radii.length - 1;
+      while (hi - lo > 1) {
+        const mid = (lo + hi) >> 1;
+        if (radii[mid] <= r) lo = mid; else hi = mid;
+      }
+      if (lo >= radii.length - 1) lo = radii.length - 2;
+      const b0 = 1 + (lo - 1) * seg, b1 = 1 + lo * seg;
+      return triangleHeight(b0 + a, b1 + a2, b1 + a, x, z)
+        ?? triangleHeight(b0 + a, b0 + a2, b1 + a2, x, z)
+        ?? terrainFieldAt(px, pz);
+    };
   }
+
+  // Tree placements do not exist until section 8b. Build their broad density
+  // field into a linearly-filtered world-space texture once, leaving the
+  // individual dapple to the two-draw-call decal pass at the end of the build.
+  // This used to multiply vertex colours and was the final source of mesh-cell
+  // edges after the macro octaves moved to the fragment shader.
+  const applyWoodlandGround = (placements) => {
+    if (!groundMesh || !placements.length) return;
+    const CELL = 48, RADIUS = 66, SIGMA = 27;
+    const treeCells = new Map();
+    const key = (ix, iz) => `${ix},${iz}`;
+    for (const tree of placements) {
+      const k = key(Math.floor(tree.px / CELL), Math.floor(tree.pz / CELL));
+      let bucket = treeCells.get(k);
+      if (!bucket) treeCells.set(k, bucket = []);
+      bucket.push(tree);
+    }
+    const SIZE = groundMesh.userData.woodlandLayer.textureSize;
+    const data = new Uint8Array(SIZE * SIZE * 4);
+    const diameter = groundMesh.userData.radius * 2;
+    const minX = groundMesh.position.x - groundMesh.userData.radius;
+    const minZ = groundMesh.position.z - groundMesh.userData.radius;
+    const reach = Math.ceil(RADIUS / CELL);
+    for (let py = 0; py < SIZE; py++) for (let px = 0; px < SIZE; px++) {
+      const x = minX + (px + 0.5) * diameter / SIZE;
+      const z = minZ + (py + 0.5) * diameter / SIZE;
+      const cx = Math.floor(x / CELL), cz = Math.floor(z / CELL);
+      let density = 0;
+      for (let ix = cx - reach; ix <= cx + reach; ix++) {
+        for (let iz = cz - reach; iz <= cz + reach; iz++) {
+          const bucket = treeCells.get(key(ix, iz));
+          if (!bucket) continue;
+          for (const tree of bucket) {
+            const dx = x - tree.px, dz = z - tree.pz;
+            const d2 = dx * dx + dz * dz;
+            if (d2 > RADIUS * RADIUS) continue;
+            const layerWeight = tree.layer === 'near' ? 1 : tree.layer === 'mid' ? 0.82 : 0.42;
+            const speciesWeight = tree.sp === 'scrub' ? 0.25 : 1;
+            density += layerWeight * speciesWeight * Math.exp(-d2 / (2 * SIGMA * SIGMA));
+          }
+        }
+      }
+      const woodland = smoothBand(0.75, 4.5, density);
+      const o = (py * SIZE + px) * 4;
+      data[o] = data[o + 1] = data[o + 2] = Math.round(woodland * 255);
+      data[o + 3] = 255;
+    }
+    const texture = new THREE.DataTexture(data, SIZE, SIZE, THREE.RGBAFormat, THREE.UnsignedByteType);
+    texture.minFilter = texture.magFilter = THREE.LinearFilter;
+    texture.wrapS = texture.wrapT = THREE.ClampToEdgeWrapping;
+    texture.generateMipmaps = false;
+    texture.needsUpdate = true;
+    groundMesh.material.userData.woodlandTexture = texture;
+    groundMesh.material.userData.woodlandBounds.set(minX, minZ, 1 / diameter, 1 / diameter);
+    groundMesh.userData.woodlandLayer.placements = placements.length;
+  };
 
   // ---- 8d. horizon ridge ring (all themes) ---------------------------------
   // A hugely flattened torus, fog-coloured and a touch darker, so the ground
@@ -2216,6 +3076,7 @@ export function buildCircuit(trackId, def, scene) {
   // ---- 5. pit building on the main straight --------------------------------
   const PIT_LEN = 120, PIT_H = 12, PIT_DEP = 12;
   let pitBuilding = null;
+  let pitBuildingPlacement = null;
   {
     const side = stands.length ? -stands[0].side : 1;    // opposite the first stand
     const halfWin = stepOf(PIT_LEN / 2);
@@ -2313,6 +3174,10 @@ export function buildCircuit(trackId, def, scene) {
       }
       group.add(b);
       pitBuilding = b;
+      pitBuildingPlacement = {
+        p: hit.p.clone(), i: hit.i, side,
+        fz: samples[hit.i].p.clone().sub(hit.p).setY(0).normalize(),
+      };
       // the pit complex and the whole pit lane in front of it stay clear of trees
       addKeepOut(hit.p, hit.p.clone().sub(samples[hit.i].p).setY(0).normalize().negate(),
         PIT_LEN / 2 + 16, PIT_DEP / 2 + 24);
@@ -2429,6 +3294,17 @@ export function buildCircuit(trackId, def, scene) {
           posts.setMatrixAt(k * 2 + j, m4);
         });
       });
+      // These three batches are one visual object. With independently-derived
+      // InstancedMesh spheres, camera-edge views could accept the posts while
+      // rejecting one board batch, leaving deliberate brake markers as bare poles.
+      // Give every part the union sphere so Three culls the assembly atomically.
+      for (const mesh of [b100, b50, posts]) mesh.computeBoundingSphere();
+      const brakeCullSphere = b100.boundingSphere.clone()
+        .union(b50.boundingSphere).union(posts.boundingSphere);
+      for (const mesh of [b100, b50, posts]) {
+        mesh.boundingSphere = brakeCullSphere.clone();
+        mesh.userData.cullGroup = 'brake-marker-assembly';
+      }
       group.add(b100, b50, posts);
     }
   }
@@ -2854,12 +3730,25 @@ export function buildCircuit(trackId, def, scene) {
   // ---- 8. environment: trees / skyline / floodlights -----------------------
   {
     const depthProfile = VENUE_DEPTH[trackId] || VENUE_DEPTH_DEFAULT;
+    const infrastructureProfile = INFRASTRUCTURE_PROFILE[trackId] || INFRASTRUCTURE_PROFILE_DEFAULT;
     const depthStats = {
       profile: depthProfile.cue,
       near: { trunks: 0, shrubs: 0, serviceBays: 0, serviceParts: 0, tyreStacks: 0, cityBlocks: 0 },
       mid: { trees: 0, clusters: 0 },
       far: { trees: 0, masses: 0, skyline: 0, skylineCaps: 0 },
       identity: { feature: null, batches: 0, instances: 0, boxes: 0, canopies: 0, towers: 0, triangles: 0 },
+      infrastructure: {
+        mode: infrastructureProfile.mode,
+        paddockClass: infrastructureProfile.paddock,
+        parkingSurface: infrastructureProfile.surface,
+        campingPresent: infrastructureProfile.camping,
+        fenceStyle: infrastructureProfile.fence,
+        paddockAprons: 0, paddockVehicleParts: 0, paddockBuildingParts: 0,
+        paddockTents: 0, perimeterPosts: 0, perimeterPanels: 0, perimeterGates: 0,
+        parkingSurfaces: 0, parkedCarParts: 0, accessRoads: 0,
+        surfaceMargins: 0,
+        spectatorBanks: 0, spectatorCrowds: 0, supportClutter: 0, campingTents: 0,
+      },
       caps: { ...DEPTH_CAP },
     };
     group.userData.sceneryDepth = depthStats;
@@ -2941,6 +3830,26 @@ export function buildCircuit(trackId, def, scene) {
       const ok = obbTrackClearance(px, pz, fx, fz, halfLen, halfDep) >= SCENERY_MARGIN;
       if (ok) depthStats.checkedFootprints++;
       return ok;
+    };
+    // SAT box-vs-box clearance. `ignore` is used only for intentional overlaps:
+    // an access road is allowed to enter its destination apron/parking court,
+    // and a perimeter gate is allowed to span that road.
+    const keepOutClear = (px, pz, fx, fz, halfLen, halfDep, ignore = null) => {
+      for (const k of keepOut) {
+        if (ignore?.(k)) continue;
+        const dx = px - k.x, dz = pz - k.z;
+        let separated = false;
+        for (const axis of [fx, fz, k.fx, k.fz]) {
+          const distance = Math.abs(dx * axis.x + dz * axis.z);
+          const radiusA = halfLen * Math.abs(fx.x * axis.x + fx.z * axis.z)
+            + halfDep * Math.abs(fz.x * axis.x + fz.z * axis.z);
+          const radiusB = k.halfLen * Math.abs(k.fx.x * axis.x + k.fx.z * axis.z)
+            + k.halfDep * Math.abs(k.fz.x * axis.x + k.fz.z * axis.z);
+          if (distance > radiusA + radiusB) { separated = true; break; }
+        }
+        if (!separated) return false;
+      }
+      return true;
     };
     depthStats.trackEnvelope = TRACK_ENVELOPE;
     depthStats.minimumMargin = SCENERY_MARGIN;
@@ -3080,26 +3989,6 @@ export function buildCircuit(trackId, def, scene) {
       const HALF_LEN = 28;
       const HALF_DEP = 15;
 
-      // SAT overlap against previously registered architecture. This keeps the
-      // complete cluster clear of grandstands, pit buildings and the TV wall;
-      // checking only its centre would allow a 56m compound to clip their edges.
-      const keepOutClear = (px, pz, fx, fz, halfLen, halfDep) => {
-        for (const k of keepOut) {
-          const dx = px - k.x, dz = pz - k.z;
-          let separated = false;
-          for (const axis of [fx, fz, k.fx, k.fz]) {
-            const distance = Math.abs(dx * axis.x + dz * axis.z);
-            const radiusA = halfLen * Math.abs(fx.x * axis.x + fx.z * axis.z)
-              + halfDep * Math.abs(fz.x * axis.x + fz.z * axis.z);
-            const radiusB = k.halfLen * Math.abs(k.fx.x * axis.x + k.fx.z * axis.z)
-              + k.halfDep * Math.abs(k.fz.x * axis.x + k.fz.z * axis.z);
-            if (distance > radiusA + radiusB) { separated = true; break; }
-          }
-          if (!separated) return false;
-        }
-        return true;
-      };
-
       // Prefer the side opposite the pit complex, then move outward before
       // moving the landmark farther down the straight. This ordering keeps the
       // cluster prominent in the grid/chase-camera evidence while every fallback
@@ -3214,16 +4103,540 @@ export function buildCircuit(trackId, def, scene) {
       }
     }
 
+    // ---- 8a.2 venue infrastructure placement plan -------------------------
+    // Everything here is a pure positional-hash plan: no rnd() calls. The plan
+    // registers all compound/road/fence keep-outs before vegetation is built;
+    // its InstancedMeshes are intentionally emitted after section 8c so the
+    // established scenery random stream is byte-for-byte unchanged.
+    const infrastructurePlan = {
+      paddockAprons: [], paddockVehicles: [], paddockBuildings: [], paddockTents: [],
+      perimeterPosts: [], perimeterPanels: [], perimeterGates: [],
+      parkingSurfaces: [], parkedCars: [], accessRoads: [], surfaceMargins: [],
+      spectatorBanks: [], spectatorCrowds: [], supportClutter: [], campingTents: [],
+    };
+    {
+      const infra = infrastructureProfile;
+      const infraStats = depthStats.infrastructure;
+      const sizeByClass = {
+        compact: { len: 82, dep: 38, transporters: 4, hospitality: 2, tents: 2 },
+        medium:  { len: 136, dep: 66, transporters: 10, hospitality: 3, tents: 3 },
+        large:   { len: 160, dep: 76, transporters: 14, hospitality: 4, tents: 3 },
+        xlarge:  { len: 184, dep: 84, transporters: 18, hospitality: 5, tents: 4 },
+      };
+      const desiredPaddock = sizeByClass[infra.paddock] || sizeByClass.medium;
+      const insideSky = (px, pz, radius, height = 0) => Math.hypot(px, pz) + radius < SKY_R - 18
+        && Math.hypot(px, pz, terrainAt(px, pz) + height) < SKY_R - 8;
+      const frameAt = (i, side, offset) => {
+        const s = samples[idxAt(i)];
+        const p = s.p.clone().addScaledVector(s.n, side * offset);
+        const fz = s.n.clone().multiplyScalar(-side).setY(0).normalize();
+        const fx = new THREE.Vector3().crossVectors(UP, fz).normalize();
+        p.y = terrainAt(p.x, p.z);
+        return { p, fx, fz, yaw: Math.atan2(fz.x, fz.z), i: idxAt(i), side, offset };
+      };
+      const worldAt = (frame, x, z, lift = 0) => new THREE.Vector3(
+        frame.p.x + frame.fx.x * x + frame.fz.x * z,
+        terrainAt(frame.p.x + frame.fx.x * x + frame.fz.x * z,
+          frame.p.z + frame.fx.z * x + frame.fz.z * z) + lift,
+        frame.p.z + frame.fx.z * x + frame.fz.z * z,
+      );
+      const acceptLocalObb = (frame, x, z, halfLen, halfDep, height = 0) => {
+        const p = worldAt(frame, x, z);
+        return acceptObb(p.x, p.z, frame.fx, frame.fz, halfLen, halfDep)
+          && insideSky(p.x, p.z, Math.hypot(halfLen, halfDep), height);
+      };
+      const putPlanBox = (list, frame, x, z, len, height, dep, color, baseLift = 0) => {
+        if (!acceptLocalObb(frame, x, z, len / 2, dep / 2, height)) return false;
+        const p = worldAt(frame, x, z, baseLift + height / 2);
+        list.push({ p, yaw: frame.yaw, len, height, dep, color });
+        return true;
+      };
+
+      // Paddock apron: first choice is immediately behind the actual pit-building
+      // placement. Fallbacks retain the same main-straight side before searching
+      // the full lap, and only reduce the permanent footprint as a last resort.
+      let paddock = null;
+      const pitI = pitBuildingPlacement?.i ?? 0;
+      const pitSide = pitBuildingPlacement
+        ? (((pitBuildingPlacement.p.x - samples[pitI].p.x) * samples[pitI].n.x
+          + (pitBuildingPlacement.p.z - samples[pitI].p.z) * samples[pitI].n.z) < 0 ? -1 : 1)
+        : (positionHash(centre.x, centre.z, 701) < 0.5 ? -1 : 1);
+      const paddockSizes = [
+        desiredPaddock,
+        infra.mode === 'permanent'
+          ? { ...desiredPaddock, len: Math.max(116, desiredPaddock.len * 0.84), dep: Math.max(58, desiredPaddock.dep * 0.82) }
+          : desiredPaddock,
+      ];
+      for (const size of paddockSizes) {
+        const pitOuter = wallOff + 15 + PIT_DEP / 2 + 24;
+        for (const deltaM of [0, 55, -55, 110, -110, 180, -180]) {
+          const i = idxAt(pitI + stepOf(deltaM));
+          for (const side of [pitSide, -pitSide]) {
+            for (const gap of [5, 22, 42]) {
+              const frame = frameAt(i, side, pitOuter + size.dep / 2 + gap);
+              if (!acceptObb(frame.p.x, frame.p.z, frame.fx, frame.fz, (size.len + 5) / 2, (size.dep + 5) / 2)) continue;
+              if (!keepOutClear(frame.p.x, frame.p.z, frame.fx, frame.fz, (size.len + 5) / 2, (size.dep + 5) / 2)) continue;
+              if (!insideSky(frame.p.x, frame.p.z, Math.hypot(size.len + 5, size.dep + 5) / 2, 12)) continue;
+              paddock = { ...frame, ...size };
+              break;
+            }
+            if (paddock) break;
+          }
+          if (paddock) break;
+        }
+        if (paddock) break;
+      }
+      if (!paddock) {
+        for (let a = 0; a < 96 && !paddock; a++) {
+          const i = idxAt(Math.round(a * N / 96));
+          for (const side of [pitSide, -pitSide]) {
+            for (const offset of [wallOff + 100, wallOff + 145, wallOff + 195, wallOff + 245, wallOff + 315]) {
+              const frame = frameAt(i, side, offset);
+              const size = paddockSizes[paddockSizes.length - 1];
+              if (!acceptObb(frame.p.x, frame.p.z, frame.fx, frame.fz, (size.len + 5) / 2, (size.dep + 5) / 2)) continue;
+              if (!keepOutClear(frame.p.x, frame.p.z, frame.fx, frame.fz, (size.len + 5) / 2, (size.dep + 5) / 2)) continue;
+              if (!insideSky(frame.p.x, frame.p.z, Math.hypot(size.len + 5, size.dep + 5) / 2, 12)) continue;
+              paddock = { ...frame, ...size };
+              break;
+            }
+            if (paddock) break;
+          }
+        }
+      }
+
+      if (paddock) {
+        infrastructurePlan.paddockAprons.push({
+          p: worldAt(paddock, 0, 0, 0.026), yaw: paddock.yaw, len: paddock.len, dep: paddock.dep,
+        });
+        infrastructurePlan.surfaceMargins.push({
+          p: worldAt(paddock, 0, 0, 0.018), yaw: paddock.yaw, len: paddock.len + 5, dep: paddock.dep + 5,
+        });
+        addStructureShade(paddock.p.x, paddock.p.z, paddock.yaw,
+          paddock.len + 5, paddock.dep + 5, 0.12, 0.035, 0.045, 0.012);
+        const teamColors = [0xe7e8eb, 0xbd3036, 0x315f9f, 0xd0a83a, 0x4b8b68, 0x8b5aa6, 0xd66f35, 0x67717f];
+        const perRank = Math.ceil(paddock.transporters / 2);
+        const pitch = Math.min(18.4, (paddock.len - 18) / Math.max(1, perRank));
+        let transporter = 0;
+        for (let row = 0; row < 2; row++) {
+          for (let k = 0; k < perRank && transporter < paddock.transporters; k++, transporter++) {
+            const x = (k - (perRank - 1) / 2) * pitch;
+            const z = (row ? 1 : -1) * paddock.dep * 0.17 + paddock.dep * 0.09;
+            const c = teamColors[(transporter + Math.floor(positionHash(paddock.p.x, paddock.p.z, 711) * 8)) % teamColors.length];
+            putPlanBox(infrastructurePlan.paddockVehicles, paddock, x - 1.65, z, 12.2, 3.65, 2.85, c);
+            putPlanBox(infrastructurePlan.paddockVehicles, paddock, x + 6.05, z, 3.2, 3.05, 2.65,
+              new THREE.Color(c).multiplyScalar(0.82).getHex());
+            const shade = worldAt(paddock, x, z);
+            addStructureShade(shade.x, shade.z, paddock.yaw, 15.4, 2.9, 3.7, 0.10, 0.13);
+          }
+        }
+        const hospitalityPitch = paddock.len / (paddock.hospitality + 0.35);
+        for (let k = 0; k < paddock.hospitality; k++) {
+          const x = (k - (paddock.hospitality - 1) / 2) * hospitalityPitch;
+          const z = -paddock.dep * 0.34;
+          const len = Math.min(24, hospitalityPitch - 3.2);
+          putPlanBox(infrastructurePlan.paddockBuildings, paddock, x, z, len, 8.2, 10.5,
+            k % 2 ? 0xd8d9d8 : 0xbfc5c7);
+          putPlanBox(infrastructurePlan.paddockBuildings, paddock, x, z + 7.2, len - 1.2, 0.45, 4.2, 0x69717a, 8.0);
+          const shade = worldAt(paddock, x, z);
+          addStructureShade(shade.x, shade.z, paddock.yaw, len, 14.7, 8.4, 0.16, 0.21);
+        }
+        for (let k = 0; k < paddock.tents; k++) {
+          const x = (k - (paddock.tents - 1) / 2) * 13;
+          const z = paddock.dep * 0.39;
+          if (!acceptLocalObb(paddock, x, z, 5, 5, 5.8)) continue;
+          const p = worldAt(paddock, x, z, 4.7);
+          infrastructurePlan.paddockTents.push({ p, yaw: paddock.yaw + Math.PI / 4, sx: 6.8, sy: 3.0, sz: 6.8,
+            color: k % 2 ? 0xf0eee6 : depthProfile.accent });
+          for (const sx of [-4.5, 4.5]) for (const sz of [-4.5, 4.5]) {
+            putPlanBox(infrastructurePlan.paddockBuildings, paddock, x + sx, z + sz, 0.22, 3.3, 0.22, 0x6d7278);
+          }
+          const shade = worldAt(paddock, x, z);
+          addStructureShade(shade.x, shade.z, paddock.yaw, 10, 10, 6.2, 0.12, 0.16);
+        }
+        addKeepOut(paddock.p, paddock.fz, paddock.len / 2 + 4, paddock.dep / 2 + 4, 'infra-paddock');
+      }
+
+      // Spectator parking on permanent circuits; one compact asphalt mobility /
+      // logistics court is the street-circuit equivalent (never an open field).
+      const parkingWant = infra.carParks || infra.staging || 1;
+      const parkingAnchors = [];
+      const parkingDims = infra.mode === 'street' ? { len: 54, dep: 28 } : { len: 92, dep: 54 };
+      const parkingPhase = Math.floor(positionHash(centre.x, centre.z, 721) * N);
+      for (let k = 0; k < parkingWant; k++) {
+        let anchor = null;
+        for (let attempt = 0; attempt < 72 && !anchor; attempt++) {
+          const i = idxAt(parkingPhase + Math.round((k + 1) * N / (parkingWant + 1)) + attempt * stepOf(55));
+          const sides = paddock ? [paddock.side, -paddock.side] : [1, -1];
+          for (const side of sides) {
+            const base = infra.mode === 'street' ? wallOff + 58 : Math.max(wallOff + 105, infra.fenceRadius * 0.54);
+            const offset = base + (attempt % 4) * 34;
+            const frame = frameAt(i, side, offset);
+            if (!acceptObb(frame.p.x, frame.p.z, frame.fx, frame.fz, (parkingDims.len + 4) / 2, (parkingDims.dep + 4) / 2)) continue;
+            if (!keepOutClear(frame.p.x, frame.p.z, frame.fx, frame.fz, (parkingDims.len + 4) / 2, (parkingDims.dep + 4) / 2)) continue;
+            if (!insideSky(frame.p.x, frame.p.z, Math.hypot(parkingDims.len + 4, parkingDims.dep + 4) / 2, 4)) continue;
+            anchor = { ...frame, ...parkingDims };
+            break;
+          }
+        }
+        if (!anchor) continue;
+        parkingAnchors.push(anchor);
+        infrastructurePlan.parkingSurfaces.push({
+          p: worldAt(anchor, 0, 0, 0.024), yaw: anchor.yaw, len: anchor.len, dep: anchor.dep,
+          surface: infra.mode === 'street' ? 'asphalt' : infra.surface,
+        });
+        infrastructurePlan.surfaceMargins.push({
+          p: worldAt(anchor, 0, 0, 0.017), yaw: anchor.yaw, len: anchor.len + 4, dep: anchor.dep + 4,
+        });
+        addStructureShade(anchor.p.x, anchor.p.z, anchor.yaw,
+          anchor.len + 4, anchor.dep + 4, 0.10, 0.032, 0.042, 0.012);
+        const rows = infra.mode === 'street' ? 2 : 3;
+        const cols = infra.mode === 'street' ? 6 : 10;
+        const carPalette = [0xdddddc, 0x2e4057, 0x8d3134, 0xc0a04a, 0x426f58, 0x55565b, 0x8a6d93, 0xb86b3a];
+        for (let row = 0; row < rows; row++) {
+          const aisle = row > 1 ? 5.5 : 0;
+          const z = (row - (rows - 1) / 2) * 5.4 + aisle;
+          for (let col = 0; col < cols; col++) {
+            const x = (col - (cols - 1) / 2) * 6.8;
+            const bodyColor = carPalette[Math.floor(positionHash(anchor.p.x + x, anchor.p.z + z, 727) * carPalette.length) % carPalette.length];
+            putPlanBox(infrastructurePlan.parkedCars, anchor, x, z, 4.5, 1.05, 1.9, bodyColor);
+            putPlanBox(infrastructurePlan.parkedCars, anchor, x - 0.15, z, 2.35, 0.72, 1.55,
+              new THREE.Color(bodyColor).lerp(new THREE.Color(0xbcc7d0), 0.48).getHex(), 0.88);
+            const shade = worldAt(anchor, x, z);
+            addStructureShade(shade.x, shade.z, anchor.yaw, 4.7, 2.1, 1.8, 0.07, 0.08);
+          }
+        }
+        addKeepOut(anchor.p, anchor.fz, anchor.len / 2 + 3, anchor.dep / 2 + 3, 'infra-parking');
+      }
+
+      if (infra.camping && parkingAnchors.length) {
+        const camp = parkingAnchors[0];
+        const tentCount = Math.min(DEPTH_CAP.infraCampingTents, Math.max(10, infra.carParks * 4));
+        for (let k = 0; k < tentCount; k++) {
+          const row = (k / 8) | 0, col = k % 8;
+          const x = (col - 3.5) * 6.2;
+          const z = -camp.dep * 0.36 - row * 5.8;
+          if (!acceptLocalObb(camp, x, z, 2.3, 2.3, 3.6)) continue;
+          const p = worldAt(camp, x, z, 2.4);
+          infrastructurePlan.campingTents.push({ p, yaw: camp.yaw + Math.PI / 4, sx: 3.3, sy: 2.4, sz: 3.3,
+            color: k % 3 === 0 ? 0xb56d45 : k % 3 === 1 ? 0x657c68 : 0xc2b080 });
+          addStructureShade(p.x, p.z, camp.yaw, 4.8, 4.8, 3.6, 0.08, 0.10);
+        }
+      }
+
+      // Grass spectator berms target the outside of real corner runs and use the
+      // same SAT furniture rejection as the paddock, so no grandstand can share
+      // their footprint. Street profiles deliberately request zero or one.
+      const bankAnchors = [];
+      for (let pass = 0; pass < 4 && bankAnchors.length < infra.banks; pass++) {
+        for (let r = 0; r < cornerRuns.length && bankAnchors.length < infra.banks; r++) {
+          const run = cornerRuns[(r + pass * 3) % cornerRuns.length];
+          const i = idxAt(run.mid + pass * stepOf(18));
+          const side = -run.inside;
+          const frame = frameAt(i, side, wallOff + 48 + pass * 28);
+          const len = 58, dep = 19;
+          if (bankAnchors.some(b => b.p.distanceToSquared(frame.p) < 95 * 95)) continue;
+          if (!acceptObb(frame.p.x, frame.p.z, frame.fx, frame.fz, len / 2, dep / 2)) continue;
+          if (!keepOutClear(frame.p.x, frame.p.z, frame.fx, frame.fz, len / 2, dep / 2)) continue;
+          if (!insideSky(frame.p.x, frame.p.z, Math.hypot(len, dep) / 2, 6)) continue;
+          const bank = { ...frame, len, dep, height: 3.8 };
+          bankAnchors.push(bank);
+          infrastructurePlan.spectatorBanks.push({ p: worldAt(bank, 0, 0), yaw: bank.yaw, len, dep, height: bank.height });
+          for (const x of [-18, 0, 18]) {
+            if (!acceptLocalObb(bank, x, 0.8, 7.5, 0.2, 8)) continue;
+            const ridgeY = bank.height * Math.sin(Math.PI * (x / bank.len + 0.5))
+              * Math.sin(Math.PI * (0.8 / bank.dep + 0.5));
+            infrastructurePlan.spectatorCrowds.push({
+              p: worldAt(bank, x, 0.8, ridgeY + 2.25), yaw: bank.yaw,
+              width: 15, height: 4.5,
+            });
+          }
+          addStructureShade(bank.p.x, bank.p.z, bank.yaw, len, dep, bank.height + 4.5, 0.11, 0.14);
+          addKeepOut(bank.p, bank.fz, len / 2 + 3, dep / 2 + 5, 'infra-bank');
+        }
+      }
+
+      // Support clutter grows in compact groups immediately behind the existing
+      // service shelters. Each footprint is checked separately before the group
+      // keep-outs are registered.
+      const clutterShapes = [
+        { x: -3.4, z: -9.0, len: 5.8, dep: 2.45, height: 2.55, color: 0x9c493d },
+        { x: 3.5,  z: -9.2, len: 5.4, dep: 2.75, height: 2.85, color: 0xc7c4b8 },
+        { x: -2.5, z: -13.0, len: 2.8, dep: 1.75, height: 1.45, color: 0x505963 },
+        { x: 2.2,  z: -13.1, len: 2.3, dep: 1.8,  height: 1.25, color: 0x8b7653 },
+      ];
+      for (const an of serviceAnchors) {
+        const frame = { p: an.p.clone(), fz: an.fz.clone(), fx: new THREE.Vector3().crossVectors(UP, an.fz).normalize(), yaw: an.yaw };
+        const accepted = [];
+        for (const shape of clutterShapes) {
+          const p = worldAt(frame, shape.x, shape.z);
+          if (!acceptObb(p.x, p.z, frame.fx, frame.fz, shape.len / 2, shape.dep / 2)) continue;
+          if (!keepOutClear(p.x, p.z, frame.fx, frame.fz, shape.len / 2, shape.dep / 2)) continue;
+          if (!insideSky(p.x, p.z, Math.hypot(shape.len, shape.dep) / 2, shape.height)) continue;
+          accepted.push({ ...shape, p: worldAt(frame, shape.x, shape.z, shape.height / 2), yaw: frame.yaw });
+        }
+        for (const item of accepted) {
+          infrastructurePlan.supportClutter.push(item);
+          const base = item.p.clone(); base.y = terrainAt(base.x, base.z);
+          addStructureShade(base.x, base.z, item.yaw, item.len, item.dep, item.height, 0.10, 0.13);
+          addKeepOut(base, frame.fz, item.len / 2 + 0.6, item.dep / 2 + 0.6, 'infra-clutter');
+        }
+      }
+
+      // Asphalt ribbons: one terrain-sampled service ring plus radial spurs from
+      // the paddock and each parking/staging court to the venue edge. Every short
+      // segment is an independently checked instance, so a folded-back piece of
+      // circuit creates a clean break instead of being paved over.
+      const ROAD_SEGMENT_MAX = 50;
+      const planRoadSegment = (a, b, width = 6.2, allowRoadIntersection = false,
+        forceInfrastructureCrossing = false) => {
+        if (infrastructurePlan.accessRoads.length >= DEPTH_CAP.infraAccessRoads) return false;
+        const dx = b.x - a.x, dz = b.z - a.z, len = Math.hypot(dx, dz);
+        if (len < 2 || len > ROAD_SEGMENT_MAX) return false;
+        const fx = new THREE.Vector3(dx / len, 0, dz / len);
+        const fz = new THREE.Vector3(-fx.z, 0, fx.x);
+        const px = (a.x + b.x) / 2, pz = (a.z + b.z) / 2;
+        const marginLen = len + 1.2, marginWidth = width + 2.4;
+        if (!acceptObb(px, pz, fx, fz, marginLen / 2, marginWidth / 2)) return false;
+        if (!keepOutClear(px, pz, fx, fz, marginLen / 2, marginWidth / 2,
+          k => k.tag === 'infra-paddock' || k.tag === 'infra-parking'
+            || (allowRoadIntersection && k.tag === 'infra-road')
+            || (forceInfrastructureCrossing && k.tag?.startsWith('infra-')))) return false;
+        if (!insideSky(px, pz, Math.hypot(marginLen, marginWidth) / 2, 0.2)) return false;
+        const p = new THREE.Vector3(px, terrainAt(px, pz) + 0.032, pz);
+        infrastructurePlan.accessRoads.push({ p, yaw: Math.atan2(fz.x, fz.z), len, width });
+        infrastructurePlan.surfaceMargins.push({
+          p: new THREE.Vector3(px, terrainAt(px, pz) + 0.022, pz),
+          yaw: Math.atan2(fz.x, fz.z), len: marginLen, dep: marginWidth,
+        });
+        addStructureShade(px, pz, Math.atan2(fz.x, fz.z), marginLen, marginWidth,
+          0.08, 0.025, 0.034, 0.012);
+        addKeepOut(p, fz, marginLen / 2, marginWidth / 2, 'infra-road');
+        return true;
+      };
+      const ringStep = Math.max(1, stepOf(46));
+      const ringSide = paddock?.side ?? pitSide;
+      const ringOffset = infra.mode === 'street' ? wallOff + 34 : Math.max(wallOff + 42, 68);
+      const roadPoint = (i, side, offset) => {
+        const s = samples[idxAt(i)];
+        return s.p.clone().addScaledVector(s.n, side * offset);
+      };
+      const planRoadArc = (i0, i1, side, offset, width, depth = 0) => {
+        if (infrastructurePlan.accessRoads.length >= DEPTH_CAP.infraAccessRoads) return;
+        const a = roadPoint(i0, side, offset), b = roadPoint(i1, side, offset);
+        const chord = a.distanceTo(b);
+        if (chord > ROAD_SEGMENT_MAX && i1 - i0 > 1 && depth < 10) {
+          const mid = i0 + Math.floor((i1 - i0) / 2);
+          planRoadArc(i0, mid, side, offset, width, depth + 1);
+          planRoadArc(mid, i1, side, offset, width, depth + 1);
+          return;
+        }
+        planRoadSegment(a, b, width);
+      };
+      for (let i = 0; i < N && infrastructurePlan.accessRoads.length < DEPTH_CAP.infraAccessRoads; i += ringStep) {
+        planRoadArc(i, Math.min(N, i + ringStep), ringSide, ringOffset, 6.4);
+      }
+      const spurTargets = [];
+      const gateRequests = [];
+      if (paddock) spurTargets.push({ i: paddock.i, side: paddock.side, outer: Math.max(paddock.offset + paddock.dep / 2, infra.fenceRadius + 18) });
+      for (const park of parkingAnchors) spurTargets.push({ i: park.i, side: park.side, outer: Math.max(park.offset + park.dep / 2, infra.fenceRadius + 18) });
+      for (const target of spurTargets) {
+        const s = samples[target.i];
+        const start = wallOff + 31;
+        for (let off = start; off < Math.min(450, target.outer); off += 18) {
+          const next = Math.min(Math.min(450, target.outer), off + 18);
+          const a = s.p.clone().addScaledVector(s.n, target.side * off);
+          const b = s.p.clone().addScaledVector(s.n, target.side * next);
+          const built = planRoadSegment(a, b, 7.0, true);
+          if (built && off <= infra.fenceRadius && next >= infra.fenceRadius) {
+            gateRequests.push({
+              p: s.p.clone().addScaledVector(s.n, target.side * infra.fenceRadius),
+              side: target.side, i: target.i,
+            });
+          }
+        }
+      }
+
+      // Guarantee two real road crossings before the fence is planned. A compact
+      // street paddock and staging court can land in the same 18m gate sector; in
+      // that case move the second service spur one short arc sector along the lap.
+      const gateCandidates = [
+        ...spurTargets,
+        { i: idxAt(pitI + stepOf(length * 0.25)), side: ringSide },
+        { i: idxAt(pitI - stepOf(length * 0.25)), side: ringSide },
+      ];
+      for (const candidate of gateCandidates) {
+        if (gateRequests.length >= 2) break;
+        for (const shift of [0, stepOf(55), -stepOf(55)]) {
+          const i = idxAt(candidate.i + shift), s = samples[i];
+          const p = s.p.clone().addScaledVector(s.n, candidate.side * infra.fenceRadius);
+          if (gateRequests.some(g => g.p.distanceToSquared(p) <= 18 * 18)) continue;
+          const a = s.p.clone().addScaledVector(s.n, candidate.side * (infra.fenceRadius - 9));
+          const b = s.p.clone().addScaledVector(s.n, candidate.side * (infra.fenceRadius + 9));
+          if (!planRoadSegment(a, b, 7.0, true, true)) continue;
+          gateRequests.push({ p, side: candidate.side, i });
+          break;
+        }
+      }
+
+      // Boundary follows the lap on both sides. Permanent venues use alpha-cut
+      // mesh panels; street profiles use the same continuous placement as solid
+      // city-edge hoarding. Road overlaps become explicit overhead gate bars.
+      const fenceStep = Math.max(1, stepOf(42));
+      const FENCE_SEGMENT_MAX = 64;
+      const gateCentres = [];
+      const fencePoint = (i, side, offset) => {
+        const s = samples[idxAt(i)];
+        return s.p.clone().addScaledVector(s.n, side * offset);
+      };
+      const planFenceSpan = (i0, i1, side, depth = 0) => {
+        if (infrastructurePlan.perimeterPanels.length >= DEPTH_CAP.infraPerimeterPanels) return;
+        const baseOff = Math.min(450, Math.max(wallOff + 32, infra.fenceRadius));
+        const baseA = fencePoint(i0, side, baseOff), baseB = fencePoint(i1, side, baseOff);
+        const baseChord = baseA.distanceTo(baseB);
+        if (baseChord > FENCE_SEGMENT_MAX && i1 - i0 > 1 && depth < 10) {
+          const mid = i0 + Math.floor((i1 - i0) / 2);
+          planFenceSpan(i0, mid, side, depth + 1);
+          planFenceSpan(mid, i1, side, depth + 1);
+          return;
+        }
+          const gateRequest = gateRequests.find(g => g.side === side
+            && pointSegD2(g.p.x, g.p.z, baseA.x, baseA.z, baseB.x, baseB.z) <= 9 * 9);
+          let panel = null;
+          for (const extra of gateRequest ? [0] : [0, 24, 48, 76, 108]) {
+            const off = Math.min(450, Math.max(wallOff + 32, infra.fenceRadius + extra));
+            const a = fencePoint(i0, side, off);
+            const b = fencePoint(i1, side, off);
+            const dx = b.x - a.x, dz = b.z - a.z, len = Math.hypot(dx, dz);
+            if (len < 3 || len > FENCE_SEGMENT_MAX) continue;
+            const fx = new THREE.Vector3(dx / len, 0, dz / len);
+            const fz = new THREE.Vector3(-fx.z, 0, fx.x);
+            const px = (a.x + b.x) / 2, pz = (a.z + b.z) / 2;
+            const dep = infra.fence === 'mesh' ? 0.18 : 0.48;
+            if (!acceptObb(px, pz, fx, fz, len / 2, dep / 2)) continue;
+            if (!insideSky(px, pz, len / 2 + 1, infra.fence === 'mesh' ? 3.2 : 4.2)) continue;
+            if (!keepOutClear(px, pz, fx, fz, len / 2, dep / 2,
+              k => k.tag === 'infra-road' || k.tag === 'infra-fence')) continue;
+            panel = { a, b, p: new THREE.Vector3(px, terrainAt(px, pz), pz), fx, fz, len, dep,
+              yaw: Math.atan2(fz.x, fz.z), height: infra.fence === 'mesh' ? 3.2 : 4.2 };
+            break;
+          }
+          if (!panel) {
+            if (i1 - i0 > 1 && depth < 10) {
+              const mid = i0 + Math.floor((i1 - i0) / 2);
+              planFenceSpan(i0, mid, side, depth + 1);
+              planFenceSpan(mid, i1, side, depth + 1);
+            }
+            return;
+          }
+          const roadOverlap = !!gateRequest || !keepOutClear(panel.p.x, panel.p.z, panel.fx, panel.fz,
+            panel.len / 2, 4.0, k => k.tag !== 'infra-road');
+          if (roadOverlap) {
+            const gateP = gateRequest?.p || panel.p;
+            if (infrastructurePlan.perimeterGates.length < DEPTH_CAP.infraPerimeterGates
+              && gateCentres.every(p => p.distanceToSquared(gateP) > 18 * 18)
+              && acceptObb(gateP.x, gateP.z, panel.fx, panel.fz, Math.min(11, panel.len * 0.42) / 2, 0.21)) {
+              gateCentres.push(gateP.clone());
+              infrastructurePlan.perimeterGates.push({
+                p: new THREE.Vector3(gateP.x, terrainAt(gateP.x, gateP.z) + 4.4, gateP.z),
+                yaw: panel.yaw, len: Math.min(11, panel.len * 0.42), height: 0.42, dep: 0.42,
+              });
+              for (const dir of [-1, 1]) {
+                const qx = gateP.x + panel.fx.x * dir * 5.4;
+                const qz = gateP.z + panel.fx.z * dir * 5.4;
+                if (acceptCircle(qx, qz, 0.24)) infrastructurePlan.perimeterPosts.push({
+                  p: new THREE.Vector3(qx, terrainAt(qx, qz) + 2.2, qz), height: 4.4,
+                });
+              }
+              addStructureShade(gateP.x, gateP.z, panel.yaw, 11, 0.8, 4.8, 0.05, 0.06);
+              addKeepOut(gateP, panel.fz, 6, 1.0, 'infra-fence');
+            }
+            return;
+          }
+          infrastructurePlan.perimeterPanels.push({
+            p: new THREE.Vector3(panel.p.x, panel.p.y + panel.height / 2, panel.p.z),
+            yaw: panel.yaw, len: panel.len, height: panel.height, dep: panel.dep,
+          });
+          if (infrastructurePlan.perimeterPosts.length < DEPTH_CAP.infraPerimeterPosts
+            && acceptCircle(panel.a.x, panel.a.z, 0.24)) {
+            infrastructurePlan.perimeterPosts.push({
+              p: new THREE.Vector3(panel.a.x, terrainAt(panel.a.x, panel.a.z) + panel.height / 2, panel.a.z),
+              height: panel.height,
+            });
+          }
+          addStructureShade(panel.p.x, panel.p.z, panel.yaw, panel.len, panel.dep,
+            panel.height, 0.045, 0.055);
+          addKeepOut(panel.p, panel.fz, panel.len / 2, Math.max(0.4, panel.dep), 'infra-fence');
+      };
+      for (const side of [1, -1]) {
+        for (let i = 0; i < N && infrastructurePlan.perimeterPanels.length < DEPTH_CAP.infraPerimeterPanels; i += fenceStep) {
+          planFenceSpan(i, Math.min(N, i + fenceStep), side);
+        }
+      }
+      // A gate request can lie inside the paddock/parking keep-out itself, where
+      // no ordinary fence panel is allowed to exist. Materialise those remaining
+      // road crossings directly and remove any nearby panel/post so the opening is
+      // real rather than a bar drawn on top of the fence.
+      for (const request of gateRequests) {
+        if (infrastructurePlan.perimeterGates.length >= 2) break;
+        if (gateCentres.some(p => p.distanceToSquared(request.p) <= 18 * 18)) continue;
+        const s = samples[request.i];
+        const fx = s.t.clone().setY(0).normalize();
+        const fz = new THREE.Vector3(-fx.z, 0, fx.x);
+        const yaw = Math.atan2(fz.x, fz.z), gateLen = 11;
+        if (!acceptObb(request.p.x, request.p.z, fx, fz, gateLen / 2, 0.21)) continue;
+        infrastructurePlan.perimeterPanels = infrastructurePlan.perimeterPanels.filter(panel => {
+          const panelFz = new THREE.Vector3(Math.sin(panel.yaw), 0, Math.cos(panel.yaw));
+          const panelFx = new THREE.Vector3().crossVectors(UP, panelFz).normalize();
+          const dx = request.p.x - panel.p.x, dz = request.p.z - panel.p.z;
+          return Math.abs(dx * panelFx.x + dz * panelFx.z) > panel.len / 2 + gateLen / 2
+            || Math.abs(dx * panelFz.x + dz * panelFz.z) > 4;
+        });
+        infrastructurePlan.perimeterPosts = infrastructurePlan.perimeterPosts
+          .filter(post => post.p.distanceToSquared(request.p) > 7 * 7);
+        gateCentres.push(request.p.clone());
+        infrastructurePlan.perimeterGates.push({
+          p: new THREE.Vector3(request.p.x, terrainAt(request.p.x, request.p.z) + 4.4, request.p.z),
+          yaw, len: gateLen, height: 0.42, dep: 0.42,
+        });
+        for (const dir of [-1, 1]) {
+          const qx = request.p.x + fx.x * dir * 5.4, qz = request.p.z + fx.z * dir * 5.4;
+          if (acceptCircle(qx, qz, 0.24)) infrastructurePlan.perimeterPosts.push({
+            p: new THREE.Vector3(qx, terrainAt(qx, qz) + 2.2, qz), height: 4.4,
+          });
+        }
+        addStructureShade(request.p.x, request.p.z, yaw, gateLen, 0.8, 4.8, 0.05, 0.06);
+        addKeepOut(request.p, fz, 6, 1.0, 'infra-fence');
+      }
+
+      infraStats.paddockAprons = infrastructurePlan.paddockAprons.length;
+      infraStats.paddockVehicleParts = infrastructurePlan.paddockVehicles.length;
+      infraStats.paddockBuildingParts = infrastructurePlan.paddockBuildings.length;
+      infraStats.paddockTents = infrastructurePlan.paddockTents.length;
+      infraStats.perimeterPosts = infrastructurePlan.perimeterPosts.length;
+      infraStats.perimeterPanels = infrastructurePlan.perimeterPanels.length;
+      infraStats.perimeterGates = infrastructurePlan.perimeterGates.length;
+      infraStats.parkingSurfaces = infrastructurePlan.parkingSurfaces.length;
+      infraStats.parkedCarParts = infrastructurePlan.parkedCars.length;
+      infraStats.accessRoads = infrastructurePlan.accessRoads.length;
+      infraStats.surfaceMargins = infrastructurePlan.surfaceMargins.length;
+      infraStats.spectatorBanks = infrastructurePlan.spectatorBanks.length;
+      infraStats.spectatorCrowds = infrastructurePlan.spectatorCrowds.length;
+      infraStats.supportClutter = infrastructurePlan.supportClutter.length;
+      infraStats.campingTents = infrastructurePlan.campingTents.length;
+    }
+
     // ---- 8b. billboard vegetation ----------------------------------------
-    // The old cone-and-cylinder trees are gone. Every tree is now a pair of
-    // intersecting alpha-cut planes (an X, so it holds up from any angle) that
-    // carry a real canvas canopy sprite, instanced per species AND per baked hue
+    // The old cone-and-cylinder trees are gone. Trees use two crossed alpha-cut
+    // upright cards. A third horizontal cap was tried in c1fb4df and again with
+    // dedicated circular overhead art, but the real 27m TV camera still exposed
+    // it as a separate lid; a clean two-plane fallback is less objectionable.
+    // They carry a real canvas canopy sprite, instanced per species AND per baked hue
     // variant so a treeline is never a repeat of one silhouette.
     {
       const veg = VEG[trackId] || { mix: [['broadleaf', 1]], wall: FOREST.has(trackId) ? 0.8 : 0 };
       const sparse = veg.sparse || 1;
 
-      // Two crossed quads, origin at the base so the instance scale is a height.
+      // Two crossed vertical quads, origin at the base so instance scale is height.
       //
       // Each plane is emitted TWICE, with opposite winding, and every normal is
       // authored straight up. Round 2 reported "a giant smooth untextured green
@@ -3252,6 +4665,39 @@ export function buildCircuit(trackId, def, scene) {
             if (plane === 0) p.push(-0.5, 0, 0, 0.5, 0, 0, 0.5, 1, 0, -0.5, 1, 0);
             else p.push(0, 0, -0.5, 0, 0, 0.5, 0, 1, 0.5, 0, 1, -0.5);
             uv.push(0, 0, 1, 0, 1, 1, 0, 1);
+            for (let q = 0; q < 4; q++) nrm.push(0, 1, 0);
+            if (facing === 0) idx.push(b, b + 1, b + 2, b, b + 2, b + 3);
+            else idx.push(b, b + 2, b + 1, b, b + 3, b + 2);
+          }
+        }
+        g.setAttribute('position', new THREE.Float32BufferAttribute(p, 3));
+        g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+        g.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+        g.setIndex(idx);
+        return g;
+      })();
+
+      // The old crossed far-mass card exposed a full-height perpendicular end
+      // plane as a hard vertical slab. This shallow zig-zag is one geometry and
+      // one draw call per variant, but its five overlapping neighbours carry
+      // independent heights and overlapping UV windows: no single card boundary
+      // spans the treeline and the top resolves as a ragged run.
+      const farMassGeo = (() => {
+        const g = new THREE.BufferGeometry();
+        const p = [], uv = [], nrm = [], idx = [];
+        const segments = [
+          [-0.50, -0.22, 0.000, 0.045, -0.020, 0.76, 0.00, 0.30],
+          [-0.30, -0.02, 0.030, -0.045, 0.000, 0.96, 0.18, 0.48],
+          [-0.10, 0.18, -0.040, 0.050, -0.012, 0.84, 0.36, 0.67],
+          [0.10, 0.38, 0.040, -0.030, 0.005, 1.00, 0.55, 0.86],
+          [0.28, 0.50, -0.045, 0.000, -0.018, 0.73, 0.74, 1.00],
+        ];
+        for (let s = 0; s < segments.length; s++) {
+          const [x0, x1, z0, z1, y0, y1, u0, u1] = segments[s];
+          for (let facing = 0; facing < 2; facing++) {
+            const b = (s * 2 + facing) * 4;
+            p.push(x0, y0, z0, x1, y0, z1, x1, y1, z1, x0, y1, z0);
+            uv.push(u0, 0, u1, 0, u1, 1, u0, 1);
             for (let q = 0; q < 4; q++) nrm.push(0, 1, 0);
             if (facing === 0) idx.push(b, b + 1, b + 2, b, b + 2, b + 3);
             else idx.push(b, b + 2, b + 1, b, b + 3, b + 2);
@@ -3427,6 +4873,92 @@ export function buildCircuit(trackId, def, scene) {
         }
       }
 
+      applyWoodlandGround(placements);
+
+      // Dapple remains a decal, but no 6m cell may contribute more than its
+      // first three trunks. Overfull cells widen those survivors slightly, and
+      // a conservative overlap budget guarantees that even the hard supports
+      // of neighbouring ellipses cannot sum past the published alpha ceiling.
+      {
+        const densityCells = new Map();
+        const densityKey = (x, z) => `${Math.floor(x / canopyShadeStats.gridM)},${Math.floor(z / canopyShadeStats.gridM)}`;
+        canopyShadeStats.input = placements.length;
+        for (let order = 0; order < placements.length; order++) {
+          const tree = placements[order];
+          const key = densityKey(tree.px, tree.pz);
+          let cell = densityCells.get(key);
+          if (!cell) densityCells.set(key, cell = { count: 0, items: [] });
+          cell.count++;
+          if (cell.items.length >= canopyShadeStats.perCell) continue;
+          const aspect = spAspect(tree.sp);
+          const baseRadius = tree.h * aspect * 0.42 * 1.15 * 1.30;
+          const offset = Math.min(9, tree.h * 0.52)
+            * (0.55 + positionHash(tree.px, tree.pz, 131) * 0.75);
+          cell.items.push({
+            order,
+            x: tree.px + SHADE_DIR.x * offset,
+            z: tree.pz + SHADE_DIR.z * offset,
+            rx: baseRadius,
+            rz: baseRadius,
+            a: canopyShadeStats.alphaBase * SHADE_MUL,
+          });
+        }
+        const survivors = [];
+        for (const cell of densityCells.values()) {
+          const grow = 1 + Math.min(0.16, Math.max(0, cell.count - canopyShadeStats.perCell) * 0.04);
+          for (const blob of cell.items) {
+            blob.rx *= grow; blob.rz *= grow;
+            blob.support = Math.max(blob.rx, blob.rz);
+            survivors.push(blob);
+          }
+        }
+        canopyShadeStats.dropped = canopyShadeStats.input - survivors.length;
+        survivors.sort((a, b) => a.order - b.order);
+        const OVERLAP_CELL = 32;
+        const overlapCells = new Map();
+        const overlapKey = (ix, iz) => `${ix},${iz}`;
+        let maxSupport = 0;
+        for (const blob of survivors) {
+          const ix = Math.floor(blob.x / OVERLAP_CELL), iz = Math.floor(blob.z / OVERLAP_CELL);
+          const key = overlapKey(ix, iz);
+          let cell = overlapCells.get(key);
+          if (!cell) overlapCells.set(key, cell = []);
+          cell.push(blob);
+          maxSupport = Math.max(maxSupport, blob.support);
+        }
+        for (const blob of survivors) {
+          const cx = Math.floor(blob.x / OVERLAP_CELL), cz = Math.floor(blob.z / OVERLAP_CELL);
+          const reach = Math.ceil((blob.support + maxSupport) / OVERLAP_CELL);
+          let overlaps = 0;
+          for (let ix = cx - reach; ix <= cx + reach; ix++) {
+            for (let iz = cz - reach; iz <= cz + reach; iz++) {
+              const cell = overlapCells.get(overlapKey(ix, iz));
+              if (!cell) continue;
+              for (const other of cell) {
+                const dx = blob.x - other.x, dz = blob.z - other.z;
+                const reach2 = blob.support + other.support;
+                if (dx * dx + dz * dz <= reach2 * reach2) overlaps++;
+              }
+            }
+          }
+          blob.a = Math.min(blob.a, canopyShadeStats.alphaCeiling / Math.max(1, overlaps));
+          shadeBlobs.push(blob);
+        }
+      }
+
+      // Cards and their physical trunks are separate InstancedMeshes, but they
+      // form one object for visibility. Independent auto-computed spheres can
+      // disagree at a frustum edge, so every near/card batch shares this explicit
+      // all-tree bound. Culling stays enabled and becomes atomic across the pair.
+      const vegetationCullBox = new THREE.Box3();
+      for (const t of placements) {
+        const reach = t.h * spAspect(t.sp) * t.widthScale * 0.5;
+        const baseY = terrainAt(t.px, t.pz) - 0.05;
+        vegetationCullBox.expandByPoint(new THREE.Vector3(t.px - reach, baseY, t.pz - reach));
+        vegetationCullBox.expandByPoint(new THREE.Vector3(t.px + reach, baseY + t.h, t.pz + reach));
+      }
+      const vegetationCullSphere = vegetationCullBox.getBoundingSphere(new THREE.Sphere());
+
       // --- bucket into one InstancedMesh per species+variant ----------------
       const buckets = new Map();
       for (const t of placements) {
@@ -3459,27 +4991,24 @@ export function buildCircuit(trackId, def, scene) {
           roughness: 0.92,
         }, K_FOLIAGE_EMIT), b.items.length);
         mesh.name = `trees-${b.sp}-v${b.v}`;
+        mesh.userData.nearCount = b.items.filter(t => t.layer === 'near').length;
+        mesh.userData.trunkEligibleCount = b.items.filter(t => t.layer === 'near' && t.sp !== 'scrub').length;
+        mesh.userData.cullGroup = 'vegetation-card-trunk';
+        // In the two-plane fallback the aerial collapse is a horizontal line, so
+        // width carries most of the reduction. Preserve nearly all height to keep
+        // the driver's-eye treeline depth and the authored species proportions.
+        mesh.userData.farDrawScale = { width: 0.78, height: 0.94 };
         keepOutOfAO(mesh);
         b.items.forEach((t, k) => {
           // same field the ground disc is built from, so a trunk never floats
           posv.set(t.px, terrainAt(t.px, t.pz) - 0.05, t.pz);
           q.setFromAxisAngle(yAxis, t.rot);
-          scl.set(t.h * aspect * t.widthScale, t.h, t.h * aspect * t.widthScale);
+          const drawWidth = t.layer === 'far' ? mesh.userData.farDrawScale.width : 1;
+          const drawHeight = t.layer === 'far' ? mesh.userData.farDrawScale.height : 1;
+          scl.set(t.h * aspect * t.widthScale * drawWidth, t.h * drawHeight,
+            t.h * aspect * t.widthScale * drawWidth);
           m4.compose(posv, q, scl);
           mesh.setMatrixAt(k, m4);
-          // canopy shade: round-4 env major called out mowing stripes running at
-          // full sunny brightness directly beneath dense tree walls. One soft
-          // ellipse per trunk, pushed along the fixed sun azimuth and sized to
-          // the canopy — merged into a single mesh below, so ~2.4k of these cost
-          // one draw call.
-          {
-            const cr = t.h * aspect * 0.42;
-            const off = Math.min(7, t.h * 0.5);
-            shadeBlobs.push({
-              x: t.px + SHADE_DIR.x * off, z: t.pz + SHADE_DIR.z * off,
-              rx: cr * 1.15, rz: cr * 1.15, a: 0.30 * SHADE_MUL,
-            });
-          }
           // per-instance tint: a treeline of identical greens reads as wallpaper
           // The middle layer gets the widest palette range; near trunks provide
           // their own colour cue, while far crowns converge toward the fog.
@@ -3489,6 +5018,7 @@ export function buildCircuit(trackId, def, scene) {
             base - 0.02 + rnd() * spread * 0.82);
           mesh.setColorAt(k, tint);
         });
+        mesh.boundingSphere = vegetationCullSphere.clone();
         if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
         group.add(mesh);
         treeCount += b.items.length;
@@ -3514,6 +5044,9 @@ export function buildCircuit(trackId, def, scene) {
         const trunks = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.72, 1, 1, 7, 1, false),
           std({ color: 0xffffff, roughness: 0.96 }), trunkItems.length);
         trunks.name = 'vegetation-near-trunks';
+        trunks.userData.nearCardCount = placements.filter(t => t.layer === 'near').length;
+        trunks.userData.eligibleCardCount = trunkCandidates.length;
+        trunks.userData.cullGroup = 'vegetation-card-trunk';
         const mm = new THREE.Matrix4();
         const col = new THREE.Color();
         for (let k = 0; k < trunkItems.length; k++) {
@@ -3524,6 +5057,7 @@ export function buildCircuit(trackId, def, scene) {
           col.offsetHSL((rnd() - 0.5) * 0.025, (rnd() - 0.5) * 0.08, (rnd() - 0.5) * 0.09);
           trunks.setColorAt(k, col);
         }
+        trunks.boundingSphere = vegetationCullSphere.clone();
         if (trunks.instanceColor) trunks.instanceColor.needsUpdate = true;
         group.add(trunks);
         depthStats.near.trunks = trunkItems.length;
@@ -3552,9 +5086,22 @@ export function buildCircuit(trackId, def, scene) {
         }
       }
       if (shrubItems.length) {
-        const shrubs = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 1),
-          std({ color: 0xffffff, roughness: 0.98 }), shrubItems.length);
+        const shrubSpecies = depthProfile.mass === 'arid' ? 'scrub'
+          : depthProfile.mass === 'alpine' ? 'pine' : 'broadleaf';
+        const shrubVariant = Math.min(spVariants(shrubSpecies) - 1,
+          Math.floor(positionHash(centre.x, centre.z, 613) * spVariants(shrubSpecies)));
+        const shrubMap = ctex(draw(TEX.treeCanopy, [shrubSpecies, shrubVariant, 256], 'rgba(48,92,46,0.9)'), {
+          wrapS: THREE.ClampToEdgeWrapping, wrapT: THREE.ClampToEdgeWrapping, aniso: 4,
+        });
+        // Use the same alpha-cut crossed-card foliage treatment as the trees. The
+        // old smooth-shaded icosahedra had no map and read as plastic pool floats;
+        // these retain the existing per-instance scale, yaw and tint variation but
+        // present a ragged leaf silhouette from both road and elevated cameras.
+        const shrubs = new THREE.InstancedMesh(xGeo, flatLit(shrubMap, K_FOLIAGE, {
+          side: THREE.FrontSide, transparent: false, alphaTest: 0.38, roughness: 0.96,
+        }, K_FOLIAGE_EMIT), shrubItems.length);
         shrubs.name = 'vegetation-near-shrubs';
+        keepOutOfAO(shrubs);
         const mm = new THREE.Matrix4(), qq = new THREE.Quaternion(), sc2 = new THREE.Vector3();
         const pp = new THREE.Vector3(), col = new THREE.Color();
         const shrubHue = depthProfile.mass === 'arid' ? 0x7d8150
@@ -3562,8 +5109,8 @@ export function buildCircuit(trackId, def, scene) {
             : depthProfile.mass === 'alpine' ? 0x3d6549 : 0x527b43;
         shrubItems.forEach((it, k) => {
           qq.setFromAxisAngle(UP, it.rot);
-          sc2.set(it.sx, it.sy, it.sz);
-          pp.set(it.px, terrainAt(it.px, it.pz) + it.sy * 0.72, it.pz);
+          sc2.set(it.sx * 2, it.sy * 1.65, it.sz * 2);
+          pp.set(it.px, terrainAt(it.px, it.pz) - 0.04, it.pz);
           mm.compose(pp, qq, sc2);
           shrubs.setMatrixAt(k, mm);
           col.setHex(shrubHue).offsetHSL((rnd() - 0.5) * 0.045, (rnd() - 0.5) * 0.16, (rnd() - 0.5) * 0.16);
@@ -3590,19 +5137,21 @@ export function buildCircuit(trackId, def, scene) {
           w: architecturalFar ? 64 + rnd() * 58 : 78 + rnd() * 72,
           rot: (rnd() - 0.5) * Math.PI,
         }))
-        // The crossed cards extend w/2 along two axes; their bounding circle is
-        // exact for every rotation and keeps even the atmospheric geometry away.
+        // The ragged run stays inside the same w/2 radial envelope as the old card,
+        // so its exact rotation-independent keep-out remains unchanged.
         .filter(p => acceptCircle(p.px, p.pz, p.w / 2));
+      let farMassUsed = false;
       for (let v = 0; v < 3; v++) {
         const items = massPlaces.filter((_, k) => k % 3 === v);
         if (!items.length) continue;
         const map = ctex(draw(TEX.vegetationMass, [depthProfile.mass, v, 640, 160], 'rgba(48,76,50,0.9)'), {
           wrapS: THREE.ClampToEdgeWrapping, wrapT: THREE.ClampToEdgeWrapping, aniso: 2,
         });
-        const masses = new THREE.InstancedMesh(xGeo, flatLit(map, K_FOLIAGE, {
+        const masses = new THREE.InstancedMesh(farMassGeo, flatLit(map, K_FOLIAGE, {
           side: THREE.FrontSide, transparent: false, alphaTest: 0.22, roughness: 1,
         }, theme.night ? 0.22 : 0.36), items.length);
         masses.name = `vegetation-far-mass-v${v}`;
+        farMassUsed = true;
         keepOutOfAO(masses);
         const mm = new THREE.Matrix4(), qq = new THREE.Quaternion(), sc2 = new THREE.Vector3();
         const pp = new THREE.Vector3(), col = new THREE.Color();
@@ -3630,16 +5179,23 @@ export function buildCircuit(trackId, def, scene) {
         depthStats.far.masses += items.length;
       }
 
-      if (!buckets.size && !massPlaces.length) xGeo.dispose(); // nothing references it
+      if (!buckets.size && !shrubItems.length) xGeo.dispose(); // nothing references it
+      if (!farMassUsed) farMassGeo.dispose();
     }
 
     if (themeName !== 'classic') {
-      // ---- 8c. clustered architecture / far skyline ------------------------
-      // Generic boxes become a composition only when neighbouring masses share
-      // a rhythm. Generate families around a few anchors, then vary proportions
-      // by venue profile: low courtyards, stepped terraces, slender stone towers
-      // or a vertical night-city cadence. No landmark or brand is reproduced.
-      const cityForm = depthProfile.skyline || 'mixed';
+      // ---- 8c. legacy skyline RNG compatibility -----------------------------
+      // WO4 replaces these theme-gated boxes with the typed, fog-independent
+      // backdrop below. The computations remain in their historical order because
+      // later scenery shares this seeded stream; adding/removing one RNG sample here
+      // would reshuffle every subsequent instance matrix. The resulting meshes
+      // live under an invisible group and therefore never render or count as the
+      // venue's realised backdrop.
+      const rngCompatibility = new THREE.Group();
+      rngCompatibility.name = 'legacy-skyline-rng-compatibility';
+      rngCompatibility.visible = false;
+      group.add(rngCompatibility);
+      const cityForm = depthProfile.rngSkyline || 'mixed';
       const isCity = themeName === 'city' || themeName === 'night';
       const clusterScatter = (want, minD, maxD, margin, minFamily, maxFamily) => {
         const out = [];
@@ -3694,7 +5250,8 @@ export function buildCircuit(trackId, def, scene) {
       });
       if (near.length) {
         const buildings = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), bmat, near.length);
-        buildings.name = 'city-near';
+        buildings.name = 'rng-compat-city-near';
+        buildings.visible = false;
         const m4 = new THREE.Matrix4(), qq = new THREE.Quaternion(), sc2 = new THREE.Vector3();
         const pp = new THREE.Vector3(), col = new THREE.Color();
         near.forEach((b, k) => {
@@ -3707,8 +5264,7 @@ export function buildCircuit(trackId, def, scene) {
           buildings.setColorAt(k, col);
         });
         if (buildings.instanceColor) buildings.instanceColor.needsUpdate = true;
-        group.add(buildings);
-        depthStats.near.cityBlocks = near.length;
+        rngCompatibility.add(buildings);
       }
 
       // far skyline, clustered inside 200-500m and much taller
@@ -3734,7 +5290,8 @@ export function buildCircuit(trackId, def, scene) {
       });
       if (far.length) {
         const sky = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), fmat, far.length);
-        sky.name = 'city-skyline';
+        sky.name = 'rng-compat-city-skyline';
+        sky.visible = false;
         const m4 = new THREE.Matrix4(), qq = new THREE.Quaternion(), sc2 = new THREE.Vector3();
         const pp = new THREE.Vector3(), col = new THREE.Color();
         const capItems = [];
@@ -3754,12 +5311,12 @@ export function buildCircuit(trackId, def, scene) {
           }
         });
         if (sky.instanceColor) sky.instanceColor.needsUpdate = true;
-        group.add(sky);
-        depthStats.far.skyline = far.length;
+        rngCompatibility.add(sky);
         if (capItems.length) {
           const caps = new THREE.InstancedMesh(new THREE.ConeGeometry(1, 1, 4, 1, false),
             std({ color: 0xffffff, roughness: 0.7 }), capItems.length);
-          caps.name = 'city-skyline-caps';
+          caps.name = 'rng-compat-city-skyline-caps';
+          caps.visible = false;
           const cm = new THREE.Matrix4(), cq = new THREE.Quaternion(), cs = new THREE.Vector3(), cp = new THREE.Vector3();
           capItems.forEach((it, k) => {
             cq.setFromAxisAngle(UP, it.yaw + Math.PI / 4);
@@ -3770,14 +5327,415 @@ export function buildCircuit(trackId, def, scene) {
             caps.setColorAt(k, it.color);
           });
           if (caps.instanceColor) caps.instanceColor.needsUpdate = true;
-          group.add(caps);
-          depthStats.far.skylineCaps = capItems.length;
+          rngCompatibility.add(caps);
         }
       }
     }
 
-    // ---- 9. floodlights + additive glow heads (night only) ----------------
-    if (theme.night) {
+    // ---- 8c. typed, theme-independent matte backdrop -----------------------
+    // These layers deliberately do not use scene fog: Fog(300,1600) is already
+    // fully opaque before the sky dome. Instead each mesh carries a pre-receded
+    // tint and fog=false, like a matte painting behind the lit venue. Geometry is
+    // generic by kind (ridge rhythm, low urban band, industrial sheds), never a
+    // copy of a named building or venue landmark. No seeded random sample is consumed here.
+    {
+      const backdropGroup = new THREE.Group();
+      backdropGroup.name = 'venue-backdrop';
+      const realisedKinds = venue.backdrop.map(layer => layer.kind);
+      backdropGroup.userData.kinds = [...realisedKinds];
+      backdropGroup.userData.themeIndependent = true;
+      backdropGroup.userData.venue = trackId;
+      const backdropColour = (layer) => {
+        const day = {
+          'ridge-forest': 0x617269, 'ridge-bare': 0x8c8375, mountain: 0x78818c,
+          'dune-ridge': 0xaa9b78, 'city-cluster': 0x77828b, 'city-sprawl': 0x828783,
+          industry: 0x777b79, sea: 0x7295a7,
+        };
+        const night = {
+          'ridge-forest': 0x101a1b, 'ridge-bare': 0x221e21, mountain: 0x151a25,
+          'dune-ridge': 0x292523, 'city-cluster': 0x252b39, 'city-sprawl': 0x1a2029,
+          industry: 0x191e23, sea: 0x111b2b,
+        };
+        const palette = theme.night ? night : day;
+        // `dist` is the researched real-world distance, not the compressed
+        // rendering radius below. The matte therefore receives the aerial
+        // perspective that scene fog cannot supply: at 20 km it is already
+        // close to the theme fog, and at 25 km it retains only 5% of its local
+        // tint. Near layers keep the place-specific colours in VENUE. Night
+        // layers recede much less; Las Vegas's serrated ridge is deliberately
+        // the one pure-black cutout called for by the venue brief.
+        const distanceT = THREE.MathUtils.clamp((layer.dist - 1500) / 23500, 0, 1);
+        const distanceFade = distanceT * distanceT * (3 - 2 * distanceT);
+        const fade = layer.nightCutout ? 0
+          : theme.night ? 0.05 + distanceFade * 0.15
+            : 0.08 + distanceFade * 0.87;
+        const color = new THREE.Color(layer.tint ?? palette[layer.kind] ?? theme.fog)
+          .lerp(new THREE.Color(theme.fog), fade);
+        return { color, fade };
+      };
+      const appendBox = (pos, idx, cx, cz, tangent, radial, width, depth, bottom, top) => {
+        const base = pos.length / 3;
+        for (const y of [bottom, top]) for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+          pos.push(cx + tangent.x * sx * width / 2 + radial.x * sz * depth / 2, y,
+            cz + tangent.z * sx * width / 2 + radial.z * sz * depth / 2);
+        }
+        idx.push(
+          base, base + 1, base + 3, base, base + 3, base + 2,
+          base + 4, base + 7, base + 5, base + 4, base + 6, base + 7,
+          base, base + 4, base + 5, base, base + 5, base + 1,
+          base + 2, base + 3, base + 7, base + 2, base + 7, base + 6,
+          base, base + 2, base + 6, base, base + 6, base + 4,
+          base + 1, base + 5, base + 7, base + 1, base + 7, base + 3,
+        );
+      };
+      let backdropTriangles = 0;
+      // A backdrop is a matte curtain, not a freestanding wall. Sink every
+      // curtain well below the lowest visible terrain so the real ground and
+      // horizon-haze cylinder always occlude its join from any lap eye.
+      const BACKDROP_SKIRT_Y = -160;
+      venue.backdrop.forEach((layer, layerIndex) => {
+        if (layer.kind === 'none') return;
+        const maxRadius = SKY_R - 220 - centre.length();
+        const radius = Math.min(maxRadius,
+          extent + 360 + Math.min(520, layer.dist * 0.18) + layerIndex * 54);
+        const kindSeed = [...layer.kind].reduce((sum, ch) => sum + ch.charCodeAt(0), 0);
+        const centreAngle = hashGrid(scenerySeed, layerIndex + 1, kindSeed) * Math.PI * 2;
+        const spanAngle = Math.min(Math.PI * 1.82, Math.max(0.34, layer.spread / Math.max(radius, 1)));
+        const isBuilt = layer.kind === 'city-cluster' || layer.kind === 'city-sprawl'
+          || layer.kind === 'industry';
+        const pos = [], idx = [];
+        let backdropUv = null;
+        if (isBuilt) {
+          const count = Math.max(12, Math.min(56, Math.round(layer.spread / (layer.kind === 'city-cluster' ? 34 : 52))));
+          for (let q = 0; q < count; q++) {
+            const u = count === 1 ? 0.5 : q / (count - 1);
+            const angle = centreAngle + (u - 0.5) * spanAngle;
+            const radial = { x: Math.cos(angle), z: Math.sin(angle) };
+            const tangent = { x: -radial.z, z: radial.x };
+            const jitter = (positionHash(q, layerIndex, kindSeed + 19) - 0.5) * 10;
+            const cx = centre.x + radial.x * (radius + jitter);
+            const cz = centre.z + radial.z * (radius + jitter);
+            const groundY = terrainAt(cx, cz);
+            let heightFactor = 0.34 + positionHash(cx, cz, kindSeed + 31) * 0.50;
+            if (layer.kind === 'city-cluster' && (q === Math.floor(count * 0.38)
+              || q === Math.floor(count * 0.64))) heightFactor = 1;
+            if (layer.kind === 'industry') heightFactor *= 0.62;
+            const height = Math.max(7, layer.height * heightFactor);
+            const pitch = radius * spanAngle / Math.max(1, count - 1);
+            const width = Math.max(8, pitch * (0.55 + positionHash(q, kindSeed, 47) * 0.24));
+            const depth = layer.kind === 'industry' ? 28 : 12 + positionHash(q, layerIndex, 53) * 14;
+            appendBox(pos, idx, cx, cz, tangent, radial, width, depth,
+              BACKDROP_SKIRT_Y, groundY + height);
+          }
+        } else {
+          backdropUv = [];
+          const segments = Math.max(28, Math.min(96, Math.round(layer.spread / 48)));
+          for (let q = 0; q <= segments; q++) {
+            const u = q / segments;
+            const angle = centreAngle + (u - 0.5) * spanAngle;
+            const radial = { x: Math.cos(angle), z: Math.sin(angle) };
+            const x = centre.x + radial.x * radius, z = centre.z + radial.z * radius;
+            const groundY = terrainAt(x, z);
+            let profile = 0.66 + 0.20 * Math.sin(q * 0.73 + layerIndex * 1.7)
+              + (positionHash(q, layerIndex, kindSeed) - 0.5) * 0.18;
+            if (layer.kind === 'mountain') profile += 0.18 * Math.abs(Math.sin(q * 0.31 + 0.8));
+            if (layer.kind === 'sea') profile = 1;
+            const top = groundY + Math.max(2, layer.height * profile);
+            const fadeDepth = Math.min(8, Math.max(1.5, layer.height * 0.08));
+            const bodyTop = Math.max(BACKDROP_SKIRT_Y + 2, top - fadeDepth);
+            // fadeCanvas is opaque at v=0 and clear at v=1. Two stacked ribbon
+            // cells keep the whole skirt/body solid, then dissolve only the last
+            // few metres of crest into the sky instead of cutting a 1px edge.
+            pos.push(x, BACKDROP_SKIRT_Y, z, x, bodyTop, z, x, top, z);
+            backdropUv.push(0.5, 0, 0.5, 0, 0.5, 1);
+            if (q < segments) {
+              const base = q * 3;
+              idx.push(
+                base, base + 3, base + 1, base + 1, base + 3, base + 4,
+                base + 1, base + 4, base + 2, base + 2, base + 4, base + 5,
+              );
+            }
+          }
+        }
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+        if (backdropUv) {
+          geometry.setAttribute('uv', new THREE.Float32BufferAttribute(backdropUv, 2));
+        }
+        geometry.setIndex(idx);
+        const atmospheric = backdropColour(layer);
+        const softCrest = !isBuilt;
+        const material = new THREE.MeshBasicMaterial({
+          color: atmospheric.color, side: THREE.DoubleSide,
+          // These are output-referred matte colours. Passing them through ACES
+          // again turns the dark end of an atmospheric palette back into the
+          // near-black strip the pre-tint was designed to avoid.
+          fog: false, toneMapped: false, depthWrite: true, transparent: softCrest,
+          alphaMap: softCrest
+            ? ctex(fadeCanvas(), { wrapS: THREE.ClampToEdgeWrapping, wrapT: THREE.ClampToEdgeWrapping })
+            : null,
+          alphaTest: softCrest ? 0.02 : 0,
+        });
+        const mesh = new THREE.Mesh(geometry, material);
+        mesh.name = `backdrop-${layer.kind}-${layerIndex}`;
+        mesh.userData.venue = trackId;
+        mesh.userData.kind = layer.kind;
+        mesh.userData.layerIndex = layerIndex;
+        mesh.userData.authored = { ...layer };
+        mesh.userData.fogIndependent = true;
+        mesh.userData.baseY = BACKDROP_SKIRT_Y;
+        mesh.userData.atmosphereFade = atmospheric.fade;
+        mesh.userData.atmosphereTint = atmospheric.color.getHex();
+        mesh.userData.softCrest = softCrest;
+        if (softCrest) {
+          mesh.renderOrder = -4 - layerIndex * 0.01;
+          // GTAO's override material cannot see this mesh's alphaMap. Without
+          // the same colour-pass-only guard used by foliage cards, the deep
+          // skirt enters the normal buffer as a solid rectangle and AO paints a
+          // near-black horizontal strip through every foreground tree.
+          keepOutOfAO(mesh);
+        }
+        backdropTriangles += idx.length / 3;
+        backdropGroup.add(mesh);
+      });
+      backdropGroup.userData.triangles = backdropTriangles;
+      depthStats.backdrop = {
+        kinds: [...realisedKinds], layers: backdropGroup.children.length,
+        triangles: backdropTriangles,
+      };
+      group.userData.venue = {
+        ground: realisedGroundBands.map(band => ({ ...band })),
+        landform: venue.landform,
+        backdrop: venue.backdrop.map(layer => ({ ...layer })),
+      };
+      group.add(backdropGroup);
+    }
+
+    // ---- 8d. instanced venue infrastructure --------------------------------
+    // Placement and keep-outs were fixed before vegetation in 8a.2. Constructing
+    // the batches here, after every rnd()-using scenery system, preserves the
+    // historical seeded stream while filling the barrier-to-horizon mid-ground.
+    {
+      const plan = infrastructurePlan;
+      const unitBox = new THREE.BoxGeometry(1, 1, 1);
+      const unitGround = new THREE.BufferGeometry();
+      unitGround.setAttribute('position', new THREE.Float32BufferAttribute([
+        -0.5, 0, -0.5, 0.5, 0, -0.5, 0.5, 0, 0.5, -0.5, 0, 0.5,
+      ], 3));
+      unitGround.setAttribute('uv', new THREE.Float32BufferAttribute([0, 0, 1, 0, 1, 1, 0, 1], 2));
+      unitGround.setIndex([0, 2, 1, 0, 3, 2]);
+      unitGround.computeVertexNormals();
+      const unitPlane = new THREE.PlaneGeometry(1, 1);
+      const unitTent = new THREE.ConeGeometry(1, 1, 4, 1, false);
+      const bankGeo = new THREE.BufferGeometry();
+      {
+        const NX = 8, NZ = 4, pos = [], uv = [], idx = [];
+        for (let ix = 0; ix <= NX; ix++) for (let iz = 0; iz <= NZ; iz++) {
+          const u = ix / NX, v = iz / NZ;
+          pos.push(u - 0.5, Math.sin(Math.PI * u) * Math.sin(Math.PI * v), v - 0.5);
+          uv.push(u, v);
+        }
+        for (let ix = 0; ix < NX; ix++) for (let iz = 0; iz < NZ; iz++) {
+          const a = ix * (NZ + 1) + iz, b = a + 1;
+          const c = (ix + 1) * (NZ + 1) + iz, d = c + 1;
+          idx.push(a, b, c, b, d, c);
+        }
+        bankGeo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+        bankGeo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+        bankGeo.setIndex(idx);
+      }
+      bankGeo.computeVertexNormals();
+      const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), scale = new THREE.Vector3();
+      const color = new THREE.Color();
+      const buildBoxes = (items, name, material) => {
+        if (!items.length) return null;
+        const mesh = new THREE.InstancedMesh(unitBox, material, items.length);
+        mesh.name = name;
+        items.forEach((it, i) => {
+          q.setFromAxisAngle(UP, it.yaw || 0);
+          scale.set(it.len, it.height, it.dep);
+          m4.compose(it.p, q, scale);
+          mesh.setMatrixAt(i, m4);
+          if (it.color !== undefined) { color.setHex(it.color); mesh.setColorAt(i, color); }
+        });
+        if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+        mesh.userData.declaredFootprints = items.map(it => ({ len: it.len, height: it.height, dep: it.dep }));
+        group.add(mesh);
+        return mesh;
+      };
+      const buildGround = (items, name, material) => {
+        if (!items.length) return null;
+        const mesh = new THREE.InstancedMesh(unitGround, material, items.length);
+        mesh.name = name;
+        items.forEach((it, i) => {
+          q.setFromAxisAngle(UP, it.yaw || 0);
+          scale.set(it.len, 1, it.dep ?? it.width);
+          m4.compose(it.p, q, scale);
+          mesh.setMatrixAt(i, m4);
+        });
+        mesh.userData.declaredFootprints = items.map(it => ({ len: it.len, height: 0, dep: it.dep ?? it.width }));
+        mesh.receiveShadow = true;
+        group.add(mesh);
+        return mesh;
+      };
+      const buildTents = (items, name, material) => {
+        if (!items.length) return null;
+        const mesh = new THREE.InstancedMesh(unitTent, material, items.length);
+        mesh.name = name;
+        items.forEach((it, i) => {
+          q.setFromAxisAngle(UP, it.yaw || 0);
+          scale.set(it.sx, it.sy, it.sz);
+          m4.compose(it.p, q, scale);
+          mesh.setMatrixAt(i, m4);
+          color.setHex(it.color); mesh.setColorAt(i, color);
+        });
+        if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+        mesh.userData.declaredFootprints = items.map(it => ({ len: it.sx * 2, height: it.sy, dep: it.sz * 2 }));
+        group.add(mesh);
+        return mesh;
+      };
+
+      const marginSurface = surfaceSet('gravel', { aniso: 8 });
+      buildGround(plan.surfaceMargins, 'infra-surface-margins', std({
+        color: theme.night ? 0x99938a : 0xb7aa91, roughness: 1,
+        ...surfaceProps(marginSurface, 0.5),
+      }));
+      const paddockAsphalt = surfaceSet('asphalt', { aniso: 8, repeat: [18, 9] });
+      buildGround(plan.paddockAprons, 'infra-paddock-aprons', std({
+        color: theme.night ? 0xb8bdc5 : 0xf0f0ee, roughness: 0.96,
+        ...surfaceProps(paddockAsphalt, 0.32),
+      }));
+      buildBoxes(plan.paddockVehicles, 'infra-paddock-vehicle-parts',
+        std({ color: 0xffffff, roughness: 0.68 }));
+      const infraFacadeTex = ctex(draw(TEX.buildingFacade,
+        [512, 1024, !!theme.night], theme.night ? '#1b1e24' : '#596068'),
+      { repeat: [1.5, 1.4], aniso: 16 });
+      buildBoxes(plan.paddockBuildings, 'infra-paddock-building-parts',
+        flatLit(infraFacadeTex, K_FACADE, { roughness: 0.7 }));
+      const marqueeArt = () => {
+        const c = document.createElement('canvas');
+        c.width = 512; c.height = 512;
+        const g = c.getContext('2d');
+        g.fillStyle = '#eeeae0'; g.fillRect(0, 0, 512, 512);
+        const shade = g.createLinearGradient(0, 0, 512, 512);
+        shade.addColorStop(0, 'rgba(255,255,255,0.28)');
+        shade.addColorStop(0.55, 'rgba(255,255,255,0)');
+        shade.addColorStop(1, 'rgba(44,49,56,0.24)');
+        g.fillStyle = shade; g.fillRect(0, 0, 512, 512);
+        g.strokeStyle = '#9c968a'; g.lineWidth = 7;
+        for (let x = 0; x <= 512; x += 128) { g.beginPath(); g.moveTo(x, 0); g.lineTo(256, 256); g.stroke(); }
+        g.strokeStyle = '#6f7479'; g.lineWidth = 14; g.strokeRect(7, 7, 498, 498);
+        return c;
+      };
+      const marqueeTex = ctex(draw(marqueeArt, [], '#eeeae0'), { aniso: 8 });
+      buildTents(plan.paddockTents, 'infra-paddock-tents',
+        flatLit(marqueeTex, K_FACADE, { roughness: 0.86 }));
+
+      if (plan.perimeterPosts.length) {
+        const posts = new THREE.InstancedMesh(unitBox,
+          std({ color: infrastructureProfile.fence === 'mesh' ? 0x707780 : 0x4f545c, roughness: 0.64 }),
+          plan.perimeterPosts.length);
+        posts.name = 'infra-perimeter-posts';
+        plan.perimeterPosts.forEach((it, i) => {
+          m4.compose(it.p, new THREE.Quaternion(), scale.set(0.32, it.height, 0.32));
+          posts.setMatrixAt(i, m4);
+        });
+        posts.userData.declaredFootprints = plan.perimeterPosts.map(it => ({ len: 0.32, height: it.height, dep: 0.32 }));
+        group.add(posts);
+      }
+      if (plan.perimeterPanels.length) {
+        let fenceGeo, fenceMat;
+        if (infrastructureProfile.fence === 'mesh') {
+          fenceGeo = unitPlane;
+          const fenceTex = ctex(draw(TEX.catchFence, [512, 256], 'rgba(55,59,66,0.86)'),
+            { repeat: [10, 1], aniso: 16 });
+          fenceMat = std({ map: fenceTex, color: 0xb7bdc3, side: THREE.DoubleSide,
+            alphaTest: 0.18, transparent: false, depthWrite: true, roughness: 0.72 });
+        } else {
+          fenceGeo = unitBox;
+          fenceMat = std({ color: theme.night ? 0x444b58 : 0x686e76, roughness: 0.78 });
+        }
+        const panels = new THREE.InstancedMesh(fenceGeo, fenceMat, plan.perimeterPanels.length);
+        panels.name = 'infra-perimeter-panels';
+        plan.perimeterPanels.forEach((it, i) => {
+          q.setFromAxisAngle(UP, it.yaw);
+          scale.set(it.len, it.height, infrastructureProfile.fence === 'mesh' ? 1 : it.dep);
+          m4.compose(it.p, q, scale);
+          panels.setMatrixAt(i, m4);
+        });
+        panels.userData.declaredFootprints = plan.perimeterPanels.map(it => ({
+          len: it.len, height: it.height, dep: infrastructureProfile.fence === 'mesh' ? 0 : it.dep,
+        }));
+        if (infrastructureProfile.fence === 'mesh') keepOutOfAO(panels);
+        group.add(panels);
+      }
+      buildBoxes(plan.perimeterGates, 'infra-perimeter-gates',
+        std({ color: 0xc4c7c9, roughness: 0.6 }));
+
+      if (plan.parkingSurfaces.length) {
+        const parkingKind = plan.parkingSurfaces[0].surface;
+        const surface = surfaceSet(parkingKind, { aniso: 8, repeat: [9, 5] });
+        const tint = parkingKind === 'grass' ? 0xc9d4ba : parkingKind === 'gravel' ? 0xddd4c3 : 0xe5e6e3;
+        buildGround(plan.parkingSurfaces, 'infra-parking-surfaces', std({
+          color: tint, roughness: 0.96, ...surfaceProps(surface, parkingKind === 'asphalt' ? 0.26 : 0.42),
+        }));
+      }
+      buildBoxes(plan.parkedCars, 'infra-parked-car-parts',
+        std({ color: 0xffffff, roughness: 0.66 }));
+      const accessAsphalt = surfaceSet('asphalt', { aniso: 8, repeat: [6, 1] });
+      buildGround(plan.accessRoads, 'infra-access-roads', std({
+        color: theme.night ? 0xb3b8c0 : 0xe8e9e7, roughness: 0.95,
+        ...surfaceProps(accessAsphalt, 0.3),
+      }));
+
+      if (plan.spectatorBanks.length) {
+        const grass = surfaceSet('grass', { aniso: 8, repeat: [1, 1] });
+        const banks = new THREE.InstancedMesh(bankGeo, std({
+          color: 0x71855f, roughness: 0.98, ...surfaceProps(grass, 0.44),
+        }), plan.spectatorBanks.length);
+        banks.name = 'infra-spectator-banks';
+        plan.spectatorBanks.forEach((it, i) => {
+          q.setFromAxisAngle(UP, it.yaw);
+          scale.set(it.len, it.height, it.dep);
+          m4.compose(it.p, q, scale);
+          banks.setMatrixAt(i, m4);
+        });
+        banks.userData.declaredFootprints = plan.spectatorBanks.map(it => ({ len: it.len, height: it.height, dep: it.dep }));
+        group.add(banks);
+      }
+      if (plan.spectatorCrowds.length) {
+        const crowdCardArt = () => {
+          const c = document.createElement('canvas');
+          c.width = 1024; c.height = 320;
+          const g = c.getContext('2d');
+          g.clearRect(0, 0, c.width, c.height);
+          const crowd = draw(TEX.crowd, [1024, 256], '#1d1d24');
+          g.drawImage(crowd, 0, 64, 1024, 256);
+          return c;
+        };
+        const crowdTex = ctex(draw(crowdCardArt, [], 'rgba(0,0,0,0)'), { aniso: 16 });
+        const crowds = new THREE.InstancedMesh(unitPlane,
+          flatLit(crowdTex, K_FACADE, { side: THREE.DoubleSide, alphaTest: 0.08,
+            transparent: false, depthWrite: true, roughness: 0.9 }), plan.spectatorCrowds.length);
+        crowds.name = 'infra-spectator-crowds';
+        plan.spectatorCrowds.forEach((it, i) => {
+          q.setFromAxisAngle(UP, it.yaw);
+          scale.set(it.width, it.height, 1);
+          m4.compose(it.p, q, scale);
+          crowds.setMatrixAt(i, m4);
+        });
+        crowds.userData.declaredFootprints = plan.spectatorCrowds.map(it => ({ len: it.width, height: it.height, dep: 0 }));
+        keepOutOfAO(crowds);
+        group.add(crowds);
+      }
+      buildBoxes(plan.supportClutter, 'infra-support-clutter',
+        std({ color: 0xffffff, roughness: 0.82 }));
+      buildTents(plan.campingTents, 'infra-camping-tents',
+        std({ color: 0xffffff, roughness: 0.9 }));
+    }
+
+    // ---- 9. venue-specific floodlights + spatial spill --------------------
+    if (lightingRig) {
       // Round 2 on the single Singapore floodlight: "the dark pole is still drawn
       // ON TOP of its own glow, cutting a black slash straight through the bright
       // core; the lamp is still a flat white RECTANGLE, not a fixture; there is no
@@ -3786,23 +5744,29 @@ export function buildCircuit(trackId, def, scene) {
       //
       // Spacing: as close as the 96-sprite budget allows, floor 60m, so several
       // towers are in frame at once instead of one.
-      const step = Math.max(1, Math.round(Math.max(60, length / 94) / ds));
+      const step = Math.max(1, Math.round(Math.max(lightingRig.spacingM, length / 94) / ds));
       const cnt = Math.ceil(N / step);
-      const POLE_H = 13.2;
+      const POLE_H = lightingRig.poleHeight;
       const poleG = new THREE.CylinderGeometry(0.16, 0.3, POLE_H, 6);
-      const poles = new THREE.InstancedMesh(poleG, std({ color: 0x585e68, roughness: 0.6 }), cnt);
+      const poles = new THREE.InstancedMesh(poleG, std({
+        color: 0x585e68, roughness: 0.6,
+        emissive: lightingRig.lamp, emissiveIntensity: lightingRig.mastEmissive,
+      }), cnt);
       poles.name = 'floodlight-poles';
       // ---- fixture head: a housing with four lamp panels recessed into it -----
       // The old head was one unlit white box, which is why it read as a bare
       // rectangle. The housing is a lit dark shell, and the lamps are separate
       // emissive quads sunk into its underside, so the fixture has a shape.
       const headG = new THREE.BoxGeometry(3.4, 0.62, 1.15);
-      const heads = new THREE.InstancedMesh(headG, std({ color: 0x2f333b, roughness: 0.55 }), cnt);
+      const heads = new THREE.InstancedMesh(headG, std({
+        color: 0x2f333b, roughness: 0.55,
+        emissive: lightingRig.lamp, emissiveIntensity: lightingRig.mastEmissive * 0.7,
+      }), cnt);
       heads.name = 'floodlight-heads';
       const LAMPS_PER = 4;
       const lampG = new THREE.PlaneGeometry(0.72, 0.86);
       const lamps = new THREE.InstancedMesh(lampG, new THREE.MeshStandardMaterial({
-        color: 0x2b3240, emissive: 0xe8eeff, emissiveIntensity: 1.45,
+        color: 0x2b3240, emissive: lightingRig.lamp, emissiveIntensity: 1.45,
         roughness: 0.4, metalness: 0, side: THREE.DoubleSide,
       }), cnt * LAMPS_PER);
       lamps.name = 'floodlight-lamps';
@@ -3810,7 +5774,7 @@ export function buildCircuit(trackId, def, scene) {
       const glowTex = ctex(glowCanvas(128), { wrapS: THREE.ClampToEdgeWrapping, wrapT: THREE.ClampToEdgeWrapping });
       const glowMat = applyAdditiveFogExtinction(new THREE.SpriteMaterial({
         map: glowTex,
-        color: 0xbfd4ff,
+        color: lightingRig.lamp,
         blending: THREE.AdditiveBlending,
         transparent: true,
         opacity: 0.38,
@@ -3827,7 +5791,8 @@ export function buildCircuit(trackId, def, scene) {
       // One merged additive decal per tower, an ellipse on the road under the
       // fixture, so the floodlight visibly illuminates something.
       const poolTex = ctex(poolCanvas(128), { wrapS: THREE.ClampToEdgeWrapping, wrapT: THREE.ClampToEdgeWrapping });
-      const poolPos = [], poolUV = [], poolIdx = [];
+      const poolPos = [], poolUV = [], poolCol = [], poolIdx = [];
+      const barrierPos = [], barrierUV = [], barrierCol = [], barrierIdx = [];
       let k = 0, pools = 0;
       for (let i = 0; i < N; i += step) {
         const s = samples[i];
@@ -3852,30 +5817,63 @@ export function buildCircuit(trackId, def, scene) {
         const glow = new THREE.Sprite(glowMat);
         glow.name = 'floodlight-glow';
         glow.position.set(p.x, headY + 0.1, p.z);
-        glow.scale.set(5.25, 5.25, 1);
+        const glowSize = theme.nightRig === 'lasvegas' ? 4.65 : (theme.nightRig === 'lusail' ? 4.9 : 5.25);
+        glow.scale.set(glowSize, glowSize, 1);
         glow.renderOrder = 4;
         group.add(glow);
         // Pool: a strip that FOLLOWS the samples rather than the tangent, so its
         // far ends cannot swing off the road on a curve, with a radial falloff
         // painted into it so the rectangle reads as an ellipse of light.
         {
-          const RA = Math.min(halfWidth - 0.9, 5.0);
-          const ctr = -side * 0.5;                       // biased toward the tower
-          const half = stepOf(15);
+          const RA = wallOff + lightingRig.poolBeyondBarrierM;
+          const half = stepOf(lightingRig.poolHalfLengthM);
+          const lateralColumns = [-RA, -wallOff, -halfWidth, 0, halfWidth, wallOff, RA];
+          const wash = new THREE.Color(lightingRig.washColors
+            ? lightingRig.washColors[k % lightingRig.washColors.length] : lightingRig.pool);
           const v0 = poolPos.length / 3;
           for (let q = -half; q <= half; q++) {
             const i2 = idxAt(i + q);
             const s2 = samples[i2];
-            const y2 = heights[i2] + 0.036;
-            for (const ua of [-1, 1]) {
-              const lat = ctr + ua * RA;
-              poolPos.push(s2.p.x + s2.n.x * lat, y2, s2.p.z + s2.n.z * lat);
-              poolUV.push((ua + 1) / 2, (q + half) / (2 * half));
+            for (let column = 0; column < lateralColumns.length; column++) {
+              const lat = lateralColumns[column];
+              const wx = s2.p.x + s2.n.x * lat;
+              const wz = s2.p.z + s2.n.z * lat;
+              const y2 = Math.abs(lat) <= wallOff + 1e-6
+                ? heights[i2] + 0.036 : terrainAt(wx, wz) - 0.04;
+              poolPos.push(wx, y2, wz);
+              poolUV.push((lat + RA) / (2 * RA), (q + half) / (2 * half));
+              poolCol.push(wash.r, wash.g, wash.b);
             }
             if (q < half) {
-              const v = v0 + (q + half) * 2;
-              // wound so the pool faces UP: n x t points down, t x n points up
-              poolIdx.push(v, v + 2, v + 1, v + 1, v + 2, v + 3);
+              const row = v0 + (q + half) * lateralColumns.length;
+              const next = row + lateralColumns.length;
+              for (let column = 0; column < lateralColumns.length - 1; column++) {
+                const a = row + column, b = row + column + 1;
+                const c = next + column, d = next + column + 1;
+                // wound so the pool faces up across every surface-following cell
+                poolIdx.push(a, c, b, b, c, d);
+              }
+            }
+          }
+          // A second merged decal follows the barrier face beside this mast.
+          // It is deliberately unlit because it represents the light energy
+          // landing on an already-lit MeshStandard surface. Longitudinal and
+          // vertical UVs sample the same radial texture for a real 2D falloff.
+          const bv0 = barrierPos.length / 3;
+          const spillTop = Math.min(lightingRig.spillCeilingM, wallH + 0.28);
+          for (let q = -half; q <= half; q++) {
+            const i2 = idxAt(i + q);
+            const s2 = samples[i2];
+            const baseY = heights[i2] + 0.03;
+            const lat = side * (wallOff - 0.095);
+            const bx = s2.p.x + s2.n.x * lat;
+            const bz = s2.p.z + s2.n.z * lat;
+            barrierPos.push(bx, baseY, bz, bx, baseY + spillTop, bz);
+            barrierUV.push((q + half) / (2 * half), 0.30, (q + half) / (2 * half), 0.56);
+            barrierCol.push(wash.r, wash.g, wash.b, wash.r, wash.g, wash.b);
+            if (q < half) {
+              const v = bv0 + (q + half) * 2;
+              barrierIdx.push(v, v + 1, v + 2, v + 1, v + 3, v + 2);
             }
           }
           pools++;
@@ -3889,18 +5887,20 @@ export function buildCircuit(trackId, def, scene) {
         const pg = new THREE.BufferGeometry();
         pg.setAttribute('position', new THREE.Float32BufferAttribute(poolPos, 3));
         pg.setAttribute('uv', new THREE.Float32BufferAttribute(poolUV, 2));
+        pg.setAttribute('color', new THREE.Float32BufferAttribute(poolCol, 3));
         pg.setIndex(poolIdx);
         pg.computeVertexNormals();
         const pool = new THREE.Mesh(pg, applyAdditiveFogExtinction(new THREE.MeshBasicMaterial({
           map: poolTex,
-          color: 0x829ac4,
+          color: 0xffffff,
+          vertexColors: true,
           blending: THREE.AdditiveBlending,
           transparent: true,
           depthWrite: false,
           // The pool is a low-energy illumination cue, not a painted white
           // strip. Asphalt, grid markings and car silhouettes remain visible
           // through adjacent pools on a packed starting grid.
-          opacity: 0.22,
+          opacity: lightingRig.poolOpacity,
           polygonOffset: true,
           polygonOffsetFactor: -5,
           polygonOffsetUnits: -5,
@@ -3908,9 +5908,41 @@ export function buildCircuit(trackId, def, scene) {
         })));
         pool.name = 'floodlight-pools';
         pool.userData.pools = pools;
+        pool.userData.rig = { ...lightingRig };
+        pool.userData.coverage = {
+          from: -wallOff - lightingRig.poolBeyondBarrierM,
+          to: wallOff + lightingRig.poolBeyondBarrierM,
+          includesRunoff: true,
+          includesBarrier: true,
+        };
         pool.renderOrder = 2;
         group.add(pool);
       }
+      if (barrierIdx.length) {
+        const bg = new THREE.BufferGeometry();
+        bg.setAttribute('position', new THREE.Float32BufferAttribute(barrierPos, 3));
+        bg.setAttribute('uv', new THREE.Float32BufferAttribute(barrierUV, 2));
+        bg.setAttribute('color', new THREE.Float32BufferAttribute(barrierCol, 3));
+        bg.setIndex(barrierIdx);
+        bg.computeVertexNormals();
+        const spill = new THREE.Mesh(bg, applyAdditiveFogExtinction(new THREE.MeshBasicMaterial({
+          map: poolTex, color: 0xffffff, vertexColors: true,
+          blending: THREE.AdditiveBlending, transparent: true,
+          depthWrite: false, side: THREE.DoubleSide,
+          opacity: lightingRig.barrierOpacity, fog: true,
+          polygonOffset: true, polygonOffsetFactor: -6, polygonOffsetUnits: -6,
+        })));
+        // Allowed unlit emitter/decal: this is incident spill composited onto
+        // the standard-lit barrier and hoarding faces, not a replacement surface.
+        spill.name = 'floodlight-barrier-spill';
+        spill.userData.pools = pools;
+        spill.userData.rig = { ...lightingRig };
+        spill.userData.nearLuminance = lightingRig.barrierOpacity;
+        spill.userData.farLuminance = 0;
+        spill.renderOrder = 3;
+        group.add(spill);
+      }
+      group.userData.lightingRig = { ...lightingRig };
     }
   }
 
@@ -3997,21 +6029,26 @@ export function buildCircuit(trackId, def, scene) {
   // off, renderOrder below the cars' own contact shadows, and laid a few cm off
   // the terrain so they never z-fight the grass.
   if (shadeRects.length || shadeBlobs.length) {
+    const CANOPY_SHADE_SUPPORT = 0.5; // visible radius / texture half-extent
     const softTex = (ellipse) => {
-      const c = document.createElement('canvas');
-      c.width = c.height = 128;
-      const g = c.getContext('2d');
-      const grad = g.createRadialGradient(64, 64, ellipse ? 6 : 26, 64, 64, 62);
-      grad.addColorStop(0, 'rgba(0,0,0,1)');
-      grad.addColorStop(ellipse ? 0.45 : 0.62, 'rgba(0,0,0,0.72)');
-      grad.addColorStop(1, 'rgba(0,0,0,0)');
-      g.fillStyle = grad;
-      g.fillRect(0, 0, 128, 128);
+      const c = ellipse ? draw(TEX.canopyShadeDecal, [128], 'rgba(0,0,0,0)')
+        : document.createElement('canvas');
+      if (!ellipse) {
+        c.width = c.height = 128;
+        const g = c.getContext('2d');
+        const grad = g.createRadialGradient(64, 64, 26, 64, 64, 62);
+        grad.addColorStop(0, 'rgba(0,0,0,1)');
+        grad.addColorStop(0.62, 'rgba(0,0,0,0.72)');
+        grad.addColorStop(1, 'rgba(0,0,0,0)');
+        g.fillStyle = grad;
+        g.fillRect(0, 0, 128, 128);
+      }
       const t = new THREE.CanvasTexture(c);
       t.colorSpace = THREE.SRGBColorSpace;
       // This texture is reused by meshes inside one circuit but is still owned
       // by that circuit. `userData.shared` is reserved for external resources.
       t.userData.circuitOwned = true;
+      if (ellipse) t.userData.alphaSupportHalfExtent = CANOPY_SHADE_SUPPORT;
       return t;
     };
     const quad = new THREE.PlaneGeometry(1, 1);
@@ -4029,9 +6066,12 @@ export function buildCircuit(trackId, def, scene) {
         g2.userData.alpha = it.a;
         qq.setFromAxisAngle(new THREE.Vector3(0, 1, 0), it.rot || 0).multiply(flat);
         mm.compose(
-          new THREE.Vector3(it.x, terrainAt(it.x, it.z) + 0.045, it.z),
+          new THREE.Vector3(it.x, terrainAt(it.x, it.z) + (it.groundLift ?? 0.045), it.z),
           qq,
-          new THREE.Vector3(it.w || it.rx * 2, it.d || it.rz * 2, 1));
+          new THREE.Vector3(
+            it.w || (it.rx * 2) / CANOPY_SHADE_SUPPORT,
+            it.d || (it.rz * 2) / CANOPY_SHADE_SUPPORT,
+            1));
         g2.applyMatrix4(mm);
         // fold per-decal alpha into the vertex colour channel the shader reads
         const c2 = g2.attributes.color.array;
@@ -4069,6 +6109,11 @@ export function buildCircuit(trackId, def, scene) {
           '#include <color_fragment>\ndiffuseColor.a *= vColor.r;\ndiffuseColor.rgb = vec3(0.0);');
       };
       mesh.name = name;
+      if (ellipse) mesh.userData.shadePolicy = {
+        ...canopyShadeStats,
+        alphaSupportHalfExtent: CANOPY_SHADE_SUPPORT,
+        output: items.length,
+      };
       mesh.renderOrder = -1;          // under the cars' contact shadows
       mesh.matrixAutoUpdate = false;
       keepOutOfAO(mesh);
@@ -4155,6 +6200,13 @@ export function buildCircuit(trackId, def, scene) {
       for (const material of materials) {
         for (const value of Object.values(material)) {
           if (value?.isTexture && !value.userData?.shared) textures.add(value);
+        }
+        const woodlandTexture = material.userData?.woodlandTexture;
+        if (woodlandTexture?.isTexture && !woodlandTexture.userData?.shared) textures.add(woodlandTexture);
+        const groundDistanceTexture = material.userData?.groundDistanceTexture;
+        if (groundDistanceTexture?.isTexture && !groundDistanceTexture.userData?.shared) textures.add(groundDistanceTexture);
+        for (const texture of material.userData?.groundBandTextures || []) {
+          if (texture?.isTexture && !texture.userData?.shared) textures.add(texture);
         }
       }
       for (const texture of textures) texture.dispose();

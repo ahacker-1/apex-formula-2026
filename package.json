@@ -21,6 +21,7 @@
     "check:opensource": "bash tools/check-open-source-ready.sh",
     "test:tracks": "node tools/validate-tracks.mjs",
     "test:geometry": "node tools/validate-geometry.mjs",
+    "test:ground-surface": "node tools/validate-ground-surface.mjs",
     "test:venue-depth": "node tools/validate-venue-depth.mjs",
     "test:pacing": "node tools/validate-pacing.mjs",
     "test:game-pacing": "node tools/validate-game-pacing.mjs",
@@ -39,6 +40,6 @@
     "test:nametags": "node tools/nametag-sim-check.mjs",
     "test:features": "node tools/sim-race-features.mjs",
     "test:race": "node tools/sim-race.mjs",
-    "test": "npm run check:opensource && npm run test:tracks && npm run test:geometry && npm run test:venue-depth && npm run test:pacing && npm run test:game-pacing && npm run test:interpolation && npm run test:car-glb && npm run test:car-lod && npm run test:random && npm run test:championship && npm run test:build-script && npm run test:performance-budget && npm run test:handling && npm run test:physics && npm run test:pbr && npm run test:effects && npm run test:nametags && npm run test:features && npm run test:race"
+    "test": "npm run check:opensource && npm run test:tracks && npm run test:geometry && npm run test:ground-surface && npm run test:venue-depth && npm run test:pacing && npm run test:game-pacing && npm run test:interpolation && npm run test:car-glb && npm run test:car-lod && npm run test:random && npm run test:championship && npm run test:build-script && npm run test:performance-budget && npm run test:handling && npm run test:physics && npm run test:pbr && npm run test:effects && npm run test:nametags && npm run test:features && npm run test:race"
   }
 }

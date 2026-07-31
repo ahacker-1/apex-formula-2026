@@ -1,6 +1,6 @@
 // Race session: grid → lights → racing → chequered flag. Owns all 22 cars,
 // timing, positions, pit stops, collisions, slipstream/dirty air, results.
-import { CanvasTexture, Group, MeshBasicMaterial, Mesh, PlaneGeometry } from 'three';
+import { BufferGeometry, CanvasTexture, Float32BufferAttribute, Group, MeshBasicMaterial, Mesh, PlaneGeometry } from 'three';
 import { CarPhysics, COMPOUNDS } from './physics.js';
 import { AIDriver } from './ai.js';
 import * as CAR from './car.js';
@@ -168,7 +168,28 @@ function radialShadowTex(stops) {
 // two multiply into >=20% darkening at each contact patch even where the blob
 // alone has faded out. Exported for the car render harness.
 let _shadowTex = null, _wheelShadowTex = null;
-export function makeContactShadow() {
+function fannedShadowGeometry(fans) {
+  if (fans <= 1) return new PlaneGeometry(3.6, 7.0);
+  const positions = [], normals = [], uvs = [];
+  for (let fan = 0; fan < fans; fan++) {
+    const offset = (fan - (fans - 1) / 2) * 0.14;
+    const g = new PlaneGeometry(3.25, 6.5).toNonIndexed();
+    g.rotateZ(offset);
+    g.translate(Math.sin(offset) * 0.52, Math.cos(offset) * 0.22, 0);
+    positions.push(...g.attributes.position.array);
+    normals.push(...g.attributes.normal.array);
+    uvs.push(...g.attributes.uv.array);
+    g.dispose();
+  }
+  const merged = new BufferGeometry();
+  merged.setAttribute('position', new Float32BufferAttribute(positions, 3));
+  merged.setAttribute('normal', new Float32BufferAttribute(normals, 3));
+  merged.setAttribute('uv', new Float32BufferAttribute(uvs, 2));
+  return merged;
+}
+
+export function makeContactShadow(shadowFans = 1) {
+  const fans = Math.max(1, Math.min(6, Math.round(shadowFans) || 1));
   if (!_shadowTex) {
     _shadowTex = radialShadowTex([[0, 0.5], [0.55, 0.3], [1, 0]]);
     _wheelShadowTex = radialShadowTex([[0, 0.68], [0.4, 0.58], [0.75, 0.34], [1, 0]]);
@@ -194,11 +215,16 @@ export function makeContactShadow() {
   // updateShadowLobe). Wider and softer than the body blob so it reads as a
   // cast shadow rather than a second contact patch.
   const lobe = new Mesh(
-    new PlaneGeometry(3.6, 7.0),
-    new MeshBasicMaterial({ map: _shadowTex, transparent: true, opacity: 0.55, depthWrite: false }));
+    fannedShadowGeometry(fans),
+    new MeshBasicMaterial({
+      map: _shadowTex, transparent: true,
+      opacity: fans > 1 ? Math.max(0.14, 0.58 / fans) : 0.55,
+      depthWrite: false,
+    }));
   lobe.rotation.x = -Math.PI / 2;
   lobe.renderOrder = -1;        // under the contact patches
   lobe.name = 'sunShadowLobe';
+  lobe.userData.shadowFans = fans;
   grp.add(lobe);
   grp.add(blob);
   // wheel centres in car space are (±0.82, 1.55) front / (±0.85, -1.60) rear on
@@ -317,7 +343,7 @@ export class RaceSession {
       group.position.copy(slot.pos);
       group.rotation.y = slot.heading;
       this.scene.add(group);
-      const blob = makeContactShadow();
+      const blob = makeContactShadow(c.group.userData.lightingRig?.shadowFans || 1);
       blob.position.set(0, 0.028, -0.05);
       group.add(blob);
       const tag = buildNameTag(driver, team);
@@ -380,7 +406,7 @@ export class RaceSession {
     const { group, wheels, wheelRadius } = carHandle;
     if (CAR.setTyreCompound) CAR.setTyreCompound(carHandle, 'S');
     this.scene.add(group);
-    const blob = makeContactShadow();
+    const blob = makeContactShadow(c.group.userData.lightingRig?.shadowFans || 1);
     blob.position.set(0, 0.028, -0.05);
     group.add(blob);
     this.entries = [{
