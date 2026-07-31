@@ -118,7 +118,43 @@ const RENDER_LOOK = Object.freeze({
     bloomStrength: 0.22, bloomRadius: 0.36, bloomThreshold: 0.92,
     environmentIntensity: 0.55, fallbackEnvironmentIntensity: 0.5,
   }),
+  nightJeddah: Object.freeze({
+    exposure: 0.95,
+    bloomStrength: 0.18, bloomRadius: 0.28, bloomThreshold: 0.98,
+    environmentIntensity: 0.48, fallbackEnvironmentIntensity: 0.44,
+    hemiIntensity: 0.50, hemiGround: 0x242a32, sunIntensity: 1.05,
+    ambientColor: 0x91a9d0, ambientIntensity: 0.34,
+  }),
+  nightSingapore: Object.freeze({
+    exposure: 1.02,
+    bloomStrength: 0.16, bloomRadius: 0.20, bloomThreshold: 1.02,
+    environmentIntensity: 0.64, fallbackEnvironmentIntensity: 0.60,
+    hemiIntensity: 0.72, hemiGround: 0x30363a, sunIntensity: 0.82,
+    ambientColor: 0xc0d6ee, ambientIntensity: 0.52,
+  }),
+  nightLusail: Object.freeze({
+    exposure: 0.86,
+    bloomStrength: 0.14, bloomRadius: 0.18, bloomThreshold: 1.04,
+    environmentIntensity: 0.30, fallbackEnvironmentIntensity: 0.26,
+    hemiIntensity: 0.30, hemiGround: 0x11110f, sunIntensity: 0.92,
+    ambientColor: 0x746b5e, ambientIntensity: 0.20,
+  }),
+  nightLasvegas: Object.freeze({
+    exposure: 0.96,
+    bloomStrength: 0.08, bloomRadius: 0.10, bloomThreshold: 1.10,
+    environmentIntensity: 0.42, fallbackEnvironmentIntensity: 0.38,
+    hemiIntensity: 0.40, hemiGround: 0x292128, sunIntensity: 0.72,
+    ambientColor: 0x826579, ambientIntensity: 0.28,
+  }),
 });
+
+function renderLookKeyForTrack(trackId, environmentKey) {
+  const night = {
+    jeddah: 'nightJeddah', singapore: 'nightSingapore',
+    lusail: 'nightLusail', qatar: 'nightLusail', lasvegas: 'nightLasvegas',
+  }[trackId];
+  return night || environmentKey;
+}
 
 class Game {
   constructor() {
@@ -263,7 +299,7 @@ class Game {
       // and the active venue look so recovery remains correct if renderer
       // internals change.
       this.renderer.info.autoReset = false;
-      this.renderer.toneMappingExposure = RENDER_LOOK[this._environmentKey || 'day'].exposure;
+      this.renderer.toneMappingExposure = RENDER_LOOK[this._renderLookKey || 'day'].exposure;
       this.quality.apply(true);
       this.showGraphicsRecovery('', '');
       if (this.session) this.hud.message('GRAPHICS RESTORED');
@@ -597,6 +633,7 @@ class Game {
         seed: sessionSeed,
         onMessage: (t, c, meta) => { this.hud.message(t, c, meta); },
       });
+      this.applyVenueCarLighting();
       this.session.setNametags(this.ui.settings.nametags);
       this.hud.bindSession(this.session, this.circuit);
       if (cfg.trial) {
@@ -721,6 +758,7 @@ class Game {
     // its scene is being assembled. setupEnvironment() reapplies the selected
     // venue's look once the new circuit exists.
     this._environmentKey = null;
+    this._renderLookKey = null;
     this.renderer.toneMappingExposure = RENDER_LOOK.day.exposure;
     this.hud.hide();
     this.audio.stopEngine();
@@ -736,20 +774,23 @@ class Game {
   setupEnvironment(effectsRandom = () => Math.random(), environmentKey) {
     this._celestialObjects = [];
     const th = this.circuit.theme;
-    const renderLook = RENDER_LOOK[environmentKey] || RENDER_LOOK.day;
+    const renderLookKey = renderLookKeyForTrack(this.circuit.id, environmentKey);
+    const renderLook = RENDER_LOOK[renderLookKey] || RENDER_LOOK.day;
     this._environmentKey = environmentKey;
+    this._renderLookKey = renderLookKey;
     // Day, dusk and night are independently graded. Day holds highlight
     // headroom; dusk trades warm sun/ground lift for neutral sky/IBL fill; night
     // preserves the established restrained fixture response.
     this.renderer.toneMappingExposure = renderLook.exposure;
-    this.scene.fog = new THREE.Fog(th.fog, 300, 1600);
+    this.scene.fog = new THREE.Fog(th.fog, th.fogNear ?? 300, th.fogFar ?? 1600);
     // sky dome: gradient + soft clouds BAKED into the texture (day/dusk).
     // Clouds must never be separate transparent quads again -- sprites read as
     // tinted slab panes (removed in e29383d); baked into the dome they cannot.
     const skyTex = new THREE.CanvasTexture(TEX.skyDome(
       '#' + new THREE.Color(th.skyTop).getHexString(),
       '#' + new THREE.Color(th.skyBot).getHexString(),
-      { clouds: !th.night, dusk: environmentKey === 'dusk', horizonStop: th.night ? 1 : 0.52 }
+      { clouds: !th.night, dusk: environmentKey === 'dusk',
+        horizonStop: th.night && !th.proceduralSky ? 1 : 0.52 }
     ));
     const sky = new THREE.Mesh(
       new THREE.SphereGeometry(2600, 24, 12),
@@ -777,7 +818,10 @@ class Game {
     this.scene.add(sun.target);
     this.sun = sun;
     if (th.night) {
-      const amb = new THREE.AmbientLight(0x8899cc, 0.5);
+      const amb = new THREE.AmbientLight(
+        renderLook.ambientColor ?? 0x8899cc,
+        renderLook.ambientIntensity ?? 0.5,
+      );
       this.scene.add(amb);
     }
 
@@ -814,8 +858,9 @@ class Game {
       // certain angles (verified by hiding all sprites — sky went clean).
       // Clouds belong painted into the sky-dome texture, where alpha blending
       // and sprite shear cannot produce panes.
-    } else {
-      // stars + moon
+    } else if (th.stars !== false) {
+      // Dark rural/coastal nights retain small round stars. Urban Singapore and
+      // Las Vegas deliberately skip this whole branch in favour of skyglow.
       const starGeo = new THREE.BufferGeometry();
       const sp = new Float32Array(420 * 3);
       for (let i = 0; i < 420; i++) {
@@ -837,9 +882,10 @@ class Game {
       sg2.fillStyle = sgr;
       sg2.fillRect(0, 0, 32, 32);
       const stars = new THREE.Points(starGeo, new THREE.PointsMaterial({
-        map: mkTex(starC), color: 0xcdd8ff, size: 5, sizeAttenuation: false,
-        fog: false, transparent: true, opacity: 0.8, depthWrite: false,
+        map: mkTex(starC), color: 0xcdd8ff, size: 1, sizeAttenuation: false,
+        fog: false, transparent: true, opacity: 0.62, alphaTest: 0.20, depthWrite: false,
       }));
+      stars.name = 'stars';
       this.scene.add(stars);
       this._celestialObjects.push(stars);
       const mc = document.createElement('canvas');
@@ -852,6 +898,7 @@ class Game {
       mg.fillStyle = mgrad;
       mg.fillRect(0, 0, 128, 128);
       const moon = new THREE.Sprite(new THREE.SpriteMaterial({ map: mkTex(mc), transparent: true, depthWrite: false, fog: false }));
+      moon.name = 'moon';
       moon.scale.setScalar(190);
       moon.position.set(-1200, 1300, -900);
       this.scene.add(moon);
@@ -870,7 +917,7 @@ class Game {
       if (this.scene !== sceneForEnvironment || !hdr) return;
       sceneForEnvironment.environment = hdr;
       sceneForEnvironment.environmentIntensity = renderLook.environmentIntensity;
-      if (th.night) {
+      if (th.night && !th.proceduralSky) {
         sceneForEnvironment.background = hdr;
         sceneForEnvironment.backgroundIntensity = 0.7;
         sky.visible = false;
@@ -930,6 +977,51 @@ class Game {
     this.fxaa = new FXAAPass();
     this.composer.addPass(this.fxaa);
     this.quality.bind({ composer: this.composer, gtao: this.gtao, bloom: this.bloom, sun: this.sun });
+  }
+
+  applyVenueCarLighting() {
+    if (this.circuit?.theme?.nightRig !== 'lasvegas' || !this.session) return;
+    const patched = new Set();
+    for (const entry of this.session.entries) entry.mesh?.traverse((object) => {
+      const materials = Array.isArray(object.material) ? object.material : [object.material];
+      for (const material of materials) {
+        if (!material || patched.has(material) || material.userData?.shared
+          || (!material.isMeshStandardMaterial && !material.isMeshPhysicalMaterial)) continue;
+        patched.add(material);
+        const previousCompile = material.onBeforeCompile?.bind(material);
+        const previousKey = material.customProgramCacheKey?.bind(material) || (() => '');
+        material.onBeforeCompile = (shader, renderer) => {
+          previousCompile?.(shader, renderer);
+          const common = '#include <common>';
+          const begin = '#include <begin_vertex>';
+          const output = '#include <output_fragment>';
+          if (!shader.vertexShader.includes(common) || !shader.vertexShader.includes(begin)
+            || !shader.fragmentShader.includes(common) || !shader.fragmentShader.includes(output)) {
+            throw new Error('Las Vegas rim-light shader chunks changed; refusing an unpinned patch');
+          }
+          shader.vertexShader = shader.vertexShader
+            .replace(common, `${common}\nvarying vec3 vApexVegasWorld;`)
+            .replace(begin, `${begin}\n  vApexVegasWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;`);
+          shader.fragmentShader = shader.fragmentShader
+            .replace(common, `${common}\nvarying vec3 vApexVegasWorld;`)
+            .replace(output, `
+  float apexVegasBand = mod(floor((dot(vApexVegasWorld.xz, vec2(0.70710678)) / 100.0) + 4096.0), 4.0);
+  vec3 apexVegasWash = apexVegasBand < 0.5 ? vec3(1.0, 0.0296, 0.2874)
+    : apexVegasBand < 1.5 ? vec3(0.0176, 0.5776, 1.0)
+    : apexVegasBand < 2.5 ? vec3(0.2582, 0.1022, 1.0)
+    : vec3(1.0, 0.2582, 0.0176);
+  float apexVegasRim = pow(1.0 - abs(dot(normalize(normal), normalize(vViewPosition))), 4.0);
+  outgoingLight += apexVegasWash * apexVegasRim * 0.58;
+  ${output}`);
+        };
+        material.customProgramCacheKey = () => `${previousKey()}|apex-lasvegas-rim-100m-v1`;
+        material.userData.venueRimLight = {
+          venue: 'lasvegas', cycleM: 100, colours: [0xff2f92, 0x24c8ff, 0x8b5cff, 0xff8b24],
+          dryAir: true, bloomHaze: false,
+        };
+        material.needsUpdate = true;
+      }
+    });
   }
 
   // ---------- input ----------

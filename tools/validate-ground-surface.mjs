@@ -178,7 +178,9 @@ let minStddev = { value: Infinity, track: '' };
 let worstAdjacent = { value: 0, track: '', mean: 0 };
 let maxCanopyAlpha = { value: 0, track: '', blobs: 0 };
 const bandSignatures = new Map();
+const measuredGroundGreenness = new Map();
 const groundRows = [];
+let greenContrast = null;
 for (const trackId of Object.keys(TRACKS)) {
   const first = buildCircuit(trackId, TRACKS[trackId], new THREE.Scene());
   const second = buildCircuit(trackId, TRACKS[trackId], new THREE.Scene());
@@ -216,20 +218,37 @@ for (const trackId of Object.keys(TRACKS)) {
     const expectedBands = VENUE[trackId]?.ground;
     const realisedBands = meta.groundBands;
     assert(Array.isArray(expectedBands) && Array.isArray(realisedBands)
-      && expectedBands.length === 3 && realisedBands.length === expectedBands.length,
-    `${trackId}: VENUE and realised ground both carry exactly three outward bands`);
+      && expectedBands.length >= 2 && expectedBands.length <= 3
+      && realisedBands.length === expectedBands.length,
+    `${trackId}: VENUE and realised ground both carry two or three genuine outward bands`);
     if (expectedBands && realisedBands) {
       const exact = expectedBands.every((band, i) => band.to === realisedBands[i]?.to
         && band.surface === realisedBands[i]?.surface && band.tint === realisedBands[i]?.tint
         && ['grass', 'gravel', 'asphalt'].includes(realisedBands[i]?.tile));
       assert(exact, `${trackId}: realised ground bands match its VENUE entry exactly`);
-      assert(realisedBands[0].to < realisedBands[1].to && realisedBands[2].to === Infinity,
+      assert(realisedBands.slice(0, -1).every((band, i) => Number.isFinite(band.to)
+        && band.to > (i ? realisedBands[i - 1].to : 0)) && realisedBands.at(-1).to === Infinity,
         `${trackId}: ground bands are ordered outward and terminate at Infinity`);
       const signature = realisedBands.map(band => `${band.to}:${band.surface}:${band.tint}`).join('|');
       assert(!bandSignatures.has(signature), `${trackId}: ground-band identity is not shared with another circuit`,
         `[duplicate=${bandSignatures.get(signature) || 'none'}]`);
       bandSignatures.set(signature, trackId);
       groundRows.push(`${trackId}: ${realisedBands.map(band => `${band.surface}/${band.tile}@${Number.isFinite(band.to) ? `${band.to}m` : 'inf'}`).join(' > ')}`);
+
+      // Measure the authored colour actually supplied to the ground shader over
+      // the first 180m outfield. Area is sampled in metres so a narrow artificial
+      // turf strip cannot make an otherwise desert venue test as green. The
+      // normalized opponent score is positive for green-biased ground and near
+      // zero for pale yellow/grey sand.
+      let score = 0, samples = 0;
+      for (let metres = 2; metres <= 180; metres += 4) {
+        const band = realisedBands.find(candidate => metres <= candidate.to);
+        const tint = new THREE.Color(band.tint);
+        const sum = tint.r + tint.g + tint.b;
+        score += sum > 1e-9 ? (2 * tint.g - tint.r - tint.b) / sum : 0;
+        samples++;
+      }
+      measuredGroundGreenness.set(trackId, score / samples);
     }
     assert(Array.isArray(meta.macroOctaves) && meta.macroOctaves.length === 3
       && meta.vertexMacroOctaves?.length === 1 && meta.vertexMacroOctaves[0].wavelength >= 560
@@ -261,6 +280,11 @@ for (const trackId of Object.keys(TRACKS)) {
       && ground.material.userData.groundBandTextures?.every(texture => texture?.isTexture
         && texture.repeat.x === 1 && texture.repeat.y === 1 && texture.anisotropy >= 16),
     `${trackId}: band selection preserves fixed UV repeat and high anisotropy`);
+    if (trackId === 'suzuka') {
+      assert(meta.groundBandTintResponse?.cutScars?.surface === 'graded-green-earth-bank'
+        && shader.fragmentShader.includes('apexSuzukaClayScar'),
+      'suzuka exposes sparse shader-level clay cut scars without a clay field band');
+    }
     const woodland = ground.material.userData.woodlandTexture;
     const otherWoodland = otherGround.material.userData.woodlandTexture;
     assert(woodland?.isDataTexture && woodland.image.width === meta.woodlandLayer.textureSize
@@ -290,7 +314,20 @@ assert(bandSignatures.size === Object.keys(TRACKS).length,
   'no two circuits share an identical realised ground-band set',
   `[${bandSignatures.size}/${Object.keys(TRACKS).length}]`);
 
+{
+  const wetGreen = ['spa', 'suzuka', 'monza'];
+  const paleArid = ['bahrain', 'lusail', 'zandvoort'];
+  const wetFloor = Math.min(...wetGreen.map(id => measuredGroundGreenness.get(id)));
+  const aridCeiling = Math.max(...paleArid.map(id => measuredGroundGreenness.get(id)));
+  greenContrast = { wetFloor, aridCeiling };
+  assert(wetFloor >= aridCeiling + 0.15,
+    'spa, suzuka, and monza ground tint is clearly greener than bahrain, lusail, and zandvoort',
+    `[wet floor=${wetFloor.toFixed(3)} arid ceiling=${aridCeiling.toFixed(3)} gap=${(wetFloor - aridCeiling).toFixed(3)}]`);
+}
+
 console.log(`GROUND SURFACE: ${checks - failures}/${checks} checks passed across ${Object.keys(TRACKS).length} circuits`);
+console.log(`ground-band signatures: ${bandSignatures.size}/${Object.keys(TRACKS).length} unique`);
+console.log(`wet/arid green-score gap: ${greenContrast.wetFloor.toFixed(3)} - ${greenContrast.aridCeiling.toFixed(3)} = ${(greenContrast.wetFloor - greenContrast.aridCeiling).toFixed(3)} (floor 0.150)`);
 for (const row of groundRows) console.log(`ground bands ${row}`);
 console.log(`grass: ${grassBytes.length.toLocaleString('en-US')} bytes; mean ${grass.meanLuma.toFixed(4)}; dominant ${grass.dominantColumn.amplitude.toFixed(4)} @ ${grass.dominantColumn.cycles} cycles/tile; column p-p ${grass.columnPeakToPeak.toFixed(4)}; HF RMS ${grass.highFrequencyRms.toFixed(4)}; seam ${grass.wrapSeamMad.toFixed(4)}`);
 console.log(`ground colour luma stddev: minimum ${minStddev.value.toFixed(5)} (${minStddev.track}), floor ${MIN_COLOUR_LUMA_STDDEV.toFixed(3)}`);

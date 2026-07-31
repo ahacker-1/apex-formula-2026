@@ -15,19 +15,65 @@ const STREET = new Set(['monaco', 'baku', 'singapore', 'jeddah', 'lasvegas', 'mi
 // theme now shares that 2.25 ceiling so park circuits retain grass/paint detail.
 const THEMES = {
   desert:  { skyTop: 0x2e4f8f, skyBot: 0xd9b98a, ground: 0xb59a6a, sun: 0xffe0b0, sunI: 2.25, hemi: 0.75, fog: 0xcbb08a, night: false },
-  night:   { skyTop: 0x05070f, skyBot: 0x1a2038, ground: 0x2a2d33, sun: 0xbfd4ff, sunI: 1.15, hemi: 0.55, fog: 0x0c1020, night: true },
+  jeddahNight: { skyTop: 0x07111e, skyBot: 0x713819, ground: 0x252a31, sun: 0xdceaff, sunI: 1.05, hemi: 0.48,
+    fog: 0x17151a, fogNear: 240, fogFar: 1250, night: true, nightRig: 'jeddah', stars: true, proceduralSky: true },
+  singaporeNight: { skyTop: 0x24170f, skyBot: 0x754326, ground: 0x252b2d, sun: 0xe5f0ff, sunI: 0.82, hemi: 0.68,
+    fog: 0x2b1d18, fogNear: 220, fogFar: 1050, night: true, nightRig: 'singapore', stars: false, proceduralSky: true },
+  lusailNight: { skyTop: 0x010205, skyBot: 0x080708, ground: 0x171716, sun: 0xffe4bc, sunI: 0.92, hemi: 0.30,
+    fog: 0x000000, fogNear: 100, fogFar: 240, night: true, nightRig: 'lusail', stars: true, proceduralSky: true },
+  lasvegasNight: { skyTop: 0x12090b, skyBot: 0x9a4520, ground: 0x29252a, sun: 0xf6f2ff, sunI: 0.72, hemi: 0.40,
+    fog: 0x1a0d0d, fogNear: 420, fogFar: 1500, night: true, nightRig: 'lasvegas', stars: false, proceduralSky: true },
   classic: { skyTop: 0x3577d4, skyBot: 0xbfd9f2, ground: 0x3f7d3a, sun: 0xfff2d8, sunI: 2.25, hemi: 0.85, fog: 0xc4d7ea, night: false },
-  dusk:    { skyTop: 0x25336e, skyBot: 0xe89a5f, ground: 0x8a7a58, sun: 0xffb070, sunI: 1.9, hemi: 0.6, fog: 0xc79a74, night: false },
+  dusk:    { skyTop: 0x25336e, skyBot: 0xe89a5f, ground: 0x8a7a58, sun: 0xffb070, sunI: 1.9, hemi: 0.6,
+    fog: 0xc79a74, night: false, floodlit: true },
   city:    { skyTop: 0x2f6cc4, skyBot: 0xb9d2ea, ground: 0x565b60, sun: 0xfff0d0, sunI: 2.25, hemi: 0.8, fog: 0xb6c8da, night: false },
 };
 const TRACK_THEME = {
-  bahrain: 'dusk', jeddah: 'night', lusail: 'night', singapore: 'night', lasvegas: 'night',
-  yasmarina: 'dusk', qatar: 'night', mexico: 'classic', miami: 'city', baku: 'city',
+  bahrain: 'dusk', jeddah: 'jeddahNight', lusail: 'lusailNight', singapore: 'singaporeNight', lasvegas: 'lasvegasNight',
+  yasmarina: 'dusk', qatar: 'lusailNight', mexico: 'classic', miami: 'city', baku: 'city',
   monaco: 'city', madrid: 'city', montreal: 'classic', melbourne: 'classic', shanghai: 'classic',
   suzuka: 'classic', barcelona: 'classic', spielberg: 'classic', silverstone: 'classic',
   spa: 'classic', hungaroring: 'classic', zandvoort: 'classic', monza: 'classic',
   austin: 'classic', interlagos: 'classic',
 };
+
+// The night venues are four lighting systems, not one colour grade. All values
+// are deterministic physical/art-direction inputs; none consume scenery RNG.
+// `shadowFans` records the multiple high-pole directions the car renderer may
+// represent, while the track mesh owns the pooled surface/barrier contribution.
+export const NIGHT_LIGHTING_RIGS = Object.freeze({
+  singapore: Object.freeze({
+    label: 'low-truss-clinical', poleHeight: 10, spacingM: 54, kelvin: 5700,
+    lamp: 0xe5f0ff, pool: 0xc7dcff, poolOpacity: 0.31, poolHalfLengthM: 25,
+    poolBeyondBarrierM: 4.5, barrierOpacity: 0.34, spillCeilingM: 8,
+    mastEmissive: 0.16, shadowFans: 1, darknessBeyondM: 420, washColors: null,
+  }),
+  lusail: Object.freeze({
+    label: 'high-pole-soft', poleHeight: 19, spacingM: 46, kelvin: 4300,
+    lamp: 0xffe5bf, pool: 0xffd6a0, poolOpacity: 0.22, poolHalfLengthM: 34,
+    poolBeyondBarrierM: 5.5, barrierOpacity: 0.20, spillCeilingM: 16,
+    mastEmissive: 0.11, shadowFans: 5, darknessBeyondM: 100, washColors: null,
+  }),
+  lasvegas: Object.freeze({
+    label: 'facade-wash-dry', poleHeight: 13.2, spacingM: 100, kelvin: 5000,
+    lamp: 0xe7e4ff, pool: 0xffffff, poolOpacity: 0.17, poolHalfLengthM: 27,
+    poolBeyondBarrierM: 6.5, barrierOpacity: 0.27, spillCeilingM: 22,
+    mastEmissive: 0.09, shadowFans: 2, darknessBeyondM: 700,
+    washColors: Object.freeze([0xff2f92, 0x24c8ff, 0x8b5cff, 0xff8b24]),
+  }),
+  jeddah: Object.freeze({
+    label: 'coastal-cool-amber-inland', poleHeight: 15.5, spacingM: 62, kelvin: 5200,
+    lamp: 0xdceaff, pool: 0xbdd8ff, poolOpacity: 0.24, poolHalfLengthM: 30,
+    poolBeyondBarrierM: 5, barrierOpacity: 0.25, spillCeilingM: 14,
+    mastEmissive: 0.12, shadowFans: 2, darknessBeyondM: 500, washColors: null,
+  }),
+  dusk: Object.freeze({
+    label: 'cool-surface-warm-horizon', poleHeight: 14.5, spacingM: 72, kelvin: 5000,
+    lamp: 0xd9e8ff, pool: 0xb8d2ff, poolOpacity: 0.16, poolHalfLengthM: 30,
+    poolBeyondBarrierM: 4.5, barrierOpacity: 0.14, spillCeilingM: 13,
+    mastEmissive: 0.08, shadowFans: 2, darknessBeyondM: 700, washColors: null,
+  }),
+});
 
 // ---------------------------------------------------------------- scenery --
 // Circuits whose barriers back straight onto woodland. These get staggered,
@@ -116,7 +162,7 @@ export const VENUE = Object.freeze({
   melbourne: {
     ground: [
       { to: 24, surface: 'mown-park-turf', tint: 0x77985f },
-      { to: 76, surface: 'worn-turf-sand-scuff', tint: 0x9a9467 },
+      { to: 76, surface: 'worn-park-turf', tint: 0x748158 },
       { to: Infinity, surface: 'open-parkland', tint: 0x66865b },
     ], landform: 'flat',
     backdrop: [
@@ -126,7 +172,6 @@ export const VENUE = Object.freeze({
   },
   shanghai: {
     ground: [
-      { to: 38, surface: 'wide-concrete-apron', tint: 0xa6a59e },
       { to: 92, surface: 'humid-mown-grass', tint: 0x72865a },
       { to: Infinity, surface: 'reed-fringed-marsh', tint: 0x69775a },
     ], landform: 'flat',
@@ -134,9 +179,9 @@ export const VENUE = Object.freeze({
   },
   suzuka: {
     ground: [
-      { to: 26, surface: 'deep-gravel-trap', tint: 0xa89f8a },
-      { to: 84, surface: 'red-cut-earth-bank', tint: 0x8d644a },
-      { to: Infinity, surface: 'damp-forest-floor', tint: 0x4e5944 },
+      { to: 25, surface: 'mown-green-verge', tint: 0x5d7f52 },
+      { to: 84, surface: 'graded-green-earth-bank', tint: 0x526b49 },
+      { to: Infinity, surface: 'damp-forest-floor', tint: 0x38493a },
     ], landform: 'cut-bank',
     backdrop: [
       { kind: 'ridge-forest', dist: 3000, height: 76, spread: 4200, tint: 0x587064 },
@@ -197,9 +242,8 @@ export const VENUE = Object.freeze({
   },
   barcelona: {
     ground: [
-      { to: 30, surface: 'pale-gravel-apron', tint: 0xb8a98c },
-      { to: 96, surface: 'dry-straw-grass', tint: 0xa89a61 },
-      { to: Infinity, surface: 'catalan-dusty-earth', tint: 0x98745a },
+      { to: 96, surface: 'dry-straw-grass', tint: 0x778153 },
+      { to: Infinity, surface: 'catalan-dusty-earth', tint: 0x735b46 },
     ], landform: 'hillside',
     backdrop: [
       { kind: 'industry', dist: 500, height: 30, spread: 1300, tint: 0x8b9294 },
@@ -209,7 +253,6 @@ export const VENUE = Object.freeze({
   },
   spielberg: {
     ground: [
-      { to: 26, surface: 'alpine-asphalt-apron', tint: 0x858b89 },
       { to: 104, surface: 'mown-emerald-meadow', tint: 0x5c8b4f },
       { to: Infinity, surface: 'black-spruce-floor', tint: 0x414f3e },
     ], landform: 'hillside',
@@ -221,7 +264,6 @@ export const VENUE = Object.freeze({
   },
   silverstone: {
     ground: [
-      { to: 34, surface: 'airfield-asphalt-apron', tint: 0x777d7f },
       { to: 112, surface: 'mown-pasture', tint: 0x6f8d5a },
       { to: Infinity, surface: 'rough-windblown-pasture', tint: 0x7d8560 },
     ], landform: 'flat',
@@ -229,9 +271,8 @@ export const VENUE = Object.freeze({
   },
   spa: {
     ground: [
-      { to: 28, surface: 'wet-gravel-trap', tint: 0x9b978a },
-      { to: 98, surface: 'wet-upland-grass', tint: 0x607957 },
-      { to: Infinity, surface: 'ardennes-forest-floor', tint: 0x404a3d },
+      { to: 90, surface: 'wet-upland-grass', tint: 0x285b3e },
+      { to: Infinity, surface: 'ardennes-forest-floor', tint: 0x152f27 },
     ], landform: 'cut-bank',
     backdrop: [
       { kind: 'ridge-forest', dist: 2000, height: 88, spread: 5200, tint: 0x3f5a4b },
@@ -241,7 +282,6 @@ export const VENUE = Object.freeze({
   },
   hungaroring: {
     ground: [
-      { to: 30, surface: 'chalky-pale-gravel', tint: 0xb3a486 },
       { to: 104, surface: 'burnt-straw-grass', tint: 0xa29359 },
       { to: Infinity, surface: 'bare-sandy-soil', tint: 0x9a7659 },
     ], landform: 'bowl',
@@ -261,9 +301,8 @@ export const VENUE = Object.freeze({
   },
   monza: {
     ground: [
-      { to: 28, surface: 'park-gravel-trap', tint: 0xa29b85 },
-      { to: 92, surface: 'dappled-parkland-grass', tint: 0x60764f },
-      { to: Infinity, surface: 'high-canopy-floor', tint: 0x46513f },
+      { to: 120, surface: 'dappled-parkland-grass', tint: 0x5c7d4a },
+      { to: Infinity, surface: 'high-canopy-floor', tint: 0x384334 },
     ], landform: 'flat',
     backdrop: [{ kind: 'none', dist: 0, height: 0, spread: 0 }],
   },
@@ -305,7 +344,7 @@ export const VENUE = Object.freeze({
   },
   austin: {
     ground: [
-      { to: 42, surface: 'broad-asphalt-apron', tint: 0x7d7c78 },
+      { to: 24, surface: 'dry-prairie-verge', tint: 0x6f794f },
       { to: 108, surface: 'graded-earth-bank', tint: 0x9a684c },
       { to: Infinity, surface: 'dormant-prairie-black-clay', tint: 0x75674d },
     ], landform: 'hillside',
@@ -313,7 +352,6 @@ export const VENUE = Object.freeze({
   },
   mexico: {
     ground: [
-      { to: 36, surface: 'highland-asphalt-apron', tint: 0x777b79 },
       { to: 98, surface: 'dusty-patchy-park-grass', tint: 0x777758 },
       { to: Infinity, surface: 'bare-lakebed-clay', tint: 0x8d705f },
     ], landform: 'flat',
@@ -325,7 +363,7 @@ export const VENUE = Object.freeze({
   interlagos: {
     ground: [
       { to: 18, surface: 'narrow-rain-darkened-grass', tint: 0x55704f },
-      { to: 82, surface: 'red-laterite-bank', tint: 0x915845 },
+      { to: 82, surface: 'red-laterite-bank', tint: 0x713b2d },
       { to: Infinity, surface: 'dense-secondary-forest', tint: 0x3f5742 },
     ], landform: 'bowl',
     backdrop: [
@@ -365,27 +403,27 @@ export const VENUE = Object.freeze({
 });
 
 const GROUND_SURFACE_TILE = Object.freeze({
-  'mown-park-turf': 'grass', 'worn-turf-sand-scuff': 'gravel', 'open-parkland': 'grass',
+  'mown-park-turf': 'grass', 'worn-park-turf': 'grass', 'open-parkland': 'grass',
   'wide-concrete-apron': 'asphalt', 'humid-mown-grass': 'grass', 'reed-fringed-marsh': 'grass',
-  'deep-gravel-trap': 'gravel', 'red-cut-earth-bank': 'gravel', 'damp-forest-floor': 'grass',
+  'mown-green-verge': 'grass', 'graded-green-earth-bank': 'grass', 'damp-forest-floor': 'grass',
   'pale-sand-apron': 'gravel', 'raked-sand-berm': 'gravel', 'desert-pavement': 'asphalt',
   'narrow-promenade': 'asphalt', 'empty-pale-sand-lot': 'gravel', 'coastal-rubble': 'gravel',
   'painted-car-park-asphalt': 'asphalt', 'artificial-turf-bed': 'grass', 'mulch-island': 'gravel',
   'narrow-mown-grass': 'grass', 'leafy-tree-screen': 'grass', 'riprap-bank': 'gravel',
   'street-pavement-kerb': 'asphalt', 'quay-slab': 'asphalt', 'stone-retaining-wall': 'gravel',
-  'pale-gravel-apron': 'gravel', 'dry-straw-grass': 'grass', 'catalan-dusty-earth': 'gravel',
+  'pale-gravel-apron': 'gravel', 'dry-straw-grass': 'grass', 'catalan-dusty-earth': 'grass',
   'alpine-asphalt-apron': 'asphalt', 'mown-emerald-meadow': 'grass', 'black-spruce-floor': 'grass',
   'airfield-asphalt-apron': 'asphalt', 'mown-pasture': 'grass', 'rough-windblown-pasture': 'grass',
   'wet-gravel-trap': 'gravel', 'wet-upland-grass': 'grass', 'ardennes-forest-floor': 'grass',
-  'chalky-pale-gravel': 'gravel', 'burnt-straw-grass': 'grass', 'bare-sandy-soil': 'gravel',
+  'chalky-pale-gravel': 'gravel', 'burnt-straw-grass': 'grass', 'bare-sandy-soil': 'grass',
   'north-sea-sand-apron': 'gravel', 'marram-tufted-dune': 'grass', 'bare-drifting-sand': 'gravel',
   'park-gravel-trap': 'gravel', 'dappled-parkland-grass': 'grass', 'high-canopy-floor': 'grass',
   'expo-concrete-paving': 'asphalt', 'new-raw-subsoil': 'gravel', 'grid-planted-mulch': 'gravel',
   'granite-kerb-cobble': 'asphalt', 'caspian-paved-promenade': 'asphalt', 'seaward-irrigated-lawn': 'grass',
   'granite-sett-paving': 'asphalt', 'civic-concrete-plaza': 'asphalt', 'padang-turf': 'grass',
-  'broad-asphalt-apron': 'asphalt', 'graded-earth-bank': 'gravel', 'dormant-prairie-black-clay': 'gravel',
-  'highland-asphalt-apron': 'asphalt', 'dusty-patchy-park-grass': 'grass', 'bare-lakebed-clay': 'gravel',
-  'narrow-rain-darkened-grass': 'grass', 'red-laterite-bank': 'gravel', 'dense-secondary-forest': 'grass',
+  'dry-prairie-verge': 'grass', 'graded-earth-bank': 'grass', 'dormant-prairie-black-clay': 'grass',
+  'highland-asphalt-apron': 'asphalt', 'dusty-patchy-park-grass': 'grass', 'bare-lakebed-clay': 'grass',
+  'narrow-rain-darkened-grass': 'grass', 'red-laterite-bank': 'grass', 'dense-secondary-forest': 'grass',
   'strip-concrete-sidewalk': 'asphalt', 'decorative-paver': 'asphalt', 'gravel-mulch-bed': 'gravel',
   'hard-edge-artificial-turf': 'grass', 'pale-gravel-hardpan': 'gravel', 'flat-stony-desert': 'gravel',
   'white-crushed-limestone': 'gravel', 'sculpted-sand-berm': 'gravel', 'over-green-irrigated-turf': 'grass',
@@ -798,6 +836,9 @@ function rng(seed) {
 export function buildCircuit(trackId, def, scene) {
   const themeName = TRACK_THEME[trackId] || 'classic';
   const theme = THEMES[themeName];
+  const lightingRig = theme.nightRig
+    ? NIGHT_LIGHTING_RIGS[theme.nightRig]
+    : (theme.floodlit ? NIGHT_LIGHTING_RIGS.dusk : null);
   const isStreet = STREET.has(trackId);
   const halfWidth = def.width / 2;
   const runoff = isStreet ? 2.2 : 9.5;
@@ -1022,12 +1063,10 @@ export function buildCircuit(trackId, def, scene) {
 
   // How much of a scenery surface is normal-independent.
   //
-  // K_BOARD is high on purpose. A printed advertising board has to be legible from
-  // the track wherever it stands, and the WebGL harness measures it: at k = 0.55
-  // the same hoarding run came back 1.43x brighter on the sunward side of the
-  // circuit than on the shaded side, against a 1.25x acceptance bar. At k = 0.82
-  // the diffuse term is small enough that the two sides land inside it.
-  const K_BOARD = theme.night ? 0.9 : 0.88;
+  // Day boards retain their normal-independent print floor. Night boards do not:
+  // away from a mast they are dark printed surfaces, and the spatial barrier
+  // spill below is what makes a panel bright near a pool.
+  const K_BOARD = theme.night ? 0.10 : (theme.floodlit ? 0.52 : 0.88);
   // Foliage keeps more of its diffuse response (it is a lit surface, not a print),
   // but enough of a floor that the darkest leaf pixel clears rgb(40,55,40).
   const K_FOLIAGE = theme.night ? 0.5 : 0.62;
@@ -1056,7 +1095,7 @@ export function buildCircuit(trackId, def, scene) {
   // darkest foliage at 53.0 against the rgb(40,55,40)=50.7 bar and p05..p95 at
   // 2.40x. Night stays below the already bloom-safe 0.25 point at 0.20.
   const K_FOLIAGE_EMIT = theme.night ? 0.20 : 0.42;
-  const K_FACADE = theme.night ? 0.5 : 0.4;
+  const K_FACADE = theme.night ? (theme.nightRig === 'lasvegas' ? 0.18 : 0.10) : 0.4;
 
   // Fill lights. main.js keeps its sun and its sky hemisphere; these two add a
   // NEUTRAL floor with a real red channel plus a soft counter-light from the far
@@ -1556,19 +1595,36 @@ export function buildCircuit(trackId, def, scene) {
     if (!tile) throw new Error(`Unknown VENUE ground surface: ${trackId}/${band.surface}`);
     return { ...band, tile };
   });
-  if (realisedGroundBands.length !== 3
-    || !Number.isFinite(realisedGroundBands[0].to)
-    || !Number.isFinite(realisedGroundBands[1].to)
-    || realisedGroundBands[2].to !== Infinity) {
-    throw new Error(`VENUE ${trackId} must carry exactly three ordered ground bands ending at Infinity`);
+  if (realisedGroundBands.length < 2 || realisedGroundBands.length > 3
+    || realisedGroundBands.at(-1).to !== Infinity
+    || realisedGroundBands.slice(0, -1).some((band, index, bands) =>
+      !Number.isFinite(band.to) || band.to <= (index ? bands[index - 1].to : 0))) {
+    throw new Error(`VENUE ${trackId} must carry two or three ordered ground bands ending at Infinity`);
   }
   const groundBandBlendM = trackId === 'lusail' ? 1.5 : 8;
   const white = new THREE.Color(0xffffff);
-  const groundBandTints = realisedGroundBands.map(band => new THREE.Color(band.tint).lerp(white, 0.58));
+  const strongerEarthTint = ['barcelona', 'hungaroring', 'austin', 'mexico', 'interlagos'].includes(trackId);
+  const groundBandWhiteMix = trackId === 'spa' ? 0.28 : (strongerEarthTint ? 0.38 : 0.58);
+  const groundBandFragmentStrength = trackId === 'spa' || trackId === 'interlagos'
+    ? 0.62 : (strongerEarthTint ? 0.54 : 0.42);
+  const groundBandVertexStrength = trackId === 'spa' || trackId === 'interlagos'
+    ? 0.32 : (strongerEarthTint ? 0.29 : 0.24);
+  const groundBandTints = realisedGroundBands.map(band =>
+    new THREE.Color(band.tint).lerp(white, groundBandWhiteMix));
+  // The shader has three fixed sampler slots to keep one stable program across
+  // all venues. A genuine two-band venue repeats its outer band in the dormant
+  // third slot; the authored metadata remains two bands and the second boundary
+  // sits beyond the encoded distance field, so no fake surface appears.
+  const shaderGroundBands = realisedGroundBands.length === 2
+    ? [realisedGroundBands[0], realisedGroundBands[1], realisedGroundBands[1]]
+    : realisedGroundBands;
+  const shaderGroundBandTints = realisedGroundBands.length === 2
+    ? [groundBandTints[0], groundBandTints[1], groundBandTints[1]]
+    : groundBandTints;
   const groundBandTintChannels = [
-    groundBandTints.map(tint => tint.r),
-    groundBandTints.map(tint => tint.g),
-    groundBandTints.map(tint => tint.b),
+    shaderGroundBandTints.map(tint => tint.r),
+    shaderGroundBandTints.map(tint => tint.g),
+    shaderGroundBandTints.map(tint => tint.b),
   ];
   const groundBandTextureCache = new Map();
   const groundBandTexture = (tile) => {
@@ -1578,7 +1634,7 @@ export function buildCircuit(trackId, def, scene) {
     groundBandTextureCache.set(tile, map);
     return map;
   };
-  const groundBandMaps = realisedGroundBands.map(band => groundBandTexture(band.tile));
+  const groundBandMaps = shaderGroundBands.map(band => groundBandTexture(band.tile));
   // Only a very-low-frequency field belongs in vertex colours. The old 140m,
   // 46m and 16m fields were evaluated on vertices spaced from 12m to 220m, so
   // Gouraud interpolation exposed the radial mesh as a regular tonal grid. The
@@ -1650,7 +1706,16 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
   vec3 apexGroundTint = mix(mix(apexGroundBandTint0, apexGroundBandTint1, apexGroundBlend01),
     apexGroundBandTint2, apexGroundBlend12);
   diffuseColor *= apexGroundSurface;
-  diffuseColor.rgb *= mix(vec3(1.0), apexGroundTint, 0.42);
+  diffuseColor.rgb *= mix(vec3(1.0), apexGroundTint, ${groundBandFragmentStrength.toFixed(2)});
+  ${trackId === 'suzuka' ? `
+  // Sparse exposed clay appears only as cut scars inside the graded bank band;
+  // it can never replace the green verge or forest floor as a field surface.
+  float apexSuzukaBank = smoothstep(25.0, 33.0, apexGroundDistance)
+    * (1.0 - smoothstep(74.0, 84.0, apexGroundDistance));
+  float apexSuzukaScarNoise = apexGroundNoise(vApexGroundWorldXZ, 13.0, 113.0)
+    * 0.68 + apexGroundNoise(vApexGroundWorldXZ, 31.0, 157.0) * 0.32;
+  float apexSuzukaClayScar = apexSuzukaBank * smoothstep(0.70, 0.82, apexSuzukaScarNoise) * 0.34;
+  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.24, 0.105, 0.052), apexSuzukaClayScar);` : ''}
 #endif
   float apexGroundMacro =
       (apexGroundNoise(vApexGroundWorldXZ, 46.0, 43.0) - 0.5) * 0.27
@@ -1671,11 +1736,12 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
     shader.uniforms.apexGroundBandMap1 = { value: groundBandMaps[1] };
     shader.uniforms.apexGroundBandMap2 = { value: groundBandMaps[2] };
     shader.uniforms.apexGroundBandEnds = { value: new THREE.Vector2(
-      realisedGroundBands[0].to, realisedGroundBands[1].to) };
+      realisedGroundBands[0].to,
+      realisedGroundBands.length === 2 ? ZONE_DISTANCE_CAP + groundBandBlendM * 2 : realisedGroundBands[1].to) };
     shader.uniforms.apexGroundBandBlendM = { value: groundBandBlendM };
-    shader.uniforms.apexGroundBandTint0 = { value: groundBandTints[0] };
-    shader.uniforms.apexGroundBandTint1 = { value: groundBandTints[1] };
-    shader.uniforms.apexGroundBandTint2 = { value: groundBandTints[2] };
+    shader.uniforms.apexGroundBandTint0 = { value: shaderGroundBandTints[0] };
+    shader.uniforms.apexGroundBandTint1 = { value: shaderGroundBandTints[1] };
+    shader.uniforms.apexGroundBandTint2 = { value: shaderGroundBandTints[2] };
   };
   groundMat.customProgramCacheKey = () => 'apex-ground-world-macro-bands-v2-560-46-16';
   groundMat.userData.macroShader = {
@@ -1765,8 +1831,10 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
     const vergeTone = [1.035, 1.050, 1.065];
     const t01 = smoothBand(realisedGroundBands[0].to - groundBandBlendM,
       realisedGroundBands[0].to + groundBandBlendM, distance);
-    const t12 = smoothBand(realisedGroundBands[1].to - groundBandBlendM,
-      realisedGroundBands[1].to + groundBandBlendM, distance);
+    const secondBandEnd = realisedGroundBands.length === 2
+      ? ZONE_DISTANCE_CAP + groundBandBlendM * 2 : realisedGroundBands[1].to;
+    const t12 = smoothBand(secondBandEnd - groundBandBlendM,
+      secondBandEnd + groundBandBlendM, distance);
     return [0, 1, 2].map((channel) => {
       const values = groundBandTintChannels[channel];
       const band01 = values[0] + (values[1] - values[0]) * t01;
@@ -1774,7 +1842,7 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
       return noiseMul
         * (1 + (vergeTone[channel] - 1) * verge)
         * (1 + (outerGroundTone[channel] - 1) * outer)
-        * (1 + (bandTint - 1) * 0.24);
+        * (1 + (bandTint - 1) * groundBandVertexStrength);
     });
   };
   let groundMesh = null;
@@ -1893,6 +1961,13 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
     ground.userData.fragmentMacroOctaves = fragmentMacroOctaves.map(({ wavelength, weight }) => ({ wavelength, weight }));
     ground.userData.zoneBands = { verge: [0, 30], outfield: [30, 140], outer: [140, groundR], mass: groundMass };
     ground.userData.groundBands = realisedGroundBands.map(band => ({ ...band }));
+    ground.userData.groundBandTints = groundBandTints.map(tint => tint.clone());
+    ground.userData.groundBandTintResponse = {
+      whiteMix: groundBandWhiteMix,
+      fragmentStrength: groundBandFragmentStrength,
+      vertexStrength: groundBandVertexStrength,
+      cutScars: trackId === 'suzuka' ? { surface: 'graded-green-earth-bank', coverage: 'sparse' } : null,
+    };
     ground.userData.groundBandBlendM = groundBandBlendM;
     ground.userData.groundBandCoordinate = 'metres-outward-from-outer-kerb';
     ground.userData.groundDistanceField = { textureSize: 256, capM: ZONE_DISTANCE_CAP, stage: 'fragment' };
@@ -5659,8 +5734,8 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
         std({ color: 0xffffff, roughness: 0.9 }));
     }
 
-    // ---- 9. floodlights + additive glow heads (night only) ----------------
-    if (theme.night) {
+    // ---- 9. venue-specific floodlights + spatial spill --------------------
+    if (lightingRig) {
       // Round 2 on the single Singapore floodlight: "the dark pole is still drawn
       // ON TOP of its own glow, cutting a black slash straight through the bright
       // core; the lamp is still a flat white RECTANGLE, not a fixture; there is no
@@ -5669,23 +5744,29 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
       //
       // Spacing: as close as the 96-sprite budget allows, floor 60m, so several
       // towers are in frame at once instead of one.
-      const step = Math.max(1, Math.round(Math.max(60, length / 94) / ds));
+      const step = Math.max(1, Math.round(Math.max(lightingRig.spacingM, length / 94) / ds));
       const cnt = Math.ceil(N / step);
-      const POLE_H = 13.2;
+      const POLE_H = lightingRig.poleHeight;
       const poleG = new THREE.CylinderGeometry(0.16, 0.3, POLE_H, 6);
-      const poles = new THREE.InstancedMesh(poleG, std({ color: 0x585e68, roughness: 0.6 }), cnt);
+      const poles = new THREE.InstancedMesh(poleG, std({
+        color: 0x585e68, roughness: 0.6,
+        emissive: lightingRig.lamp, emissiveIntensity: lightingRig.mastEmissive,
+      }), cnt);
       poles.name = 'floodlight-poles';
       // ---- fixture head: a housing with four lamp panels recessed into it -----
       // The old head was one unlit white box, which is why it read as a bare
       // rectangle. The housing is a lit dark shell, and the lamps are separate
       // emissive quads sunk into its underside, so the fixture has a shape.
       const headG = new THREE.BoxGeometry(3.4, 0.62, 1.15);
-      const heads = new THREE.InstancedMesh(headG, std({ color: 0x2f333b, roughness: 0.55 }), cnt);
+      const heads = new THREE.InstancedMesh(headG, std({
+        color: 0x2f333b, roughness: 0.55,
+        emissive: lightingRig.lamp, emissiveIntensity: lightingRig.mastEmissive * 0.7,
+      }), cnt);
       heads.name = 'floodlight-heads';
       const LAMPS_PER = 4;
       const lampG = new THREE.PlaneGeometry(0.72, 0.86);
       const lamps = new THREE.InstancedMesh(lampG, new THREE.MeshStandardMaterial({
-        color: 0x2b3240, emissive: 0xe8eeff, emissiveIntensity: 1.45,
+        color: 0x2b3240, emissive: lightingRig.lamp, emissiveIntensity: 1.45,
         roughness: 0.4, metalness: 0, side: THREE.DoubleSide,
       }), cnt * LAMPS_PER);
       lamps.name = 'floodlight-lamps';
@@ -5693,7 +5774,7 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
       const glowTex = ctex(glowCanvas(128), { wrapS: THREE.ClampToEdgeWrapping, wrapT: THREE.ClampToEdgeWrapping });
       const glowMat = applyAdditiveFogExtinction(new THREE.SpriteMaterial({
         map: glowTex,
-        color: 0xbfd4ff,
+        color: lightingRig.lamp,
         blending: THREE.AdditiveBlending,
         transparent: true,
         opacity: 0.38,
@@ -5710,7 +5791,8 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
       // One merged additive decal per tower, an ellipse on the road under the
       // fixture, so the floodlight visibly illuminates something.
       const poolTex = ctex(poolCanvas(128), { wrapS: THREE.ClampToEdgeWrapping, wrapT: THREE.ClampToEdgeWrapping });
-      const poolPos = [], poolUV = [], poolIdx = [];
+      const poolPos = [], poolUV = [], poolCol = [], poolIdx = [];
+      const barrierPos = [], barrierUV = [], barrierCol = [], barrierIdx = [];
       let k = 0, pools = 0;
       for (let i = 0; i < N; i += step) {
         const s = samples[i];
@@ -5735,30 +5817,63 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
         const glow = new THREE.Sprite(glowMat);
         glow.name = 'floodlight-glow';
         glow.position.set(p.x, headY + 0.1, p.z);
-        glow.scale.set(5.25, 5.25, 1);
+        const glowSize = theme.nightRig === 'lasvegas' ? 4.65 : (theme.nightRig === 'lusail' ? 4.9 : 5.25);
+        glow.scale.set(glowSize, glowSize, 1);
         glow.renderOrder = 4;
         group.add(glow);
         // Pool: a strip that FOLLOWS the samples rather than the tangent, so its
         // far ends cannot swing off the road on a curve, with a radial falloff
         // painted into it so the rectangle reads as an ellipse of light.
         {
-          const RA = Math.min(halfWidth - 0.9, 5.0);
-          const ctr = -side * 0.5;                       // biased toward the tower
-          const half = stepOf(15);
+          const RA = wallOff + lightingRig.poolBeyondBarrierM;
+          const half = stepOf(lightingRig.poolHalfLengthM);
+          const lateralColumns = [-RA, -wallOff, -halfWidth, 0, halfWidth, wallOff, RA];
+          const wash = new THREE.Color(lightingRig.washColors
+            ? lightingRig.washColors[k % lightingRig.washColors.length] : lightingRig.pool);
           const v0 = poolPos.length / 3;
           for (let q = -half; q <= half; q++) {
             const i2 = idxAt(i + q);
             const s2 = samples[i2];
-            const y2 = heights[i2] + 0.036;
-            for (const ua of [-1, 1]) {
-              const lat = ctr + ua * RA;
-              poolPos.push(s2.p.x + s2.n.x * lat, y2, s2.p.z + s2.n.z * lat);
-              poolUV.push((ua + 1) / 2, (q + half) / (2 * half));
+            for (let column = 0; column < lateralColumns.length; column++) {
+              const lat = lateralColumns[column];
+              const wx = s2.p.x + s2.n.x * lat;
+              const wz = s2.p.z + s2.n.z * lat;
+              const y2 = Math.abs(lat) <= wallOff + 1e-6
+                ? heights[i2] + 0.036 : terrainAt(wx, wz) - 0.04;
+              poolPos.push(wx, y2, wz);
+              poolUV.push((lat + RA) / (2 * RA), (q + half) / (2 * half));
+              poolCol.push(wash.r, wash.g, wash.b);
             }
             if (q < half) {
-              const v = v0 + (q + half) * 2;
-              // wound so the pool faces UP: n x t points down, t x n points up
-              poolIdx.push(v, v + 2, v + 1, v + 1, v + 2, v + 3);
+              const row = v0 + (q + half) * lateralColumns.length;
+              const next = row + lateralColumns.length;
+              for (let column = 0; column < lateralColumns.length - 1; column++) {
+                const a = row + column, b = row + column + 1;
+                const c = next + column, d = next + column + 1;
+                // wound so the pool faces up across every surface-following cell
+                poolIdx.push(a, c, b, b, c, d);
+              }
+            }
+          }
+          // A second merged decal follows the barrier face beside this mast.
+          // It is deliberately unlit because it represents the light energy
+          // landing on an already-lit MeshStandard surface. Longitudinal and
+          // vertical UVs sample the same radial texture for a real 2D falloff.
+          const bv0 = barrierPos.length / 3;
+          const spillTop = Math.min(lightingRig.spillCeilingM, wallH + 0.28);
+          for (let q = -half; q <= half; q++) {
+            const i2 = idxAt(i + q);
+            const s2 = samples[i2];
+            const baseY = heights[i2] + 0.03;
+            const lat = side * (wallOff - 0.095);
+            const bx = s2.p.x + s2.n.x * lat;
+            const bz = s2.p.z + s2.n.z * lat;
+            barrierPos.push(bx, baseY, bz, bx, baseY + spillTop, bz);
+            barrierUV.push((q + half) / (2 * half), 0.30, (q + half) / (2 * half), 0.56);
+            barrierCol.push(wash.r, wash.g, wash.b, wash.r, wash.g, wash.b);
+            if (q < half) {
+              const v = bv0 + (q + half) * 2;
+              barrierIdx.push(v, v + 1, v + 2, v + 1, v + 3, v + 2);
             }
           }
           pools++;
@@ -5772,18 +5887,20 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
         const pg = new THREE.BufferGeometry();
         pg.setAttribute('position', new THREE.Float32BufferAttribute(poolPos, 3));
         pg.setAttribute('uv', new THREE.Float32BufferAttribute(poolUV, 2));
+        pg.setAttribute('color', new THREE.Float32BufferAttribute(poolCol, 3));
         pg.setIndex(poolIdx);
         pg.computeVertexNormals();
         const pool = new THREE.Mesh(pg, applyAdditiveFogExtinction(new THREE.MeshBasicMaterial({
           map: poolTex,
-          color: 0x829ac4,
+          color: 0xffffff,
+          vertexColors: true,
           blending: THREE.AdditiveBlending,
           transparent: true,
           depthWrite: false,
           // The pool is a low-energy illumination cue, not a painted white
           // strip. Asphalt, grid markings and car silhouettes remain visible
           // through adjacent pools on a packed starting grid.
-          opacity: 0.22,
+          opacity: lightingRig.poolOpacity,
           polygonOffset: true,
           polygonOffsetFactor: -5,
           polygonOffsetUnits: -5,
@@ -5791,9 +5908,41 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
         })));
         pool.name = 'floodlight-pools';
         pool.userData.pools = pools;
+        pool.userData.rig = { ...lightingRig };
+        pool.userData.coverage = {
+          from: -wallOff - lightingRig.poolBeyondBarrierM,
+          to: wallOff + lightingRig.poolBeyondBarrierM,
+          includesRunoff: true,
+          includesBarrier: true,
+        };
         pool.renderOrder = 2;
         group.add(pool);
       }
+      if (barrierIdx.length) {
+        const bg = new THREE.BufferGeometry();
+        bg.setAttribute('position', new THREE.Float32BufferAttribute(barrierPos, 3));
+        bg.setAttribute('uv', new THREE.Float32BufferAttribute(barrierUV, 2));
+        bg.setAttribute('color', new THREE.Float32BufferAttribute(barrierCol, 3));
+        bg.setIndex(barrierIdx);
+        bg.computeVertexNormals();
+        const spill = new THREE.Mesh(bg, applyAdditiveFogExtinction(new THREE.MeshBasicMaterial({
+          map: poolTex, color: 0xffffff, vertexColors: true,
+          blending: THREE.AdditiveBlending, transparent: true,
+          depthWrite: false, side: THREE.DoubleSide,
+          opacity: lightingRig.barrierOpacity, fog: true,
+          polygonOffset: true, polygonOffsetFactor: -6, polygonOffsetUnits: -6,
+        })));
+        // Allowed unlit emitter/decal: this is incident spill composited onto
+        // the standard-lit barrier and hoarding faces, not a replacement surface.
+        spill.name = 'floodlight-barrier-spill';
+        spill.userData.pools = pools;
+        spill.userData.rig = { ...lightingRig };
+        spill.userData.nearLuminance = lightingRig.barrierOpacity;
+        spill.userData.farLuminance = 0;
+        spill.renderOrder = 3;
+        group.add(spill);
+      }
+      group.userData.lightingRig = { ...lightingRig };
     }
   }
 

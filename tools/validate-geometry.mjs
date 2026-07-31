@@ -383,7 +383,8 @@ const DOUBLE = THREE.DoubleSide;
 
 // Everything the circuit adds to the scene has to fit this, worst case, on every
 // one of the 24 layouts. Tracked across the whole run and reported at the end.
-const DRAW_BUDGET = 450;
+// Work-order ceiling: preserve headroom below 400 calls at the worst venue.
+const DRAW_BUDGET = 400;
 const worstDraws = { n: 0, id: '' };
 const worstTriangles = { n: 0, id: '' };
 
@@ -692,6 +693,20 @@ const PINNED_BACKDROP_KINDS = Object.freeze({
   miami: ['city-sprawl'], montreal: ['ridge-forest', 'city-cluster'],
   silverstone: ['none'], monza: ['none'], austin: ['none'], yasmarina: ['none'],
 });
+const EXPECTED_LIGHTING_RIGS = Object.freeze({
+  singapore: { label: 'low-truss-clinical', poleHeight: 10, spacingM: 54, kelvin: 5700,
+    spillCeilingM: 8, shadowFans: 1, darknessBeyondM: 420 },
+  lusail: { label: 'high-pole-soft', poleHeight: 19, spacingM: 46, kelvin: 4300,
+    spillCeilingM: 16, shadowFans: 5, darknessBeyondM: 100 },
+  lasvegas: { label: 'facade-wash-dry', poleHeight: 13.2, spacingM: 100, kelvin: 5000,
+    spillCeilingM: 22, shadowFans: 2, darknessBeyondM: 700 },
+  jeddah: { label: 'coastal-cool-amber-inland', poleHeight: 15.5, spacingM: 62, kelvin: 5200,
+    spillCeilingM: 14, shadowFans: 2, darknessBeyondM: 500 },
+  bahrain: { label: 'cool-surface-warm-horizon', poleHeight: 14.5, spacingM: 72, kelvin: 5000,
+    spillCeilingM: 13, shadowFans: 2, darknessBeyondM: 700 },
+  yasmarina: { label: 'cool-surface-warm-horizon', poleHeight: 14.5, spacingM: 72, kelvin: 5000,
+    spillCeilingM: 13, shadowFans: 2, darknessBeyondM: 700 },
+});
 
 // ------------------------------------------------------------------ tests ---
 function run(trackId) {
@@ -886,6 +901,8 @@ function run(trackId) {
   {
     const ALLOWED_UNLIT = new Set(['horizon-ridge', 'horizon-haze', 'racing-groove',
       'rubber-patches', 'track-paint', 'tv-screen', 'floodlight-pools',
+      // Incident-light decals composited over standard-lit barrier/board faces.
+      'floodlight-barrier-spill',
       // Typed far backdrops are pre-tinted matte paintings with fog disabled;
       // lighting or scene fog would erase them before the 2600m sky dome.
       'venue-backdrop',
@@ -1631,6 +1648,17 @@ function run(trackId) {
         assert(!hoard.isInstancedMesh && hoard.geometry.index, 'hoardings are one merged ribbon');
         assert(!!hoard.material.map && hoard.material.map.isCanvasTexture,
           'hoardings carry the repeating panel texture');
+        const boardEmission = Math.max(hoard.material.emissive.r,
+          hoard.material.emissive.g, hoard.material.emissive.b);
+        if (c.theme.night) {
+          assert(boardEmission <= 0.11,
+            'night hoardings away from a light pool are materially dimmer than daylight print',
+            `[emissive floor=${boardEmission.toFixed(3)} vs daylight 0.88]`);
+        } else if (!c.theme.floodlit) {
+          assert(boardEmission >= 0.85,
+            'daylight hoardings retain their readable print floor',
+            `[emissive floor=${boardEmission.toFixed(3)}]`);
+        }
         // Both sides of the lap are candidates, so full coverage is 2 x length.
         const covered = (hoard.geometry.index.count / 6) * c.ds;
         const frac = covered / (2 * c.length);
@@ -3072,7 +3100,13 @@ function run(trackId) {
     const glows = [];
     group.traverse(o => { if (o.isSprite) glows.push(o); });
     const heads = named('floodlight-heads');
-    if (c.theme.night) {
+    if (c.theme.night || c.theme.floodlit) {
+      const expectedRig = EXPECTED_LIGHTING_RIGS[trackId];
+      const realisedRig = group.userData.lightingRig;
+      assert(!!expectedRig && !!realisedRig
+        && Object.entries(expectedRig).every(([key, value]) => realisedRig[key] === value),
+      'venue lighting rig matches its independently pinned height, colour, falloff, and shadow character',
+      `[${realisedRig?.label || 'missing'}]`);
       assert(!!heads && heads.isInstancedMesh, 'floodlight poles/heads stay instanced');
       assert(glows.length === heads.count, 'every floodlight head gets a glow sprite',
         `[glows=${glows.length} heads=${heads.count}]`);
@@ -3120,9 +3154,9 @@ function run(trackId) {
           'the lamp faces are visibly emissive without overpowering the housing',
           `[emissive #${lm.emissive.getHexString()} x${lm.emissiveIntensity}]`);
         const hm = heads.material;
-        assert(hm.isMeshStandardMaterial && (!hm.emissive || hm.emissive.getHex() === 0x000000),
-          'the fixture housing is a LIT dark shell, not an unlit white box',
-          `[${hm.type} emissive #${hm.emissive && hm.emissive.getHexString()}]`);
+        assert(hm.isMeshStandardMaterial && hm.emissiveIntensity > 0 && hm.emissiveIntensity <= 0.2,
+          'the standard-lit fixture housing catches a restrained amount of its own spill',
+          `[${hm.type} emissive #${hm.emissive.getHexString()} x${hm.emissiveIntensity}]`);
         // every lamp must sit on its own head
         let worstLamp = 0;
         for (let k = 0; k < heads.count; k++) {
@@ -3146,8 +3180,8 @@ function run(trackId) {
           && pm.depthWrite === false && pm.polygonOffset === true,
           'light pools are additive, offset decals that do not write depth',
           `[blending=${pm.blending} depthWrite=${pm.depthWrite} offset=${pm.polygonOffsetFactor}]`);
-        assert(pm.opacity >= 0.18 && pm.opacity <= 0.25 && pm.fog === true,
-          'light pools preserve asphalt contrast and fade into venue fog',
+        assert(pm.opacity >= 0.14 && pm.opacity <= 0.34 && pm.fog === true,
+          'venue-specific light pools preserve surface contrast and fade into venue fog',
           `[opacity=${pm.opacity} fog=${pm.fog}]`);
         const poolShader = { fragmentShader: 'void main() {\n#include <fog_fragment>\n}' };
         pm.onBeforeCompile(poolShader);
@@ -3162,24 +3196,52 @@ function run(trackId) {
         'light-pool extinction shader has a stable custom program cache key', `[key=${poolCacheKey}]`);
         assert(pool.userData.pools === heads.count, 'one light pool per floodlight',
           `[pools=${pool.userData.pools} floodlights=${heads.count}]`);
-        // the pool has to land ON the road, under the tower
+        // The old ribbon ended at +/-5m. The new pool deliberately spans the
+        // road, both run-off aprons and both barrier faces; only its light reaches
+        // the racing surface, never collision geometry or furniture.
         const pp = pool.geometry.attributes.position;
-        let off = 0, lo = Infinity, hi = -Infinity;
+        let onRoad = 0, beyondRoad = 0, beyondBarrier = 0, lo = Infinity, hi = -Infinity;
         for (let i = 0; i < pp.count; i++) {
           const d = dist(pp.getX(i), pp.getZ(i));
-          if (d.d > c.halfWidth) off++;
-          const ride = pp.getY(i) - roadY(d.i);
-          lo = Math.min(lo, ride); hi = Math.max(hi, ride);
+          if (d.d > c.halfWidth) beyondRoad++;
+          if (d.d > c.wallOff) beyondBarrier++;
+          if (d.d <= c.halfWidth + 0.25) {
+            onRoad++;
+            const ride = pp.getY(i) - roadY(d.i);
+            lo = Math.min(lo, ride); hi = Math.max(hi, ride);
+          }
         }
-        assert(off === 0, 'no light-pool vertex spills off the racing surface',
-          `[off-road vertices=${off}/${pp.count}]`);
-        assert(lo > 0.028 && hi < 0.045, 'light pools lie in the road surface',
+        assert(onRoad > 0 && beyondRoad > 0 && beyondBarrier > 0,
+          'pool mesh contains road, run-off, barrier, and ground samples',
+          `[road=${onRoad} beyond road=${beyondRoad} beyond barrier=${beyondBarrier}]`);
+        assert(pool.userData.coverage?.includesRunoff === true
+          && pool.userData.coverage?.includesBarrier === true,
+        'pool metadata pins run-off and barrier coverage');
+        assert(lo > 0.028 && hi < 0.045, 'the road columns lie just above the racing surface',
           `[height over the road=${lo.toFixed(4)}..${hi.toFixed(4)}m]`);
+
+        const spill = named('floodlight-barrier-spill');
+        assert(!!spill && spill.material.isMeshBasicMaterial
+          && spill.material.blending === THREE.AdditiveBlending
+          && spill.material.depthWrite === false,
+        'one allowed additive decal lights the standard-lit barrier and hoarding faces');
+        if (spill) {
+          assert(spill.userData.pools === heads.count,
+            'each mast contributes one spatial barrier pool',
+            `[pools=${spill.userData.pools} heads=${heads.count}]`);
+          assert(spill.userData.nearLuminance >= 0.14
+            && spill.userData.farLuminance === 0
+            && spill.userData.nearLuminance > spill.userData.farLuminance + 0.1,
+          'barrier and board surfaces near a mast receive measurably more light than the same faces between pools',
+          `[near=${spill.userData.nearLuminance} far=${spill.userData.farLuminance}]`);
+        }
       }
       // ---- and there have to be ENOUGH of them ------------------------------
       // "It is still the ONLY floodlight in the frame."
       const spacing = c.length / heads.count;
-      assert(spacing <= 70, 'floodlights are close enough together that several are in frame',
+      const rigSpacing = group.userData.lightingRig?.spacingM;
+      assert(Number.isFinite(rigSpacing) && spacing <= Math.max(rigSpacing + 5, c.length / 90),
+        'floodlights realise the venue-specific marching interval',
         `[${heads.count} towers, ${spacing.toFixed(0)}m apart over ${c.length.toFixed(0)}m]`);
       // each glow must actually sit on a head
       let worst = 0;
@@ -3193,7 +3255,7 @@ function run(trackId) {
       assert(worst < 1e-3, 'every glow sprite sits on a floodlight head',
         `[worst xz offset=${worst.toExponential(2)}m]`);
     } else {
-      assert(glows.length === 0, 'daylight circuits have no glow sprites', `[n=${glows.length}]`);
+      assert(glows.length === 0, 'non-floodlit daylight circuits have no glow sprites', `[n=${glows.length}]`);
     }
   }
 
@@ -3479,6 +3541,7 @@ function run(trackId) {
 // the front axles tilt out of plane; 'YXZ' applies steer first and fixes it.
 async function runCar() {
   const { buildCarMesh, buildNameTag } = await import('../js/car.js');
+  const { makeContactShadow } = await import('../js/race.js');
   log('\n=== car mesh ===');
   const team = { color: 0xe10600, accent: 0xffffff };
   const driver = { num: 44, code: 'HAM' };
@@ -3515,6 +3578,13 @@ async function runCar() {
   }
   assert(worstTilt < 1e-9, 'steered + spinning front axles stay horizontal',
     `[max |axle.y|=${worstTilt.toExponential(2)}${worstAt ? ' at ' + worstAt : ''}]`);
+
+  const lusailShadow = makeContactShadow(5);
+  const fanLobe = lusailShadow.getObjectByName('sunShadowLobe');
+  assert(fanLobe?.userData.shadowFans === 5
+    && fanLobe.geometry.attributes.position.count === 30,
+  'Lusail represents five fanned high-pole shadows in one merged car-shadow draw',
+  `[fans=${fanLobe?.userData.shadowFans} vertices=${fanLobe?.geometry.attributes.position.count}]`);
 
   // ...and the tyre itself must be built around that axle: its bounding box has to
   // be thinnest along the spin axis, or the wheel renders rolling sideways.

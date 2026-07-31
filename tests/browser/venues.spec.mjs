@@ -68,6 +68,45 @@ const RENDER_CEILINGS = {
   textures: 160,
 };
 
+const LIGHTING_LOOK_EXPECTATIONS = Object.freeze({
+  jeddah: {
+    environment: 'night', renderLook: 'nightJeddah', exposure: 0.95,
+    bloom: [0.18, 0.28, 0.98], environmentIntensity: 0.48,
+    sun: 1.05, hemi: 0.50, hemiGround: '#242a32', fog: [240, 1250],
+    proceduralSky: true, stars: 420, rig: 'coastal-cool-amber-inland',
+  },
+  singapore: {
+    environment: 'night', renderLook: 'nightSingapore', exposure: 1.02,
+    bloom: [0.16, 0.20, 1.02], environmentIntensity: 0.64,
+    sun: 0.82, hemi: 0.72, hemiGround: '#30363a', fog: [220, 1050],
+    proceduralSky: true, stars: 0, rig: 'low-truss-clinical',
+  },
+  lusail: {
+    environment: 'night', renderLook: 'nightLusail', exposure: 0.86,
+    bloom: [0.14, 0.18, 1.04], environmentIntensity: 0.30,
+    sun: 0.92, hemi: 0.30, hemiGround: '#11110f', fog: [100, 240],
+    proceduralSky: true, stars: 420, rig: 'high-pole-soft',
+  },
+  lasvegas: {
+    environment: 'night', renderLook: 'nightLasvegas', exposure: 0.96,
+    bloom: [0.08, 0.10, 1.10], environmentIntensity: 0.42,
+    sun: 0.72, hemi: 0.40, hemiGround: '#292128', fog: [420, 1500],
+    proceduralSky: true, stars: 0, rig: 'facade-wash-dry',
+  },
+  bahrain: {
+    environment: 'dusk', renderLook: 'dusk', exposure: 1.05,
+    bloom: [0.18, 0.55, 0.86], environmentIntensity: 1.05,
+    sun: 1.55, hemi: 0.74, hemiGround: '#59606b', fog: [300, 1600],
+    proceduralSky: true, stars: 0, rig: 'cool-surface-warm-horizon',
+  },
+  yasmarina: {
+    environment: 'dusk', renderLook: 'dusk', exposure: 1.05,
+    bloom: [0.18, 0.55, 0.86], environmentIntensity: 1.05,
+    sun: 1.55, hemi: 0.74, hemiGround: '#59606b', fog: [300, 1600],
+    proceduralSky: true, stars: 0, rig: 'cool-surface-warm-horizon',
+  },
+});
+
 function sha256(buffer) {
   return createHash('sha256').update(buffer).digest('hex');
 }
@@ -650,9 +689,18 @@ async function measureAdditiveFogExtinction(page) {
       // A non-black fog colour exposes Three's stock additive-fog failure: at
       // fogFar it would still add this blue RGB with the source alpha.
       scene.fog = new THREE.Fog(0x204060, 10, 100);
+      const geometry = kind === 'mesh' ? new THREE.PlaneGeometry(3, 3) : null;
+      // The real floodlight-pool ribbon supplies per-vertex intensity colours.
+      // This isolated material probe needs a neutral colour attribute as well;
+      // otherwise `vertexColors: true` multiplies the temporary plane to black
+      // and reports zero source energy before fog extinction is even exercised.
+      if (geometry && material.vertexColors) {
+        const colors = new Float32Array(geometry.attributes.position.count * 3).fill(1);
+        geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+      }
       const object = kind === 'sprite'
         ? new THREE.Sprite(material)
-        : new THREE.Mesh(new THREE.PlaneGeometry(3, 3), material);
+        : new THREE.Mesh(geometry, material);
       object.position.set(0, 0, -depth);
       if (kind === 'sprite') object.scale.set(3, 3, 1);
       scene.add(object);
@@ -712,6 +760,108 @@ async function measureAdditiveFogExtinction(page) {
   });
 }
 
+async function measureNightSurfaceResponse(page) {
+  return page.evaluate(async () => {
+    const THREE = await import('/lib/three.module.js');
+    const [{ buildCircuit }, { TRACKS }] = await Promise.all([
+      import('/js/trackBuilder.js'), import('/js/tracks.js'),
+    ]);
+    const renderer = window.__game.renderer;
+    const previousTarget = renderer.getRenderTarget();
+    const previousAutoClear = renderer.autoClear;
+    const previousToneMapping = renderer.toneMapping;
+    const previousExposure = renderer.toneMappingExposure;
+    const previousClearColor = renderer.getClearColor(new THREE.Color()).getHex();
+    const previousClearAlpha = renderer.getClearAlpha();
+    const target = new THREE.WebGLRenderTarget(48, 48, { depthBuffer: true });
+    const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 10);
+    camera.position.set(0, 0, 3);
+    camera.lookAt(0, 0, 0);
+    camera.updateMatrixWorld(true);
+
+    const luminance = (material, { base = true, tightUv = false } = {}) => {
+      const scene = new THREE.Scene();
+      if (base) {
+        const floor = new THREE.Mesh(new THREE.PlaneGeometry(2, 2),
+          new THREE.MeshBasicMaterial({ color: 0x181818 }));
+        floor.position.z = -0.01;
+        scene.add(floor);
+      }
+      const geometry = new THREE.PlaneGeometry(1.8, 1.8);
+      if (material.vertexColors) {
+        const colors = new Float32Array(geometry.attributes.position.count * 3).fill(1);
+        geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+      }
+      if (tightUv) {
+        const uv = geometry.attributes.uv;
+        for (let i = 0; i < uv.count; i++) {
+          uv.setXY(i, 0.43 + uv.getX(i) * 0.14, 0.43 + uv.getY(i) * 0.14);
+        }
+        uv.needsUpdate = true;
+      }
+      const face = new THREE.Mesh(geometry, material);
+      scene.add(face);
+      renderer.setRenderTarget(target);
+      renderer.autoClear = true;
+      renderer.setClearColor(0x000000, 1);
+      renderer.clear(true, true, true);
+      renderer.render(scene, camera);
+      const pixels = new Uint8Array(48 * 48 * 4);
+      renderer.readRenderTargetPixels(target, 0, 0, 48, 48, pixels);
+      let sum = 0, count = 0;
+      for (let y = 12; y < 36; y++) for (let x = 12; x < 36; x++) {
+        const i = (y * 48 + x) * 4;
+        sum += 0.2126 * pixels[i] + 0.7152 * pixels[i + 1] + 0.0722 * pixels[i + 2];
+        count++;
+      }
+      geometry.dispose();
+      for (const child of scene.children) {
+        if (child === face) continue;
+        child.geometry?.dispose(); child.material?.dispose();
+      }
+      return sum / count;
+    };
+
+    const build = id => buildCircuit(id, TRACKS[id], new THREE.Scene());
+    const day = build('melbourne');
+    const dayBoard = day.group.getObjectByName('hoardings').material;
+    const rows = {};
+    try {
+      renderer.toneMapping = THREE.NoToneMapping;
+      renderer.toneMappingExposure = 1;
+      const daylightBoard = luminance(dayBoard, { base: false });
+      for (const id of ['singapore', 'lusail', 'lasvegas', 'jeddah']) {
+        const circuit = build(id);
+        try {
+          const pool = circuit.group.getObjectByName('floodlight-pools');
+          const spill = circuit.group.getObjectByName('floodlight-barrier-spill');
+          const board = circuit.group.getObjectByName('hoardings');
+          const farSurface = luminance(new THREE.MeshBasicMaterial({ color: 0x181818 }), { base: false });
+          rows[id] = {
+            runoffNear: luminance(pool.material, { tightUv: true }),
+            runoffFar: farSurface,
+            barrierNear: luminance(spill.material, { tightUv: true }),
+            barrierFar: farSurface,
+            boardNight: luminance(board.material, { base: false }),
+            boardDay: daylightBoard,
+          };
+        } finally {
+          circuit.dispose();
+        }
+      }
+      return rows;
+    } finally {
+      day.dispose();
+      renderer.setRenderTarget(previousTarget);
+      renderer.autoClear = previousAutoClear;
+      renderer.toneMapping = previousToneMapping;
+      renderer.toneMappingExposure = previousExposure;
+      renderer.setClearColor(previousClearColor, previousClearAlpha);
+      target.dispose();
+    }
+  });
+}
+
 async function captureVenueRun(page, venue, runNumber, preFreezeTicks) {
   const errors = observeErrors(page);
   await configureFreshPage(page);
@@ -752,6 +902,7 @@ async function captureVenueRun(page, venue, runNumber, preFreezeTicks) {
       themeIsNight: game.circuit.theme.night === true,
       themeSunIntensity: game.circuit.theme.sunI,
       activeEnvironmentKey: game._environmentKey,
+      activeRenderLookKey: game._renderLookKey,
       sunIntensity: game.sun.intensity,
       hemiIntensity: game.hemi.intensity,
       hemiGround: `#${game.hemi.groundColor.getHexString()}`,
@@ -760,6 +911,10 @@ async function captureVenueRun(page, venue, runNumber, preFreezeTicks) {
       bloomStrength: game.bloom.strength,
       bloomRadius: game.bloom.radius,
       bloomThreshold: game.bloom.threshold,
+      fogNear: game.scene.fog.near,
+      fogFar: game.scene.fog.far,
+      starCount: game.scene.getObjectByName('stars')?.geometry?.attributes?.position?.count || 0,
+      lightingRig: game.circuit.group.userData.lightingRig || null,
     };
   });
 
@@ -781,16 +936,23 @@ async function captureVenueRun(page, venue, runNumber, preFreezeTicks) {
   if (venue.environment === 'night') {
     expect(state.themeIsNight).toBe(true);
     expect(state.activeEnvironmentKey).toBe('night');
-    expect(state.backgroundIsEnvironment, 'night uses the photographic HDR as the visible sky').toBe(true);
-    expect(state.skyVisible, 'night hides the procedural sky dome').toBe(false);
-    expect(state.toneMappingExposure, 'night uses a dedicated restrained exposure').toBeCloseTo(0.92, 6);
-    expect(state.environmentIntensity, 'night retains its restrained HDR fill').toBeCloseTo(0.55, 6);
-    expect(state.sunIntensity, 'night direct intensity is unchanged').toBeCloseTo(1.15, 6);
-    expect(state.hemiIntensity, 'night hemisphere intensity is unchanged').toBeCloseTo(0.55, 6);
-    expect(state.hemiGround, 'night hemisphere ground colour is unchanged').toBe('#2a2d33');
-    expect(state.bloomStrength, 'night bloom strength stays restrained').toBeCloseTo(0.22, 6);
-    expect(state.bloomRadius, 'night bloom stays tight around fixture cores').toBeCloseTo(0.36, 6);
-    expect(state.bloomThreshold, 'night bloom excludes road paint and bodywork').toBeCloseTo(0.92, 6);
+    expect(state.activeRenderLookKey).toBe('nightSingapore');
+    expect(state.backgroundIsNull, 'Singapore uses its lidded procedural skyglow over the lighting HDR').toBe(true);
+    expect(state.skyVisible, 'Singapore keeps the orange-brown skyglow dome visible').toBe(true);
+    expect(state.toneMappingExposure, 'Singapore clinical ribbon exposure').toBeCloseTo(1.02, 6);
+    expect(state.environmentIntensity, 'Singapore shadowless HDR fill').toBeCloseTo(0.64, 6);
+    expect(state.sunIntensity, 'Singapore direct component stays below the flat fill').toBeCloseTo(0.82, 6);
+    expect(state.hemiIntensity, 'Singapore receives high clinical hemisphere fill').toBeCloseTo(0.72, 6);
+    expect(state.hemiGround, 'Singapore ground bounce is cool neutral').toBe('#30363a');
+    expect(state.bloomStrength, 'Singapore bloom remains controlled').toBeCloseTo(0.16, 6);
+    expect(state.bloomRadius, 'Singapore glow stays tight to the low truss').toBeCloseTo(0.20, 6);
+    expect(state.bloomThreshold, 'Singapore road and hoardings stay below bloom').toBeCloseTo(1.02, 6);
+    expect(state.fogNear).toBeCloseTo(220, 6);
+    expect(state.fogFar).toBeCloseTo(1050, 6);
+    expect(state.starCount, 'Singapore light pollution removes every star').toBe(0);
+    expect(state.lightingRig).toMatchObject({
+      label: 'low-truss-clinical', poleHeight: 10, kelvin: 5700, spillCeilingM: 8,
+    });
   } else if (venue.environment === 'dusk') {
     expect(state.themeIsNight).toBe(false);
     expect(state.activeEnvironmentKey).toBe('dusk');
@@ -1098,6 +1260,68 @@ test('RGB delta reports unrounded mean and true maximum channel difference', () 
   });
 });
 
+test('night run-off, barriers, and hoardings respond to the venue light pools', async ({ page }) => {
+  test.setTimeout(180_000);
+  await configureFreshPage(page);
+  await page.goto('/');
+  await expect(page).toHaveTitle(/APEX FORMULA 2026/);
+  const rows = await measureNightSurfaceResponse(page);
+  console.log(`[night-surface-response] ${JSON.stringify(rows)}`);
+  for (const [trackId, row] of Object.entries(rows)) {
+    expect(row.runoffNear, `${trackId} run-off near a mast is measurably brighter`)
+      .toBeGreaterThan(row.runoffFar + 6);
+    expect(row.barrierNear, `${trackId} barrier face near a mast is measurably brighter`)
+      .toBeGreaterThan(row.barrierFar + 6);
+    expect(row.boardNight, `${trackId} unpooled hoarding is materially dimmer than daylight`)
+      .toBeLessThan(row.boardDay * 0.55);
+  }
+});
+
+test('each night and dusk venue applies its pinned lighting look and sky contract', async ({ page, context }) => {
+  test.setTimeout(300_000);
+  let index = 0;
+  for (const [trackId, expected] of Object.entries(LIGHTING_LOOK_EXPECTATIONS)) {
+    const runPage = index++ === 0 ? page : await context.newPage();
+    try {
+      await configureFreshPage(runPage);
+      await runPage.goto(`/?seed=lighting-contract-${trackId}`);
+      await expect(runPage).toHaveTitle(/APEX FORMULA 2026/);
+      await chooseQuickRace(runPage, trackId);
+      await runPage.waitForFunction(() => window.__game?._envIsHDRI === true,
+        null, { timeout: 35_000, polling: 50 });
+      const actual = await runPage.evaluate(() => {
+        const game = window.__game;
+        let vegasRimMaterials = 0;
+        for (const entry of game.session.entries) entry.mesh?.traverse(object => {
+          const materials = Array.isArray(object.material) ? object.material : [object.material];
+          for (const material of materials) if (material?.userData?.venueRimLight) vegasRimMaterials++;
+        });
+        return {
+          environment: game._environmentKey,
+          renderLook: game._renderLookKey,
+          exposure: game.renderer.toneMappingExposure,
+          bloom: [game.bloom.strength, game.bloom.radius, game.bloom.threshold],
+          environmentIntensity: game.scene.environmentIntensity,
+          sun: game.sun.intensity,
+          hemi: game.hemi.intensity,
+          hemiGround: `#${game.hemi.groundColor.getHexString()}`,
+          fog: [game.scene.fog.near, game.scene.fog.far],
+          proceduralSky: game.sky.visible && game.scene.background === null,
+          stars: game.scene.getObjectByName('stars')?.geometry.attributes.position.count || 0,
+          rig: game.circuit.group.userData.lightingRig?.label,
+          shadowFans: game.session.player.shadowLobe?.userData.shadowFans,
+          vegasRimMaterials,
+        };
+      });
+      expect(actual).toMatchObject(expected);
+      if (trackId === 'lusail') expect(actual.shadowFans).toBe(5);
+      if (trackId === 'lasvegas') expect(actual.vegasRimMaterials).toBeGreaterThan(0);
+    } finally {
+      if (runPage !== page) await runPage.close();
+    }
+  }
+});
+
 test('root manifest ownership cannot be stolen and never exposes stale success', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'apex-evidence-owner-'));
   const running = runId => ({
@@ -1337,7 +1561,8 @@ for (const venue of VENUES) {
         teardownExposure: game.renderer.toneMappingExposure,
       };
     });
-    const expectedExposure = { day: 0.94, dusk: 1.05, night: 0.92 }[venue.environment];
+    const expectedExposure = venue.trackId === 'singapore'
+      ? 1.02 : { day: 0.94, dusk: 1.05, night: 0.92 }[venue.environment];
     expect(recovery.restoredExposure,
       `WebGL recovery reapplies the active ${venue.environment} exposure`).toBeCloseTo(expectedExposure, 6);
     expect(recovery.teardownExposure,
