@@ -16,6 +16,14 @@
 // Every audible parameter move goes through setTargetAtTime / linearRamp so there
 // are no zipper noises or clicks.
 
+import {
+  OPPONENT_VOICE_BUDGET,
+  createAudioTargets,
+  deriveAudioTargets,
+  normalizeOpponentCue,
+  smoothTelemetry,
+} from './audioTelemetry.js';
+
 const EMPTY = {};
 
 // Gear top speeds in m/s — mirrors GEAR_TOP in physics.js. Used only to estimate
@@ -52,6 +60,12 @@ export class AudioEngine {
     this._prevSpeed = 0;
     this._accel = 0; // smoothed m/s^2, used to infer shift direction
     this._spool = 0; // turbo spool-up, lags throttle
+    this._load = 0;
+    this._slip = 0;
+    this._lockup = 0;
+    this._wetness = 0;
+    this._damage = 0;
+    this._bottoming = 0;
     this._gear = 1;
     this._gearCand = 1;
     this._gearCandT = 0;
@@ -66,6 +80,13 @@ export class AudioEngine {
     this._wgCooldown = 0;
     this._wallImpactCooldown = 0;
     this._carImpactCooldown = 0;
+    this._bottomCooldown = 0;
+
+    // Reused telemetry/cue records keep the real-time update path allocation-free.
+    this._audioTargets = createAudioTargets();
+    this._opponentCue = {};
+    this._opponentVoices = [];
+    this._opponentCooldowns = new Map();
 
     // beds
     this._crowdLevel = 0;
@@ -113,7 +134,14 @@ export class AudioEngine {
 
     // ---- engine bus ----
     this.engineDuck = this._gainNode(1, this.master); // one-shot ducking
-    this.engineOut = this._gainNode(0, this.engineDuck); // start/stop fade
+    // Driver perspective: cockpit mode closes the bodywork/canopy filter and
+    // adds a small low-mid resonance; exterior mode opens it back up. Keeping
+    // the filter after engineOut means every continuous car/surface layer shares
+    // the same physical perspective without touching UI/radio/crowd cues.
+    this.perspectiveBody = this._filter('peaking', 310, 0.8, this.engineDuck);
+    this.perspectiveBody.gain.value = 0;
+    this.perspectiveLP = this._filter('lowpass', 12000, 0.65, this.perspectiveBody);
+    this.engineOut = this._gainNode(0, this.perspectiveLP); // start/stop fade
 
     this.engineLP = this._filter('lowpass', 400, 0.9, this.engineOut);
 
@@ -166,6 +194,25 @@ export class AudioEngine {
     this.h2.start();
     this.h3.start();
     this.sq.start();
+
+    // A restrained firing pulse and gearbox mesh layer fill the gaps between
+    // the fundamental and harmonics. They follow load and ratio independently,
+    // making throttle and shift state readable without simply getting louder.
+    this.firingOsc = ctx.createOscillator();
+    this.firingOsc.type = 'triangle';
+    this.firingOsc.frequency.value = 82;
+    this.firingBP = this._filter('bandpass', 190, 1.35, this.engineGain);
+    this.firingGain = this._gainNode(0, this.firingBP);
+    this.firingOsc.connect(this.firingGain);
+    this.firingOsc.start();
+
+    this.meshOsc = ctx.createOscillator();
+    this.meshOsc.type = 'sawtooth';
+    this.meshOsc.frequency.value = 920;
+    this.meshBP = this._filter('bandpass', 1120, 5.4, this.engineLP);
+    this.meshGain = this._gainNode(0, this.meshBP);
+    this.meshOsc.connect(this.meshGain);
+    this.meshOsc.start();
 
     // Persistent looping noise source: every white-noise layer taps this one node.
     this._noiseSrc = ctx.createBufferSource();
@@ -266,6 +313,55 @@ export class AudioEngine {
     this._noiseSrc.connect(this.scrubBP);
     this.scrubBP.connect(this.scrubGain);
 
+    // Lockup uses its own tonal/noise pair so braking stays distinct from
+    // lateral scrub. Both are permanent, gain-gated voices.
+    this.lockOsc = ctx.createOscillator();
+    this.lockOsc.type = 'triangle';
+    this.lockOsc.frequency.value = 1260;
+    this.lockBP = this._filter('bandpass', 1380, 7.5, this.engineOut);
+    this.lockGain = this._gainNode(0, this.lockBP);
+    this.lockOsc.connect(this.lockGain);
+    this.lockOsc.start();
+    this.lockNoiseBP = this._filter('bandpass', 1750, 2.2, null);
+    this.lockNoiseGain = this._gainNode(0, this.engineOut);
+    this._noiseSrc.connect(this.lockNoiseBP);
+    this.lockNoiseBP.connect(this.lockNoiseGain);
+
+    // Road texture, rain/spray and damaged bodywork are continuous beds. The
+    // telemetry hooks are optional; dry undamaged callers keep them silent.
+    this.roadBP = this._filter('bandpass', 420, 0.75, null);
+    this.roadGain = this._gainNode(0, this.engineOut);
+    this._noiseSrc.connect(this.roadBP);
+    this.roadBP.connect(this.roadGain);
+
+    this.rainHP = this._filter('highpass', 3100, 0.55, null);
+    this.rainGain = this._gainNode(0, this.engineOut);
+    this._noiseSrc.connect(this.rainHP);
+    this.rainHP.connect(this.rainGain);
+    this.sprayBP = this._filter('bandpass', 1450, 0.7, null);
+    this.sprayGain = this._gainNode(0, this.engineOut);
+    this._noiseSrc.connect(this.sprayBP);
+    this.sprayBP.connect(this.sprayGain);
+
+    this.damageBP = this._filter('bandpass', 760, 3.5, null);
+    this.damageGain = this._gainNode(0, this.engineOut);
+    this._noiseSrc.connect(this.damageBP);
+    this.damageBP.connect(this.damageGain);
+    this.damageFlutter = this._lfo('square', 23, 0, this.damageGain.gain);
+
+    // Floor strikes are pooled: update() triggers these prebuilt nodes on the
+    // rising edge instead of allocating a one-shot under heavy kerb load.
+    this.bottomOsc = ctx.createOscillator();
+    this.bottomOsc.type = 'square';
+    this.bottomOsc.frequency.value = 68;
+    this.bottomGain = this._gainNode(0, this.engineOut);
+    this.bottomOsc.connect(this.bottomGain);
+    this.bottomOsc.start();
+    this.bottomBP = this._filter('bandpass', 510, 1.1, null);
+    this.bottomNoiseGain = this._gainNode(0, this.engineOut);
+    this._noiseSrc.connect(this.bottomBP);
+    this.bottomBP.connect(this.bottomNoiseGain);
+
     // Kerb rumble: low square whose rate tracks speed + a wooden noise rattle.
     // Chest sub-bass: pure sine under everything (bypasses formant/LP so the
     // low end survives). The physical "feel it in your chest" component.
@@ -308,6 +404,31 @@ export class AudioEngine {
     this.gunGain = this._gainNode(0, this.master);
     this._noiseSrc.connect(this.gunBP);
     this.gunBP.connect(this.gunGain);
+
+    // Four preallocated opponent voices is enough to communicate the cars that
+    // matter around the player while placing a hard ceiling on WebAudio load.
+    for (let i = 0; i < OPPONENT_VOICE_BUDGET; i++) {
+      const out = this._gainNode(1, this.master);
+      const pan = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
+      if (pan) pan.connect(out);
+      const dest = pan || out;
+      const airBP = this._filter('bandpass', 1800, 0.78, null);
+      const airGain = this._gainNode(0, dest);
+      this._noiseSrc.connect(airBP);
+      airBP.connect(airGain);
+      const engine = ctx.createOscillator();
+      engine.type = 'sawtooth';
+      engine.frequency.value = 360;
+      const engineBP = this._filter('bandpass', 720, 2.1, null);
+      const engineGain = this._gainNode(0, dest);
+      engine.connect(engineBP);
+      engineBP.connect(engineGain);
+      engine.start();
+      this._opponentVoices.push({
+        id: null, activeUntil: 0, out, pan, airBP, airGain,
+        engine, engineBP, engineGain,
+      });
+    }
 
     this._noiseSrc.start();
 
@@ -421,11 +542,17 @@ export class AudioEngine {
     s = s || EMPTY;
     const t = this.ctx.currentTime;
     const step = Number.isFinite(dt) && dt > 0 ? (dt > 0.1 ? 0.1 : dt) : 1 / 60;
-    const rpm = clamp01(s.rpmFrac);
-    const thr = clamp01(s.throttle);
-    const speed = Math.max(0, Number.isFinite(+s.speed) ? +s.speed : 0);
-    this._rpm = rpm;
-    this._thr = thr;
+    const targets = deriveAudioTargets(s, this._audioTargets);
+    this._rpm = smoothTelemetry(this._rpm, targets.rpm, step, 14, 9);
+    this._thr = smoothTelemetry(this._thr, targets.throttle, step, 12, 7);
+    this._load = smoothTelemetry(this._load, targets.load, step, 9, 4.5);
+    this._slip = smoothTelemetry(this._slip, targets.slip, step, 16, 6);
+    this._lockup = smoothTelemetry(this._lockup, targets.lockup, step, 18, 7);
+    this._wetness = smoothTelemetry(this._wetness, targets.wetness, step, 2.5, 1.4);
+    this._damage = smoothTelemetry(this._damage, targets.damage, step, 4, 1.5);
+    const rpm = this._rpm;
+    const thr = this._thr;
+    const speed = targets.speed;
     this._speed = speed;
 
     // Smoothed longitudinal acceleration — lets shift() infer up vs down when the
@@ -454,6 +581,9 @@ export class AudioEngine {
     this.h2.frequency.setTargetAtTime(ff * 2, t, 0.02);
     this.h3.frequency.setTargetAtTime(ff * 3.02, t, 0.02);
     this.sq.frequency.setTargetAtTime(ff * 0.5, t, 0.02);
+    this.firingOsc.frequency.setTargetAtTime(52 + ff * 0.42, t, 0.026);
+    this.firingBP.frequency.setTargetAtTime(145 + rpm * 260, t, 0.045);
+    this.firingGain.gain.setTargetAtTime((0.018 + this._load * 0.055) * (1 - rpm * 0.35), t, 0.055);
 
     // Independent harmonic gains: fundamental/sub recede as the harmonics bloom,
     // and the total stays ~constant (0.61 idle -> 0.64 flat out) so the balance
@@ -473,14 +603,21 @@ export class AudioEngine {
     this.formant.frequency.setTargetAtTime(470 + gear * 105, t, 0.09);
 
     // Body / brightness. Offtrack squashes the cutoff (muffled).
-    let cutoff = 430 + rpm * 5200;
+    let cutoff = 430 + rpm * 5200 + this._load * 900;
     if (s.offtrack) cutoff = Math.min(cutoff, 450 + rpm * 500);
     this.engineLP.frequency.setTargetAtTime(cutoff, t, 0.035);
+    this.perspectiveLP.frequency.setTargetAtTime(
+      targets.cockpit ? 4200 + speed * 18 : 10500 + rpm * 5500,
+      t,
+      0.12,
+    );
+    this.perspectiveBody.frequency.setTargetAtTime(260 + speed * 1.3, t, 0.12);
+    this.perspectiveBody.gain.setTargetAtTime(targets.cockpit ? 4.2 : 0, t, 0.16);
 
     // Loudness follows throttle with an idle floor; the shift cut dips it.
     // When the sampled engine is active it carries the voice — the synth drops
     // to a bed that masks loop seams and keeps continuous pitch precision.
-    const load = (0.25 + 0.75 * thr) * (1 - 0.5 * this._cutEnv);
+    const load = (0.25 + 0.75 * this._load) * (1 - 0.5 * this._cutEnv);
     const bed = this._eng ? (this._synthBedScale || 0.42) : 1;
     this.engineGain.gain.setTargetAtTime(load * 0.5 * bed, t, 0.04);
     // sub-bass follows rpm/throttle; strongest under full load at high revs
@@ -523,39 +660,69 @@ export class AudioEngine {
     this.mgukBP.frequency.setTargetAtTime(mgukF * 1.15, t, 0.06);
     // Present under everything; louder on deploy, and on regen (off throttle,
     // still travelling) which is the sound the 2026 cars are known for.
-    const regen = thr < 0.1 && speed > 14 ? 0.02 : 0;
-    const mguk = 0.012 + 0.008 * rpm + (s.boost ? 0.03 : 0) + regen;
+    const regen = targets.regen * 0.026;
+    const mguk = 0.01 + 0.008 * rpm + targets.boost * 0.035 + regen;
     this.mgukGain.gain.setTargetAtTime(mguk, t, 0.07);
     this.boostBP.frequency.setTargetAtTime(3600 + rpm * 1800, t, 0.05);
-    this.boostGain.gain.setTargetAtTime(s.boost ? 0.05 : 0, t, 0.05);
+    this.boostGain.gain.setTargetAtTime(targets.boost * 0.055, t, 0.05);
 
     // ---- transmission whine (low gears, on power) --------------------------
     const lowGear = gear < 4 ? (4 - gear) / 3 : 0;
     const transF = f * 3.1 + 140 * lowGear;
     this.transOsc.frequency.setTargetAtTime(transF, t, 0.04);
     this.transBP.frequency.setTargetAtTime(transF, t, 0.05);
-    this.transGain.gain.setTargetAtTime(lowGear * thr * 0.022, t, 0.06);
+    this.transGain.gain.setTargetAtTime((0.004 + lowGear * 0.022) * this._load, t, 0.06);
+    const meshF = ff * (2.15 + gear * 0.19);
+    this.meshOsc.frequency.setTargetAtTime(meshF, t, 0.035);
+    this.meshBP.frequency.setTargetAtTime(meshF * 1.04, t, 0.055);
+    this.meshGain.gain.setTargetAtTime((0.006 + (9 - gear) * 0.0015) *
+      (0.3 + this._load * 0.7), t, 0.07);
 
     // ---- wind (speed^2) ---------------------------------------------------
     const sp = speed / 82;
-    this.windBP.frequency.setTargetAtTime(420 + speed * 16, t, 0.08);
-    this.windGain.gain.setTargetAtTime(Math.min(0.15, sp * sp * 0.16), t, 0.08);
+    this.windBP.frequency.setTargetAtTime(420 + speed * (targets.cockpit ? 10 : 17), t, 0.08);
+    this.windGain.gain.setTargetAtTime(Math.min(0.15, sp * sp *
+      (targets.cockpit ? 0.105 : 0.16)), t, 0.1);
 
     // ---- surfaces ---------------------------------------------------------
     const kerbRate = 18 + Math.min(speed, 62) * 0.55;
     this.kerbOsc.frequency.setTargetAtTime(kerbRate, t, 0.05);
-    this.kerbGain.gain.setTargetAtTime(s.kerb ? 0.2 : 0, t, 0.02);
-    this.kerbNoiseGain.gain.setTargetAtTime(s.kerb ? 0.09 : 0, t, 0.02);
+    this.kerbGain.gain.setTargetAtTime(targets.kerb * 0.18, t, targets.kerb ? 0.025 : 0.08);
+    this.kerbNoiseGain.gain.setTargetAtTime(targets.kerb * 0.085, t, targets.kerb ? 0.025 : 0.09);
 
     const gravel = s.offtrack ? Math.min(1, speed / 45) * 0.17 : 0;
     this.gravelGain.gain.setTargetAtTime(gravel, t, 0.05);
 
-    // Tyre scrub burst on slip, with a cooldown so it doesn't machine-gun.
-    this._slipCooldown = Math.max(0, this._slipCooldown - step);
-    if (s.slip && this._slipCooldown === 0 && speed > 4) {
-      this._slipCooldown = 0.3;
-      this._scrub(t, 850 + rpm * 400, 0.13);
+    const rolling = clamp01(speed / 58);
+    this.roadBP.frequency.setTargetAtTime(260 + speed * 9 + targets.roughness * 480, t, 0.07);
+    this.roadGain.gain.setTargetAtTime(targets.roughness * rolling * 0.075, t, 0.075);
+
+    // Continuous scrub is more useful for held arrow-key steering than repeated
+    // bursts: intensity and pitch tell the player how close the tyre is to giving up.
+    this.scrubBP.frequency.setTargetAtTime(680 + speed * 11 + this._slip * 520, t, 0.045);
+    this.scrubGain.gain.setTargetAtTime(this._slip * rolling * (0.045 + targets.roughness * 0.04), t, 0.055);
+    this.lockOsc.frequency.setTargetAtTime(1120 + speed * 8, t, 0.045);
+    this.lockBP.frequency.setTargetAtTime(1250 + speed * 10, t, 0.05);
+    this.lockGain.gain.setTargetAtTime(this._lockup * rolling * 0.055, t, 0.04);
+    this.lockNoiseBP.frequency.setTargetAtTime(1500 + speed * 13, t, 0.05);
+    this.lockNoiseGain.gain.setTargetAtTime(this._lockup * rolling * 0.09, t, 0.045);
+
+    this.rainHP.frequency.setTargetAtTime(2700 + targets.rain * 1700, t, 0.12);
+    this.rainGain.gain.setTargetAtTime(targets.rain * (targets.cockpit ? 0.024 : 0.045), t, 0.25);
+    this.sprayBP.frequency.setTargetAtTime(900 + speed * 15, t, 0.1);
+    this.sprayGain.gain.setTargetAtTime(Math.max(targets.spray, this._wetness * rolling) *
+      rolling * (targets.cockpit ? 0.05 : 0.08), t, 0.12);
+
+    this.damageBP.frequency.setTargetAtTime(560 + gear * 48 + speed * 2, t, 0.08);
+    this.damageGain.gain.setTargetAtTime(this._damage * rolling * 0.035, t, 0.12);
+    this.damageFlutter.gain.setTargetAtTime(this._damage * rolling * 0.018, t, 0.12);
+
+    this._bottomCooldown = Math.max(0, this._bottomCooldown - step);
+    if (targets.bottoming > 0.15 && this._bottoming <= 0.15 && this._bottomCooldown === 0) {
+      this._bottomCooldown = 0.14;
+      this._bottomStrike(t, targets.bottoming * (0.35 + rolling * 0.65));
     }
+    this._bottoming = targets.bottoming;
 
     const wallScrape = clamp01(s.wallScrape);
     const carScrape = clamp01(s.carScrape);
@@ -571,6 +738,8 @@ export class AudioEngine {
     if (this.contactScrapePan) {
       this.contactScrapePan.pan.setTargetAtTime(clampNum(s.contactSide, -1, 1) * 0.7, t, 0.04);
     }
+    if (s.opponents) this.updateOpponents(s.opponents);
+    else this._releaseOpponentVoices(t);
     this._wallImpactCooldown = Math.max(0, this._wallImpactCooldown - step);
     this._carImpactCooldown = Math.max(0, this._carImpactCooldown - step);
   }
@@ -636,13 +805,13 @@ export class AudioEngine {
     if (i <= 0 || this._wallImpactCooldown > 0) return;
     this._wallImpactCooldown = 0.09;
     if (this._playSample('collision', {
-      gain: Math.min(1, 0.4 + severity * 0.58), rate: 0.88 - normal * 0.12, jitter: 0.05, duck: 0.45, pan: side * 0.72,
+      gain: Math.min(0.66, 0.22 + severity * 0.44), rate: 0.88 - normal * 0.12, jitter: 0.05, duck: 0.3, pan: side * 0.72,
     })) return;
     if (!this.ready) return;
-    this._duck(this.ctx.currentTime, 0.28, 1);
-    this._toneShot({ type: 'sine', freq: 120 - normal * 38, endFreq: 34, peak: 0.5 * severity + 0.1, dur: 0.28 + normal * 0.12, decay: 0.09 + normal * 0.035, pan: side * 0.55 });
-    this._noiseShot({ dur: 0.18 + normal * 0.08, type: 'bandpass', freq: 1300 + severity * 900, q: 0.7, peak: 0.28 * severity + 0.07, decay: 0.045, pan: side * 0.82 });
-    this._noiseShot({ dur: 0.24 + normal * 0.1, type: 'highpass', freq: 2600, q: 0.55, peak: 0.13 * severity + 0.025, decay: 0.08, delay: 0.012, pan: side * 0.65 });
+    this._duck(this.ctx.currentTime, 0.22, 0.62);
+    this._toneShot({ type: 'sine', freq: 120 - normal * 38, endFreq: 34, peak: 0.25 * severity + 0.05, dur: 0.25 + normal * 0.1, decay: 0.08 + normal * 0.03, pan: side * 0.55 });
+    this._noiseShot({ dur: 0.17 + normal * 0.07, type: 'bandpass', freq: 1300 + severity * 900, q: 0.7, peak: 0.17 * severity + 0.04, decay: 0.045, pan: side * 0.82 });
+    this._noiseShot({ dur: 0.2 + normal * 0.08, type: 'highpass', freq: 2600, q: 0.55, peak: 0.075 * severity + 0.015, decay: 0.07, delay: 0.012, pan: side * 0.65 });
   }
 
   carImpact(event) {
@@ -654,12 +823,12 @@ export class AudioEngine {
     if (i <= 0 || this._carImpactCooldown > 0) return;
     this._carImpactCooldown = 0.08;
     if (this._playSample('collision', {
-      gain: Math.min(0.82, 0.24 + severity * 0.5), rate: 1.1 - closing * 0.12, jitter: 0.055, duck: 0.24, pan: side * 0.68,
+      gain: Math.min(0.48, 0.15 + severity * 0.33), rate: 1.1 - closing * 0.12, jitter: 0.055, duck: 0.16, pan: side * 0.68,
     })) return;
     if (!this.ready) return;
-    this._duck(this.ctx.currentTime, 0.18, 0.72);
-    this._toneShot({ type: 'triangle', freq: 225 - closing * 55, endFreq: 78, peak: 0.28 * severity + 0.06, dur: 0.18 + closing * 0.08, decay: 0.06, pan: side * 0.55 });
-    this._noiseShot({ dur: 0.15 + closing * 0.08, type: 'bandpass', freq: 1850 + severity * 700, q: 0.9, peak: 0.22 * severity + 0.04, decay: 0.05, pan: side * 0.78 });
+    this._duck(this.ctx.currentTime, 0.15, 0.4);
+    this._toneShot({ type: 'triangle', freq: 225 - closing * 55, endFreq: 78, peak: 0.16 * severity + 0.035, dur: 0.16 + closing * 0.07, decay: 0.055, pan: side * 0.55 });
+    this._noiseShot({ dur: 0.14 + closing * 0.07, type: 'bandpass', freq: 1850 + severity * 700, q: 0.9, peak: 0.13 * severity + 0.025, decay: 0.045, pan: side * 0.78 });
   }
 
   // Backwards-compatible hook used by older tooling/sample auditions.
@@ -866,57 +1035,67 @@ export class AudioEngine {
     return g;
   }
 
-  /** Close high-speed pass by another car: panned doppler whoosh. side: -1 left, 1 right. */
+  /**
+   * Close pass cue. Legacy passBy(side, intensity) and richer object payloads
+   * both work: { id, side, intensity, distance, relativeSpeed, rpmFrac }.
+   */
   passBy(side = 0, intensity = 1) {
     if (!this.ready) return;
     const now = this.ctx.currentTime;
-    if (now - (this._lastPass || 0) < 1.6) return;
-    this._lastPass = now;
-    const strength = 0.35 * Math.min(1, intensity);
-    const buf = this._sample('passby-whoosh');
-    if (!buf) {
-      // Original procedural fallback: a band-limited airflow burst sweeps from
-      // bright approach to dark departure while crossing the stereo field.
-      // This makes close racing audible in the stock, legally self-contained
-      // build instead of requiring the optional generated sample pack.
-      const src = this.ctx.createBufferSource();
-      src.buffer = this._noiseBuffer;
-      const bp = this.ctx.createBiquadFilter();
-      bp.type = 'bandpass'; bp.Q.value = 0.72;
-      bp.frequency.setValueAtTime(2600, now);
-      bp.frequency.exponentialRampToValueAtTime(720, now + 0.72);
-      const g = this.ctx.createGain();
-      g.gain.setValueAtTime(0.0001, now);
-      g.gain.exponentialRampToValueAtTime(Math.max(0.001, strength), now + 0.12);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.78);
-      const pan = this.ctx.createStereoPanner ? this.ctx.createStereoPanner() : null;
-      if (pan) {
-        const s = Math.max(-1, Math.min(1, side || 1));
-        pan.pan.setValueAtTime(s * 0.88, now);
-        pan.pan.linearRampToValueAtTime(-s * 0.42, now + 0.72);
-        src.connect(bp).connect(g).connect(pan).connect(this.master);
-      } else {
-        src.connect(bp).connect(g).connect(this.master);
+    const cue = normalizeOpponentCue(side, intensity, this._opponentCue);
+    const prior = this._opponentCooldowns.get(cue.id);
+    if (prior != null && now - prior < (cue.id === 'anonymous' ? 1.15 : 0.75)) return;
+    if (this._opponentCooldowns.size >= 24 && !this._opponentCooldowns.has(cue.id)) {
+      this._opponentCooldowns.delete(this._opponentCooldowns.keys().next().value);
+    }
+    this._opponentCooldowns.set(cue.id, now);
+    this._lastPass = now || Number.EPSILON;
+    const voice = this._acquireOpponentVoice(cue.id, now);
+    if (!voice) return; // hard voice budget: never allocate around a busy player
+    this._schedulePassVoice(voice, cue, now);
+
+    // The generated pack remains an optional sweetener. It shares the same
+    // budget/cooldown decision and synthesis still provides the no-network cue.
+    this._playSample('passby-whoosh', {
+      gain: cue.intensity * 0.2,
+      rate: 0.92 + Math.min(0.16, Math.abs(cue.relativeSpeed) / 250),
+      jitter: 0.035,
+      pan: cue.side * 0.76,
+    });
+  }
+
+  /**
+   * Optional continuous proximity API. Call with at most the nearby cars; the
+   * closest/first four receive stable spatial engine voices.
+   */
+  updateOpponents(opponents) {
+    if (!this.ready || !opponents || typeof opponents.length !== 'number') return;
+    const now = this.ctx.currentTime;
+    const limit = Math.min(opponents.length, OPPONENT_VOICE_BUDGET);
+    for (let i = 0; i < limit; i++) {
+      const cue = normalizeOpponentCue(opponents[i], 1, this._opponentCue);
+      let voice = null;
+      for (let v = 0; v < this._opponentVoices.length; v++) {
+        if (this._opponentVoices[v].id === cue.id) {
+          voice = this._opponentVoices[v];
+          break;
+        }
       }
-      src.start(now);
-      src.stop(now + 0.82);
-      src.onended = () => { try { src.disconnect(); bp.disconnect(); g.disconnect(); pan?.disconnect(); } catch {} };
-      return;
+      if (!voice) voice = this._acquireOpponentVoice(cue.id, now);
+      if (!voice) continue;
+      voice.activeUntil = now + 0.16;
+      const proximity = cue.intensity / (1 + cue.distance * 0.07);
+      const doppler = 1 + clampNum(cue.relativeSpeed / 340, -0.16, 0.16);
+      const f = (150 + cue.rpm * 470) * doppler;
+      voice.engine.frequency.setTargetAtTime(f, now, 0.045);
+      voice.engineBP.frequency.setTargetAtTime(f * 2.05, now, 0.06);
+      voice.engineGain.gain.setTargetAtTime(proximity * 0.026, now, 0.07);
+      voice.airBP.frequency.setTargetAtTime(900 + Math.abs(cue.relativeSpeed) * 28, now, 0.08);
+      voice.airGain.gain.setTargetAtTime(proximity * Math.min(0.05,
+        Math.abs(cue.relativeSpeed) / 700), now, 0.07);
+      voice.pan?.pan.setTargetAtTime(cue.side * 0.82, now, 0.055);
     }
-    const srcN = this.ctx.createBufferSource();
-    srcN.buffer = buf;
-    srcN.playbackRate.value = 0.92 + Math.random() * 0.12;
-    const g = this.ctx.createGain();
-    g.gain.value = strength;
-    const pan = this.ctx.createStereoPanner ? this.ctx.createStereoPanner() : null;
-    if (pan) {
-      pan.pan.value = Math.max(-1, Math.min(1, side * 0.7));
-      srcN.connect(g).connect(pan).connect(this._sampleBus() || this.master);
-    } else {
-      srcN.connect(g).connect(this._sampleBus() || this.master);
-    }
-    srcN.start(now);
-    srcN.onended = () => { try { srcN.disconnect(); g.disconnect(); if (pan) pan.disconnect(); } catch {} };
+    this._releaseOpponentVoices(now);
   }
 
   pitStop() {
@@ -1098,6 +1277,83 @@ export class AudioEngine {
   }
 
   // ---- internals ----
+
+  _acquireOpponentVoice(id, now) {
+    for (let i = 0; i < this._opponentVoices.length; i++) {
+      const voice = this._opponentVoices[i];
+      if (voice.id === id) return voice;
+    }
+    for (let i = 0; i < this._opponentVoices.length; i++) {
+      const voice = this._opponentVoices[i];
+      if (voice.activeUntil <= now) {
+        voice.id = id;
+        return voice;
+      }
+    }
+    return null;
+  }
+
+  _schedulePassVoice(voice, cue, now) {
+    const duration = cue.duration;
+    const strength = cue.intensity * 0.32;
+    const closeAt = now + duration * 0.38;
+    const endAt = now + duration;
+    voice.activeUntil = endAt + 0.08;
+
+    const airF = 2100 + Math.min(1600, Math.abs(cue.relativeSpeed) * 24);
+    const af = voice.airBP.frequency;
+    af.cancelScheduledValues(now);
+    af.setValueAtTime(airF, now);
+    af.exponentialRampToValueAtTime(620 + cue.distance * 18, endAt);
+    const ag = voice.airGain.gain;
+    ag.cancelScheduledValues(now);
+    ag.setValueAtTime(0.0001, now);
+    ag.exponentialRampToValueAtTime(Math.max(0.001, strength), closeAt);
+    ag.exponentialRampToValueAtTime(0.0001, endAt);
+
+    const doppler = 1 + clampNum(cue.relativeSpeed / 310, -0.18, 0.18);
+    const ef0 = (155 + cue.rpm * 480) * doppler;
+    const ef1 = ef0 / Math.max(0.84, doppler * doppler);
+    const ep = voice.engine.frequency;
+    ep.cancelScheduledValues(now);
+    ep.setValueAtTime(ef0, now);
+    ep.exponentialRampToValueAtTime(Math.max(90, ef1), endAt);
+    voice.engineBP.frequency.setTargetAtTime(ef0 * 2.1, now, 0.035);
+    const eg = voice.engineGain.gain;
+    eg.cancelScheduledValues(now);
+    eg.setValueAtTime(0.0001, now);
+    eg.exponentialRampToValueAtTime(Math.max(0.001, strength * 0.15), closeAt);
+    eg.exponentialRampToValueAtTime(0.0001, endAt);
+
+    if (voice.pan) {
+      const pp = voice.pan.pan;
+      pp.cancelScheduledValues(now);
+      pp.setValueAtTime(cue.side * 0.92, now);
+      pp.linearRampToValueAtTime(-cue.side * 0.48, endAt);
+    }
+  }
+
+  _releaseOpponentVoices(now) {
+    for (let i = 0; i < this._opponentVoices.length; i++) {
+      const voice = this._opponentVoices[i];
+      if (voice.activeUntil > now) continue;
+      voice.engineGain.gain.setTargetAtTime(0, now, 0.07);
+      voice.airGain.gain.setTargetAtTime(0, now, 0.07);
+      voice.id = null;
+    }
+  }
+
+  _bottomStrike(t0, intensity) {
+    const i = clamp01(intensity);
+    this.bottomOsc.frequency.setTargetAtTime(62 + i * 24, t0, 0.006);
+    this.bottomBP.frequency.setTargetAtTime(390 + i * 260, t0, 0.01);
+    const body = this.bottomGain.gain;
+    const scrape = this.bottomNoiseGain.gain;
+    body.cancelScheduledValues(t0);
+    scrape.cancelScheduledValues(t0);
+    this._pulse(body, t0, 0.11 * i, 0.004, 0.015, 0.045);
+    this._pulse(scrape, t0, 0.075 * i, 0.003, 0.012, 0.035);
+  }
 
   _gainNode(v, dest) {
     const g = this.ctx.createGain();
