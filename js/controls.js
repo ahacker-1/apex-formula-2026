@@ -2,7 +2,17 @@
 
 const clamp = (value, lo, hi) => Math.max(lo, Math.min(hi, value));
 
-export function advanceSteeringInput(current, target, speed, dt, digital = false) {
+export const STEERING_PROFILES = Object.freeze({
+  calm: Object.freeze({ inputRate: 0.82, returnRate: 0.78, filter: 0.88 }),
+  balanced: Object.freeze({ inputRate: 1, returnRate: 1, filter: 1 }),
+  direct: Object.freeze({ inputRate: 1.22, returnRate: 1.18, filter: 1.14 }),
+});
+
+export function steeringProfile(value) {
+  return STEERING_PROFILES[value] || STEERING_PROFILES.balanced;
+}
+
+export function advanceSteeringInput(current, target, speed, dt, digital = false, profile = null) {
   const from = clamp(Number.isFinite(current) ? current : 0, -1, 1);
   const to = clamp(Number.isFinite(target) ? target : 0, -1, 1);
   // Fixed simulation ticks are normally 1/60s, but tests and recovery paths may
@@ -27,6 +37,16 @@ export function advanceSteeringInput(current, target, speed, dt, digital = false
     rate = digital
       ? 9 / (1 + velocity * 0.006)
       : 6 / (1 + velocity * 0.01);
+  }
+
+  // Optional keyboard tuning is deliberately multiplicative so callers and
+  // deterministic validators that omit it retain the established response.
+  if (digital && profile) {
+    const cfg = typeof profile === 'string' ? steeringProfile(profile) : profile;
+    rate *= to !== 0 ? (cfg.inputRate || 1) : (cfg.returnRate || 1);
+    // `filter` is a bounded final-stage response control: lower values smooth
+    // noisy key taps, higher values make the same fixed-step curve more direct.
+    rate *= clamp(Number.isFinite(cfg.filter) ? cfg.filter : 1, 0.65, 1.35);
   }
 
   const next = from + (to - from) * Math.min(1, rate * step);

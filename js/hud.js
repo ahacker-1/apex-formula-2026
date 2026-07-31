@@ -8,6 +8,7 @@
 // otherwise. Nothing here writes to the session except shifting radioQueue,
 // which is the documented hand-off for engineer messages.
 import { fmtTime } from './format.js';
+import { CockpitView } from './cockpit.js';
 
 const SECTORS = 3;
 const GAP_HZ = 2;              // gap widget refresh rate
@@ -86,6 +87,7 @@ export class HUD {
       <div id="startlights" role="img" aria-label="Race start lights"></div>
       <div id="bigflash" role="group" aria-label="Race event banner"></div>
       <div class="boost-vignette" id="boostvin"></div>
+      <div id="cockpit-view" aria-label="Seated Formula cockpit"></div>
       <div id="pit-overlay" role="dialog" aria-modal="false" aria-label="Select tyre compound" aria-hidden="true">
         <h3>SELECT TYRE COMPOUND</h3>
         <div class="tyre-choices">
@@ -99,9 +101,9 @@ export class HUD {
           <span class="eyebrow">WELCOME TO APEX FORMULA</span>
           <h2 id="onboarding-title">THREE THINGS BEFORE LIGHTS OUT</h2>
           <div class="onboarding-grid">
-            <div><b>1 · DRIVE</b><span><kbd>WASD</kbd> or arrow keys steer, accelerate and brake.</span></div>
+            <div><b>1 · DRIVE</b><span><kbd>↑</kbd> throttle, <kbd>↓</kbd> brake/reverse, <kbd>←</kbd><kbd>→</kbd> steer.</span></div>
             <div><b>2 · DEPLOY</b><span>Hold <kbd>SPACE</kbd> for electric override. Tap <kbd>V</kbd> to change ERS mode.</span></div>
-            <div><b>3 · ADAPT</b><span><kbd>C</kbd> changes camera. <kbd>P</kbd> calls the pit. <kbd>ESC</kbd> pauses.</span></div>
+            <div><b>3 · ADAPT</b><span><kbd>C</kbd> enters cockpit/cycles cameras. <kbd>B</kbd> changes dash page. <kbd>ESC</kbd> pauses.</span></div>
           </div>
           <button type="button" id="onboarding-go">GOT IT — START DRIVING</button>
         </div>
@@ -120,6 +122,7 @@ export class HUD {
       </div>`;
     root.setAttribute('aria-label', 'Driving heads-up display');
     root.setAttribute('aria-hidden', 'true');
+    this.cockpit = new CockpitView(this.$('cockpit-view'));
     // rev lights: 5 green, 5 red, 5 blue
     const rl = this.$('revlights');
     this._leds = [];
@@ -265,6 +268,7 @@ export class HUD {
     this.$('vscbanner').classList.remove('on', 'green');
     this.$('flbanner').classList.remove('on');
     this.enableTouchControls(false);
+    this.setCockpitMode(false);
   }
 
   enableTouchControls(enabled, onPause = null) {
@@ -279,6 +283,13 @@ export class HUD {
       button.classList.remove('pressed');
     }
   }
+
+  setCockpitMode(active) {
+    this.root.classList.toggle('cockpit-mode', !!active);
+    this.cockpit.setActive(active);
+  }
+
+  nextCockpitPage() { return this.cockpit.nextPage(); }
 
   showOnboarding(onDone) {
     const overlay = this.$('onboarding');
@@ -298,6 +309,7 @@ export class HUD {
     this.session = session;
     this.circuit = circuit;
     this._resetDerived();
+    this._timeTrialDelta = null;
     const race = session.mode === 'race';
     this.$('tw-title').textContent = session.trial ? 'TIME TRIAL' : session.mode === 'quali' ? 'QUALIFYING' : 'RACE';
     this.$('tw-lap').textContent = '';
@@ -385,6 +397,7 @@ export class HUD {
       this.$('m-z').classList.toggle('on', !ph.aeroX);
       this.$('m-ovr').classList.toggle('on', ph.boosting);
       this.$('boostvin').style.opacity = ph.boosting ? 1 : 0;
+      this.cockpit.update({ session: s, player: p, delta: this._timeTrialDelta, steer: ph.steer });
 
       if (slow) {
         this.$('t-pos').textContent = s.mode === 'race' ? 'P' + p.position : '—';
@@ -448,6 +461,7 @@ export class HUD {
 
   updateTimeTrial(personalBest, delta) {
     if (!this.session?.trial) return;
+    this._timeTrialDelta = typeof delta === 'number' && Number.isFinite(delta) ? delta : null;
     if (personalBest > 0) this.$('t-best').textContent = fmtTime(personalBest);
     const value = this.$('t-delta');
     if (typeof delta !== 'number' || !Number.isFinite(delta)) {

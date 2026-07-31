@@ -1,6 +1,7 @@
 // Persistent time-trial personal bests and a lightweight local ghost.
 // Ghost data never leaves the browser: each completed PB is sampled at 12 Hz
 // and stored per circuit + driver in localStorage.
+import { downloadTelemetry } from './telemetry.js';
 
 const STORE_VERSION = 1;
 const STORE_PREFIX = 'apexf1_tt_v1:';
@@ -54,6 +55,32 @@ export class TimeTrialManager {
   }
 
   get personalBest() { return this.record?.lap || 0; }
+
+  exportData() {
+    const source = this.record || (this.frames.length ? {
+      lap: 0, sectors: [], frames: this.frames,
+    } : null);
+    if (!source) return null;
+    return {
+      format: 'apex-formula-ghost',
+      version: 1,
+      sampleHz: Math.round(1 / SAMPLE_INTERVAL),
+      seed: Number.isInteger(this.session?.seed) ? this.session.seed : null,
+      trackId: this.trackId,
+      driverId: this.driverId,
+      lapSeconds: round(source.lap || 0, 3),
+      sectors: (source.sectors || []).map(v => Number.isFinite(v) ? round(v, 3) : null),
+      // [elapsed, worldX, renderY, worldZ, headingRadians, distanceMetres]
+      channels: ['time', 'x', 'y', 'z', 'heading', 'distance'],
+      frames: source.frames.map(frame => frame.map((value, index) => round(value, index === 4 ? 4 : index === 0 ? 3 : 2))),
+    };
+  }
+
+  downloadReplay() {
+    const data = this.exportData();
+    if (!data) return false;
+    return downloadTelemetry(`apex-${this.trackId}-${this.driverId}-ghost.json`, data);
+  }
 
   _progress(phys) {
     const c = this.circuit;

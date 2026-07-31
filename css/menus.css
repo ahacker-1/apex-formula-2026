@@ -261,6 +261,8 @@
 .seg button { transition: background 0.12s, border-color 0.12s, color 0.12s; }
 .f1-btn.ghost.danger { border-color: #5c2b28; color: #ff9d97; }
 .f1-btn.ghost.danger:hover { border-color: var(--red); color: #fff; background: rgba(225,6,0,0.14); }
+.nav-item.pilot-run { border-left-color: #16c7ff; background: linear-gradient(90deg,rgba(22,199,255,.12),rgba(255,255,255,.035)); }
+.nav-item.pilot-run h3::after { content:'DEFAULT'; margin-left:9px; color:#16c7ff; font:800 8px var(--mono); letter-spacing:.15em; }
 
 /* ===== 9. Results: podium shine, points count-up, gain chips ============= */
 .podium-strip { align-items: stretch; }

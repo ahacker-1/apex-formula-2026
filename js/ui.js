@@ -24,8 +24,11 @@ const TIPS = [
 const DEFAULT_SETTINGS = {
   difficulty: 1, distance: 0, quali: true, tc: true, abs: true, autoGear: true,
   nametags: true, volume: 1, graphicsQuality: 'auto', cameraProfile: 'broadcast',
-  autoPause: true, touchControls: true,
+  autoPause: true, touchControls: true, steeringResponse: 'balanced',
+  cockpitFov: 'natural', cockpitSeat: 'standard', headMotion: true,
 };
+const PILOT_DRIVER_ID = 'hacker';
+const PILOT_TRACK_ID = 'spa';
 const teamById = Object.fromEntries(TEAMS.map(t => [t.id, t]));
 
 // Power-unit marque glyphs (decorative text badges — no image assets).
@@ -70,8 +73,8 @@ export class UI {
     this.settings = this._loadSettings();
     this.lastSelection = this._loadLastSelection();
     this.sel = {
-      driverId: this.lastSelection?.driverId || null,
-      trackId: this.lastSelection?.trackId || null,
+      driverId: this.lastSelection?.driverId || PILOT_DRIVER_ID,
+      trackId: this.lastSelection?.trackId || PILOT_TRACK_ID,
       mode: 'quick',
     };
     this.screens = {};
@@ -249,6 +252,7 @@ export class UI {
       ${seasonStrip(champ)}
       <div class="menu-body"><div class="main-nav">
         ${raceNow}
+        <button type="button" class="nav-item pilot-run" data-a="pilot"><span><h3>PILOT RUN · GREENWOOD FOREST</h3><p>AVI · The AI Consulting Network Racing Team · seated cockpit · time trial</p></span></button>
         <button type="button" class="nav-item" data-a="quick"><span><h3>QUICK RACE</h3><p>Jump straight into a race weekend — any team, any circuit</p></span></button>
         ${champTile}
         <button type="button" class="nav-item" data-a="trial"><span><h3>TIME TRIAL</h3><p>Empty track, low fuel, soft tyres — chase the perfect lap</p></span></button>
@@ -256,7 +260,7 @@ export class UI {
         <button type="button" class="nav-item" data-a="settings"><span><h3>SETTINGS</h3><p>Difficulty, race distance, assists, audio, graphics</p></span></button>
       </div></div>
       <div class="menu-footer">
-        <span class="key-hint"><b>W A S D</b> drive</span>
+        <span class="key-hint"><b>↑ ↓ ← →</b> drive</span>
         <span class="key-hint"><b>SPACE</b> override boost</span>
         <span class="key-hint"><b>V</b> ERS mode</span>
         <span class="key-hint"><b>P</b> box</span>
@@ -370,6 +374,7 @@ export class UI {
     const el = this.screens.track;
     el.className = 'screen active menu-screen';
     const nextId = champ && champ.active && champ.nextRace ? champ.nextRace.trackId : null;
+    const focusId = nextId || this.sel.trackId || PILOT_TRACK_ID;
     el.innerHTML = `
       ${header('SELECT <small>CIRCUIT</small>')}
       <div class="menu-body"><div class="card-grid" id="track-grid"></div>
@@ -414,7 +419,7 @@ export class UI {
         ev.preventDefault();
         card.click();
       });
-      if (race.trackId === nextId) nextCard = card;
+      if (race.trackId === focusId) nextCard = card;
     }
     el.querySelector('#btn-back').addEventListener('click', () => this.cb('back', 'team'));
     if (nextCard && typeof nextCard.scrollIntoView === 'function') {
@@ -435,6 +440,8 @@ export class UI {
       nametags: 'Driver nametags', graphicsQuality: 'Graphics quality',
       cameraProfile: 'Camera style', autoPause: 'Auto pause',
       touchControls: 'Touch controls', volume: 'Master volume',
+      steeringResponse: 'Keyboard steering response', cockpitFov: 'Cockpit field of view',
+      cockpitSeat: 'Cockpit seat position', headMotion: 'Cockpit head motion',
     };
     const seg = (key, opts, cur) => `<div class="seg" data-k="${key}" role="group" aria-label="${settingLabels[key] || key}">${opts.map((o, i) =>
       `<button type="button" class="${i === cur ? 'on' : ''}" data-v="${i}" aria-pressed="${i === cur}">${o}</button>`).join('')}</div>`;
@@ -452,11 +459,15 @@ export class UI {
         ${group('ASSISTS', 'Driving aids', `
           ${row('Traction Control', 'Tames wheelspin out of corners', seg('tc', ['OFF', 'ON'], s.tc ? 1 : 0))}
           ${row('ABS', 'Prevents brake lockups', seg('abs', ['OFF', 'ON'], s.abs ? 1 : 0))}
-          ${row('Gearbox', 'Automatic or manual (Q/E to shift)', seg('autoGear', ['MANUAL', 'AUTO'], s.autoGear ? 1 : 0))}`)}
+          ${row('Gearbox', 'Automatic or manual (Q/E to shift)', seg('autoGear', ['MANUAL', 'AUTO'], s.autoGear ? 1 : 0))}
+          ${row('Arrow-key Steering', 'Progressive input filtering and steering return', seg('steeringResponse', ['CALM', 'BALANCED', 'DIRECT'], ['calm', 'balanced', 'direct'].indexOf(s.steeringResponse)))}`)}
         ${group('DISPLAY', 'On-track information', `
           ${row('Driver Nametags', 'Show 3-letter codes above AI cars', seg('nametags', ['OFF', 'ON'], s.nametags ? 1 : 0))}
           ${row('Graphics Quality', 'Auto adjusts resolution and effects to hold frame rate', seg('graphicsQuality', ['AUTO', 'LOW', 'MED', 'HIGH'], ['auto', 'low', 'medium', 'high'].indexOf(s.graphicsQuality)))}
-          ${row('Camera Style', 'Chase-camera distance, motion and field of view', seg('cameraProfile', ['TIGHT', 'BROADCAST', 'CINEMATIC'], ['tight', 'broadcast', 'cinematic'].indexOf(s.cameraProfile)))}`)}
+          ${row('Camera Style', 'Chase-camera distance, motion and field of view', seg('cameraProfile', ['TIGHT', 'BROADCAST', 'CINEMATIC'], ['tight', 'broadcast', 'cinematic'].indexOf(s.cameraProfile)))}
+          ${row('Cockpit FOV', 'Driver-eye field-of-view framing', seg('cockpitFov', ['FOCUSED', 'NATURAL', 'WIDE'], ['focused', 'natural', 'wide'].indexOf(s.cockpitFov)))}
+          ${row('Cockpit Seat', 'Driver eye height inside the halo', seg('cockpitSeat', ['LOW', 'STANDARD', 'HIGH'], ['low', 'standard', 'high'].indexOf(s.cockpitSeat)))}
+          ${row('Head Motion', 'Restrained acceleration and kerb response', seg('headMotion', ['OFF', 'ON'], s.headMotion !== false ? 1 : 0))}`)}
         ${group('BEHAVIOUR', 'Device and focus handling', `
           ${row('Auto Pause', 'Pause when the game loses focus', seg('autoPause', ['OFF', 'ON'], s.autoPause !== false ? 1 : 0))}
           ${row('Touch Controls', 'Show steering and pedal controls on touch devices', seg('touchControls', ['OFF', 'ON'], s.touchControls !== false ? 1 : 0))}`)}
@@ -483,6 +494,9 @@ export class UI {
         if (k === 'difficulty' || k === 'distance') this.settings[k] = v;
         else if (k === 'graphicsQuality') this.settings[k] = ['auto', 'low', 'medium', 'high'][v] || 'auto';
         else if (k === 'cameraProfile') this.settings[k] = ['tight', 'broadcast', 'cinematic'][v] || 'broadcast';
+        else if (k === 'steeringResponse') this.settings[k] = ['calm', 'balanced', 'direct'][v] || 'balanced';
+        else if (k === 'cockpitFov') this.settings[k] = ['focused', 'natural', 'wide'][v] || 'natural';
+        else if (k === 'cockpitSeat') this.settings[k] = ['low', 'standard', 'high'][v] || 'standard';
         else if (k === 'volume') this.settings.volume = [0, 0.5, 1][v];
         else this.settings[k] = v === 1;
         this.saveSettings();

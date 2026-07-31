@@ -9,6 +9,7 @@ import { FXAAPass } from '../lib/postprocessing/FXAAPass.js';
 import { RGBELoader } from '../lib/loaders/RGBELoader.js';
 import { CAMERA_FRAMING, resolveChaseCamera } from './cameraFraming.js';
 import { advanceSteeringInput } from './controls.js';
+import { cockpitFov, cockpitSeat } from './cockpit.js';
 
 // Photographic HDRI skies (CC0, PolyHaven). Load only the selected session's
 // theme; fetching all three at boot used 19.8 MB before the player chose a race.
@@ -70,6 +71,10 @@ function environmentKeyForTrack(trackId) {
 function documentIsActive() {
   return !document.hidden &&
     (typeof document.hasFocus !== 'function' || document.hasFocus());
+}
+
+function finiteCameraValue(value) {
+  return Number.isFinite(value) ? value : 0;
 }
 
 function loadHDRI(key) {
@@ -182,7 +187,7 @@ class Game {
     this.circuit = null;
     this.session = null;
     this.camera = new THREE.PerspectiveCamera(72, innerWidth / innerHeight, 0.3, 6500);
-    this.camMode = 0; // 0 chase, 1 T-cam, 2 nose
+    this.camMode = 0; // 0 chase, 1 seated cockpit, 2 T-cam, 3 nose
     this._camPos = new THREE.Vector3();
     this._camLook = new THREE.Vector3();
     this._camForward = new THREE.Vector3();
@@ -194,6 +199,8 @@ class Game {
     this._camFraming = { back: 0, height: 0, look: 0, fov: 0 };
 
     this.hud = new HUD(document.getElementById('hud'));
+    this.hud.cockpit.onPage = () => this.hud.nextCockpitPage();
+    this.hud.cockpit.onExport = () => this.exportGhostReplay();
     this.audio = new AudioEngine();
     this.champ = new Championship();
     this.ui = new UI((action, payload) => this.onUI(action, payload));
@@ -433,6 +440,7 @@ class Game {
       driverId: saved.driverId,
       mode: saved.mode,
       trial: saved.trial === true,
+      pilot: saved.pilot === true,
       champRound: saved.champRound === true,
       gridOrder,
       seed: Number.isInteger(saved.seed) ? saved.seed : undefined,
@@ -448,6 +456,7 @@ class Game {
           driverId: cfg.driverId,
           mode: cfg.mode,
           trial: cfg.trial === true,
+          pilot: cfg.pilot === true,
           champRound: cfg.champRound === true,
           gridOrder: cfg.gridOrder || null,
           seed: cfg.seed,
@@ -464,7 +473,18 @@ class Game {
     this.audio.uiClick && this.audio.uiClick();
     switch (action) {
       case 'menu':
-        if (payload === 'raceNow') {
+        if (payload === 'pilot') {
+          const race = CALENDAR.find(r => r.trackId === 'spa');
+          const driverId = DRIVERS.find(d => d.id === 'hacker' && d.team === 'tacn')?.id
+            || DRIVERS.find(d => d.team === 'tacn')?.id;
+          if (!race || !driverId) break;
+          this.ui.sel.mode = 'trial';
+          this.ui.sel.driverId = driverId;
+          this.ui.sel.trackId = 'spa';
+          this.camMode = 1;
+          this.startSession({ race, driverId, mode: 'quali', trial: true, pilot: true });
+        }
+        else if (payload === 'raceNow') {
           const last = this.ui.lastSelection;
           const race = last && CALENDAR.find(r => r.trackId === last.trackId);
           if (race && last.driverId) this.startSession({ race, driverId: last.driverId, mode: 'race' });
@@ -587,6 +607,7 @@ class Game {
     const requestedSeed = cfg.seed ?? querySeed;
     const sessionSeed = requestedSeed == null ? createRandom().state : normalizeSeed(requestedSeed);
     cfg = { ...cfg, seed: sessionSeed };
+    if (cfg.pilot) this.camMode = 1;
     this.raceConfig = cfg;
     const simulationRandom = createRandom(deriveSeed(sessionSeed, 'simulation'));
     const effectsRandom = createRandom(deriveSeed(sessionSeed, 'effects'));
@@ -763,6 +784,7 @@ class Game {
     this._renderLookKey = null;
     this.renderer.toneMappingExposure = RENDER_LOOK.day.exposure;
     this.hud.hide();
+    this.hud.setCockpitMode(false);
     this.audio.stopEngine();
     if (this.audio.crowdAmbience) this.audio.crowdAmbience(0);
     if (this.audio.stopCrescendo) this.audio.stopCrescendo();
@@ -1064,7 +1086,14 @@ class Game {
       this.ersMode = ((this.ersMode ?? 1) + 1) % 3;
       this.hud.message(['ERS: HARVEST', 'ERS: BALANCED', 'ERS: ATTACK'][this.ersMode], this.ersMode === 2 ? 'yellow' : '');
     }
-    if (code === 'KeyC') this.camMode = (this.camMode + 1) % 3;
+    if (code === 'KeyC') {
+      this.camMode = (this.camMode + 1) % 4;
+      this.hud.setCockpitMode(this.camMode === 1);
+      this.hud.message(['CAMERA: CHASE', 'CAMERA: COCKPIT', 'CAMERA: T-CAM', 'CAMERA: NOSE'][this.camMode]);
+      this.snapCamera();
+    }
+    if (code === 'KeyB') this.hud.nextCockpitPage();
+    if (code === 'KeyJ') this.exportGhostReplay();
     if (code === 'KeyP') this.session && this.session.playerRequestBox();
     if (code === 'KeyN') {
       this.ui.settings.nametags = !this.ui.settings.nametags;
@@ -1119,6 +1148,16 @@ class Game {
   queueShift(direction) {
     if (this._shiftQueue.length >= 8) return;
     this._shiftQueue.push(direction > 0 ? 1 : -1);
+  }
+
+  exportGhostReplay() {
+    if (!this.timeTrial) {
+      this.hud.message('GHOST EXPORT AVAILABLE IN TIME TRIAL', 'yellow');
+      return false;
+    }
+    const ok = this.timeTrial.downloadReplay();
+    this.hud.message(ok ? 'DETERMINISTIC GHOST JSON EXPORTED' : 'COMPLETE A LAP TO EXPORT', ok ? 'green' : 'yellow');
+    return ok;
   }
 
   playerInput(dt) {
@@ -1205,7 +1244,9 @@ class Game {
     if (steerInputMode) this._steerInputMode = steerInputMode;
     const digitalResponse = steerInputMode === 'digital' ||
       (dir === 0 && this._steerInputMode === 'digital');
-    this.keySteer = advanceSteeringInput(this.keySteer, dir, v, dt, digitalResponse);
+    this.keySteer = advanceSteeringInput(
+      this.keySteer, dir, v, dt, digitalResponse, this.ui.settings.steeringResponse,
+    );
     if (dir === 0 && this.keySteer === 0) this._steerInputMode = null;
     return { steer: this.keySteer, throttle, brake, boost, shiftUp, shiftDown, ersMode: this.ersMode ?? 1 };
   }
@@ -1230,6 +1271,7 @@ class Game {
     const ry = pose?.y ?? this._roadY(p);
     const speed = pose?.v ?? p.v;
     const f = this._camForward.set(Math.sin(heading), 0, Math.cos(heading));
+    this.hud.setCockpitMode(this.camMode === 1);
     if (this.camMode === 0) {
       const framing = resolveChaseCamera(
         this.ui.settings.cameraProfile, speed, p.boosting, this._camFraming,
@@ -1243,6 +1285,11 @@ class Game {
         .setY(this._roadY(p, framing.look) + CAMERA_FRAMING.lookHeightM);
       this._cameraFovTarget = framing.fov;
     } else if (this.camMode === 1) {
+      const seatY = cockpitSeat(this.ui.settings.cockpitSeat);
+      this._camPos.copy(pos).addScaledVector(f, 0.43).setY(ry + seatY);
+      this._camLook.copy(pos).addScaledVector(f, 22).setY(this._roadY(p, 22) + 0.74);
+      this._cameraFovTarget = cockpitFov(this.ui.settings.cockpitFov);
+    } else if (this.camMode === 2) {
       this._camPos.copy(pos).addScaledVector(f, -0.75).setY(ry + 1.62);
       this._camLook.copy(pos).addScaledVector(f, 14).setY(this._roadY(p, 14) + 1.05);
       this._cameraFovTarget = 72 + speed * 0.045 + (p.boosting ? 2 : 0);
@@ -1267,6 +1314,7 @@ class Game {
     const speed = pose?.v ?? p.v;
     const ry = pose?.y ?? this._roadY(p);
     const f = this._camForward.set(Math.sin(heading), 0, Math.cos(heading));
+    this.hud.setCockpitMode(this.camMode === 1);
     const targetPos = this._camTargetPos;
     const targetLook = this._camTargetLook;
     let stiff = 5.5;
@@ -1290,6 +1338,21 @@ class Game {
         .setY(this._roadY(p, framing.look) + CAMERA_FRAMING.lookHeightM);
       this._cameraFovTarget = framing.fov;
     } else if (this.camMode === 1) {
+      // Driver-eye position is fixed to the monocoque, with only centimetres
+      // of filtered force feedback. This gives speed/load information without
+      // the horizon swings that make cockpit cameras uncomfortable.
+      const seatY = cockpitSeat(this.ui.settings.cockpitSeat);
+      const motion = this.ui.settings.headMotion === false ? 0 : 1;
+      const lateral = this._camLeft.set(f.z, 0, -f.x);
+      targetPos.copy(pos).addScaledVector(f, 0.43 - finiteCameraValue(p.pitch) * 0.08 * motion)
+        .addScaledVector(lateral, -finiteCameraValue(p.steer) * 0.018 * motion)
+        .setY(ry + seatY + (p.onKerb ? Math.sin(performance.now() * .045) * .008 * motion : 0));
+      targetLook.copy(pos).addScaledVector(f, 22)
+        .addScaledVector(lateral, -finiteCameraValue(p.steer) * 0.10 * motion)
+        .setY(this._roadY(p, 22) + 0.74);
+      stiff = 22;
+      this._cameraFovTarget = cockpitFov(this.ui.settings.cockpitFov) + (p.boosting ? 1 : 0);
+    } else if (this.camMode === 2) {
       // T-cam (onboard broadcast)
       targetPos.copy(pos).addScaledVector(f, -0.75).setY(ry + 1.62);
       targetLook.copy(pos).addScaledVector(f, 14).setY(this._roadY(p, 14) + 1.05);
@@ -1306,8 +1369,9 @@ class Game {
     this._camLook.lerp(targetLook, Math.min(1, (stiff + 4) * dt));
     this.camera.position.copy(this._camPos);
     // speed shake: high-frequency micro jitter, stronger on kerbs/grass
-    const shake = (speed / 95) * 0.035 + (p.onKerb ? 0.05 : 0) +
-      (p.offTrack ? 0.08 : 0) + (p.impactKick || 0) * 0.16;
+    const cockpitScale = this.camMode === 1 ? (this.ui.settings.headMotion === false ? 0 : 0.18) : 1;
+    const shake = ((speed / 95) * 0.035 + (p.onKerb ? 0.05 : 0) +
+      (p.offTrack ? 0.08 : 0) + (p.impactKick || 0) * 0.16) * cockpitScale;
     if (shake > 0.004 && !this.paused) {
       const tt = performance.now() * 0.001;
       const left = this._camLeft.set(f.z, 0, -f.x);
