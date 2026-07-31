@@ -55,6 +55,18 @@ export class RaceControl {
   resume(opts = {}) {
     if (this.state === 'green') return this.snapshot();
     const previous = this.state;
+    if (opts.immediate === true) {
+      this.state = 'green';
+      this.timeLeft = 0;
+      this.reason = '';
+      this.zone = null;
+      this.pending = null;
+      if (opts.restartType === 'standing' || opts.restartType === 'rolling') {
+        this.restartType = opts.restartType;
+      }
+      this._emit('green', previous);
+      return this.snapshot();
+    }
     this.state = 'restart';
     this.timeLeft = Number.isFinite(opts.duration) ? Math.max(0, opts.duration) : DEFAULTS.restart;
     this.restartType = opts.restartType === 'standing' ? 'standing' : this.restartType;

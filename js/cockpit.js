@@ -8,9 +8,31 @@ const finite = (v, fallback = 0) => Number.isFinite(v) ? v : fallback;
 
 export const COCKPIT_FOV = Object.freeze({ focused: 62, natural: 70, wide: 78 });
 export const COCKPIT_SEAT = Object.freeze({ low: 0.77, standard: 0.83, high: 0.89 });
+const COCKPIT_FLAGS = Object.freeze({
+  green: Object.freeze({ label: 'GREEN', className: 'green' }),
+  blue: Object.freeze({ label: 'BLUE', className: 'blue' }),
+  chequered: Object.freeze({ label: 'CHEQUERED', className: 'white' }),
+  'local-yellow': Object.freeze({ label: 'LOCAL YELLOW', className: 'yellow' }),
+  yellow: Object.freeze({ label: 'YELLOW', className: 'yellow' }),
+  vsc: Object.freeze({ label: 'VSC', className: 'yellow' }),
+  'safety-car': Object.freeze({ label: 'SAFETY CAR', className: 'yellow' }),
+  'red-flag': Object.freeze({ label: 'RED FLAG', className: 'red' }),
+  restart: Object.freeze({ label: 'RESTART', className: 'yellow' }),
+});
 
 export function cockpitFov(value) { return COCKPIT_FOV[value] || COCKPIT_FOV.natural; }
 export function cockpitSeat(value) { return COCKPIT_SEAT[value] || COCKPIT_SEAT.standard; }
+
+export function cockpitFlagState(session, player) {
+  if (session?.phase === 'finished') return COCKPIT_FLAGS.chequered;
+  const control = session?.raceControl?.state || (session?.vsc?.active ? 'vsc' : 'green');
+  const controlled = control === 'green' ? null : COCKPIT_FLAGS[control];
+  if (controlled) return controlled;
+  if (session?.blueFlagFor === player?.driver?.id || player?._blueT > 0) {
+    return COCKPIT_FLAGS.blue;
+  }
+  return COCKPIT_FLAGS.green;
+}
 
 export class CockpitView {
   constructor(root) {
@@ -111,12 +133,9 @@ export class CockpitView {
     this.$('cp-pf').textContent = `${frontPressure.toFixed(1)} psi`;
     this.$('cp-pr').textContent = `${rearPressure.toFixed(1)} psi`;
 
-    let flag = 'GREEN', flagClass = 'green';
-    if (session?.vsc?.active) { flag = 'VSC'; flagClass = 'yellow'; }
-    else if (session?.blueFlagFor === player.driver?.id || player._blueT > 0) { flag = 'BLUE'; flagClass = 'blue'; }
-    else if (session?.phase === 'finished') { flag = 'CHEQUERED'; flagClass = 'white'; }
-    this.$('cp-flag').textContent = flag;
-    this.$('cp-flag').className = flagClass;
+    const flag = cockpitFlagState(session, player);
+    this.$('cp-flag').textContent = flag.label;
+    this.$('cp-flag').className = flag.className;
     this._updateRadar(session, player);
   }
 

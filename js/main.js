@@ -245,6 +245,8 @@ class Game {
     this._audioOpponentCues = [];
     this._trackGripOptions = {};
     this._trackGripResult = { surface: {} };
+    this._trackConditionsSource = null;
+    this._trackConditionsTime = -1;
 
     addEventListener('resize', () => {
       this.camera.aspect = innerWidth / innerHeight;
@@ -427,22 +429,58 @@ class Game {
     const track = this.circuit?.trackState;
     const weather = scenario.weather || {};
     const trackScenario = scenario.track || {};
-    track?.setConditions?.({
-      wetness: trackScenario.wetness,
-      intensity: weather.intensity,
-      rainfall: Number.isFinite(weather.intensity) ? weather.intensity * 18 : undefined,
-      locked: true,
-    });
-    session?.setTrackConditions?.({
-      wetness: trackScenario.wetness,
-      trackGrip: this.circuit?.gripAt?.(
-        entry?.phys?.sampleIdx || 0,
-        entry?.phys?.lat || 0,
-        this._trackGripOptions,
-        this._trackGripResult,
-      )?.multiplier,
-      rainfall: this.circuit?.weather?.current?.rainfall,
-    });
+    const condition = String(weather.condition || '').toLowerCase();
+    const surface = String(trackScenario.surface || '').toLowerCase();
+    const clearEnvironment = scenario.environment?.clear === true ||
+      condition === 'dynamic' || surface === 'dynamic';
+    const hasEnvironmentScenario = clearEnvironment || condition || surface ||
+      Number.isFinite(weather.intensity) || Number.isFinite(weather.rainfall) ||
+      Number.isFinite(weather.cloudCover) || Number.isFinite(trackScenario.wetness) ||
+      Number.isFinite(trackScenario.puddling) || Number.isFinite(trackScenario.temperature);
+    if (clearEnvironment) track?.clearConditions?.();
+    else if (hasEnvironmentScenario) {
+      let intensity = Number.isFinite(weather.intensity) ? weather.intensity : undefined;
+      if (!Number.isFinite(intensity) && condition === 'rain') intensity = 0.5;
+      else if (!Number.isFinite(intensity) && (condition === 'clear' || condition === 'overcast')) intensity = 0;
+      let wetness = Number.isFinite(trackScenario.wetness) ? trackScenario.wetness : undefined;
+      if (!Number.isFinite(wetness) && surface === 'wet') wetness = 0.6;
+      else if (!Number.isFinite(wetness) && surface === 'dry') wetness = 0;
+      const rainfall = Number.isFinite(weather.rainfall)
+        ? weather.rainfall : (Number.isFinite(intensity) ? intensity * 18 : undefined);
+      const cloudCover = Number.isFinite(weather.cloudCover) ? weather.cloudCover
+        : condition === 'rain' ? Math.max(0.78, intensity || 0)
+          : condition === 'overcast' ? 0.82 : condition === 'clear' ? 0.18 : undefined;
+      track?.setConditions?.({
+        wetness,
+        puddling: trackScenario.puddling,
+        temperature: trackScenario.temperature,
+        rubber: trackScenario.rubber,
+        dust: trackScenario.dust,
+        intensity,
+        rainfall,
+        cloudCover,
+        airTemperature: weather.airTemperature,
+        humidity: weather.humidity,
+        windSpeed: weather.windSpeed,
+        windDirection: weather.windDirection,
+        locked: scenario.environment?.locked !== false,
+      });
+    }
+    if (hasEnvironmentScenario && session?.setTrackConditions) {
+      const visual = track?.visualState;
+      session.setTrackConditions({
+        wetness: visual?.wetness,
+        trackGrip: this.circuit?.gripAt?.(
+          entry?.phys?.sampleIdx || 0,
+          entry?.phys?.lat || 0,
+          this._trackGripOptions,
+          this._trackGripResult,
+        )?.multiplier,
+        rainfall: this.circuit?.weather?.current?.rainfall,
+      });
+      this._trackConditionsSource = track || null;
+      this._trackConditionsTime = track?.time ?? -1;
+    }
     const requestedControl = scenario.raceControl?.state;
     if (requestedControl === 'green') session?.resumeRace?.({ immediate: true });
     else if (requestedControl && session?.raceControl?.state !== requestedControl) {
@@ -763,7 +801,9 @@ class Game {
       }
       if (sessionGeneration !== this._sessionGeneration) return;
       this.scene = new THREE.Scene();
-      this.circuit = buildCircuit(cfg.race.trackId, track, this.scene);
+      this.circuit = buildCircuit(cfg.race.trackId, track, this.scene, {
+        weatherSeed: deriveSeed(sessionSeed, 'weather'),
+      });
       this.setupEnvironment(effectsRandom, environmentKey);
       const laps = cfg.mode === 'race' ? this.ui.raceLapsFor(cfg.race.trackId) : 1;
       this.session = new RaceSession({
@@ -1566,8 +1606,11 @@ class Game {
     if (!this.paused && (this.state === 'race' || this.state === 'quali')) {
       this.pacing = this.fixedStep.advance(rawDt, (dt) => {
         const weather = this.circuit?.advanceEnvironment?.(dt, s.entries);
-        const visual = this.circuit?.trackState?.visualState;
-        if (s.setTrackConditions && visual) {
+        const trackState = this.circuit?.trackState;
+        const visual = trackState?.visualState;
+        const conditionsChanged = trackState &&
+          (trackState !== this._trackConditionsSource || trackState.time !== this._trackConditionsTime);
+        if (s.setTrackConditions && visual && conditionsChanged) {
           const player = s.player?.phys;
           const grip = player && this.circuit.gripAt
             ? this.circuit.gripAt(
@@ -1581,6 +1624,8 @@ class Game {
             trackGrip: grip,
             rainfall: weather?.rainfall || 0,
           });
+          this._trackConditionsSource = trackState;
+          this._trackConditionsTime = trackState.time;
         }
         s.update(dt, this.playerInput(dt));
         if (this.effects) this.effects.update(dt, s.entries, this.circuit?.trackState);

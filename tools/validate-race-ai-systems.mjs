@@ -9,6 +9,7 @@ import {
   damageSeverity, performanceModifiers, repairPlan, stepReliability,
 } from '../js/damage.js';
 import { RaceControl } from '../js/raceControl.js';
+import { cockpitFlagState } from '../js/cockpit.js';
 import { normalizeClassification } from '../js/championship.js';
 import { DRIVERS } from '../js/data.js';
 
@@ -67,6 +68,15 @@ check(control.paceFactor === 0, 'red flag must stop the field');
 control.resume({ restartType: 'standing', duration: 1 });
 control.update(1);
 check(control.state === 'green' && events.some(event => event.restartType === 'standing'), 'standing red-flag restart');
+control.deploy('vsc', { duration: 30 });
+control.resume({ immediate: true });
+check(control.state === 'green' && control.timeLeft === 0,
+  'authored immediate resume must bypass restart and become exactly green');
+check(cockpitFlagState({ raceControl: { state: 'local-yellow' } }, {}).label === 'LOCAL YELLOW' &&
+  cockpitFlagState({ raceControl: { state: 'safety-car' } }, {}).label === 'SAFETY CAR' &&
+  cockpitFlagState({ raceControl: { state: 'red-flag' } }, {}).className === 'red' &&
+  cockpitFlagState({ raceControl: { state: 'restart' } }, {}).label === 'RESTART',
+  'cockpit flag must present every race-control family');
 
 const official = DRIVERS.map(driver => driver.id);
 check(normalizeClassification(official)?.length === DRIVERS.length, 'complete official classification');

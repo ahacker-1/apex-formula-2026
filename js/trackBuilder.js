@@ -834,7 +834,7 @@ function rng(seed) {
   };
 }
 
-export function buildCircuit(trackId, def, scene) {
+export function buildCircuit(trackId, def, scene, options = {}) {
   const themeName = TRACK_THEME[trackId] || 'classic';
   const theme = THEMES[themeName];
   const lightingRig = theme.nightRig
@@ -6143,6 +6143,7 @@ float apexGroundNoise(vec2 worldXZ, float wavelength, float seed) {
     samples,
     line,
     seed: scenerySeed,
+    weatherSeed: options.weatherSeed ?? scenerySeed,
   });
   trackState.setVisualHook((state) => {
     // Wet asphalt loses diffuse roughness and gains environment response. No

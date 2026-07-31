@@ -5,6 +5,7 @@ import path from 'node:path';
 const PILOT_SEED = 'greenwood-tacn-acceptance-2026';
 
 async function seed(page) {
+  await page.route('**/favicon.ico', route => route.fulfill({ status: 204, body: '' }));
   await page.addInitScript(() => {
     localStorage.clear();
     localStorage.setItem('apexf1_onboarding_v1', '1');
@@ -134,6 +135,30 @@ test('TACN / Greenwood pilot launches without an online dependency', async ({ pa
   });
   await captureEvidence(page, testInfo, 'greenwood-race-start');
 
+  const weatherSeed = await page.evaluate(async (pilotSeed) => {
+    const [{ deriveSeed, normalizeSeed }, { WeatherTimeline }] = await Promise.all([
+      import('/js/random.js'),
+      import('/js/weather.js'),
+    ]);
+    const sessionSeed = normalizeSeed(pilotSeed);
+    const expected = new WeatherTimeline({ trackId: 'spa', seed: deriveSeed(sessionSeed, 'weather') });
+    const same = new WeatherTimeline({ trackId: 'spa', seed: deriveSeed(sessionSeed, 'weather') });
+    const different = new WeatherTimeline({ trackId: 'spa', seed: deriveSeed(sessionSeed + 1, 'weather') });
+    const signature = timeline => timeline.keyframes.slice(0, 8).map(frame => [
+      frame.rainfall, frame.cloudCover, frame.airTemperature, frame.windDirection,
+    ]);
+    return {
+      runtime: window.__game.circuit.weather.seed,
+      expected: expected.seed,
+      same: signature(same),
+      expectedWeather: signature(expected),
+      different: signature(different),
+    };
+  }, PILOT_SEED);
+  expect(weatherSeed.runtime).toBe(weatherSeed.expected);
+  expect(weatherSeed.same).toEqual(weatherSeed.expectedWeather);
+  expect(weatherSeed.different).not.toEqual(weatherSeed.expectedWeather);
+
   expect(externalRequests, `Runtime requested external resources:\n${externalRequests.join('\n')}`).toEqual([]);
   expect(runtimeErrors, `Runtime emitted errors:\n${runtimeErrors.join('\n')}`).toEqual([]);
 });
@@ -211,6 +236,30 @@ test('seeded wet-race, damage, strategy and race-control states are deterministi
   for (const marker of ['weather', 'damage', 'strategy', 'race-control']) {
     await expect(page.locator(`[data-sim-state="${marker}"]`), `Missing visible data-sim-state="${marker}"`).toBeVisible();
   }
+  await expect.poll(() => page.evaluate(() => window.__game.effects?.emissionCounts?.rain || 0), {
+    message: 'The wet scenario must drive the production rain particle pool, not only HUD labels',
+  }).toBeGreaterThan(0);
+  const visualWeather = await page.evaluate(() => {
+    const game = window.__game;
+    const effects = game.effects;
+    const road = game.circuit.group.getObjectByName('road');
+    const player = game.session.player.phys;
+    const sample = game.circuit.samples[player.sampleIdx];
+    const along = (player.pos.x - sample.p.x) * sample.t.x + (player.pos.z - sample.p.z) * sample.t.z;
+    const roadY = game.circuit.heightAt(player.sampleIdx + along / game.circuit.ds);
+    return {
+      activeDrops: effects.rainData.filter(drop => drop.life > 0).length,
+      emitterRoadDelta: Math.abs(effects.rainEmitterY - roadY),
+      reflectionStrength: game.circuit.trackState.visualState.reflectionStrength,
+      roadRoughness: road.material.roughness,
+      roadEnvironment: road.material.envMapIntensity,
+    };
+  });
+  expect(visualWeather.activeDrops).toBeGreaterThan(0);
+  expect(visualWeather.emitterRoadDelta).toBeLessThan(0.01);
+  expect(visualWeather.reflectionStrength).toBeGreaterThan(0.3);
+  expect(visualWeather.roadRoughness).toBeLessThan(0.8);
+  expect(visualWeather.roadEnvironment).toBeGreaterThan(1.3);
   await captureEvidence(page, testInfo, 'wet-vsc-damage-strategy');
 
   await applyScenario(page);
@@ -228,6 +277,25 @@ test('seeded wet-race, damage, strategy and race-control states are deterministi
     damage: first.damage,
     strategy: first.strategy,
   });
+
+  const cleared = await page.evaluate(() => window.__game.applyScenario({
+    weather: { condition: 'clear' },
+    track: { surface: 'dry' },
+    raceControl: { state: 'green' },
+  }));
+  expect(cleared.weather).toMatchObject({ condition: 'clear', intensity: 0, rainfall: 0 });
+  expect(cleared.track?.state).toMatchObject({ surface: 'dry', wetness: 0 });
+  expect(cleared.raceControl).toMatchObject({ state: 'green' });
+
+  const released = await page.evaluate(() => {
+    window.__game.applyScenario({
+      weather: { condition: 'dynamic' },
+      track: { surface: 'dynamic' },
+    });
+    const track = window.__game.circuit.trackState;
+    return { trackOverride: track.conditionOverride, weatherOverride: track.weather.override };
+  });
+  expect(released).toEqual({ trackOverride: null, weatherOverride: null });
 });
 
 test('pit UI fits a real rain tyre across physics, visuals, telemetry and cockpit', async ({ page }) => {
@@ -274,6 +342,13 @@ test('pit UI fits a real rain tyre across physics, visuals, telemetry and cockpi
 test('desktop high-quality frame pacing stays inside the acceptance budget', async ({ page }) => {
   await bootPilot(page);
   const result = await page.evaluate(async () => {
+    const session = window.__game.session;
+    const originalSetTrackConditions = session.setTrackConditions;
+    let conditionUpdates = 0;
+    session.setTrackConditions = function countedTrackConditions(next) {
+      conditionUpdates++;
+      return originalSetTrackConditions.call(this, next);
+    };
     const deltas = [];
     let previous;
     await new Promise(resolve => {
@@ -287,12 +362,15 @@ test('desktop high-quality frame pacing stays inside the acceptance budget', asy
     });
     const stable = deltas.slice(10).sort((a, b) => a - b);
     const percentile = p => stable[Math.min(stable.length - 1, Math.floor(stable.length * p))];
+    session.setTrackConditions = originalSetTrackConditions;
     return {
       p95Ms: percentile(0.95),
       p99Ms: percentile(0.99),
       maxMs: stable.at(-1),
       over50Ms: stable.filter(value => value > 50).length,
       sampleCount: stable.length,
+      conditionUpdates,
+      elapsedMs: deltas.reduce((sum, value) => sum + value, 0),
       viewport: { width: innerWidth, height: innerHeight, dpr: devicePixelRatio },
     };
   });
@@ -301,6 +379,10 @@ test('desktop high-quality frame pacing stays inside the acceptance budget', asy
   expect(result.p95Ms, `p95 frame time ${result.p95Ms.toFixed(2)}ms exceeded 50ms`).toBeLessThanOrEqual(50);
   expect(result.p99Ms, `p99 frame time ${result.p99Ms.toFixed(2)}ms exceeded 100ms`).toBeLessThanOrEqual(100);
   expect(result.over50Ms, `${result.over50Ms} frames exceeded 50ms`).toBeLessThanOrEqual(4);
+  expect(result.conditionUpdates,
+    `${result.conditionUpdates} condition snapshots were allocated in ${result.elapsedMs.toFixed(0)}ms`).toBeLessThanOrEqual(
+    Math.ceil(result.elapsedMs / 250) + 2,
+  );
 });
 
 test('@mobile adaptive fallback remains usable without desktop overflow', async ({ page }, testInfo) => {

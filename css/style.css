@@ -255,7 +255,8 @@ body {
 .cp-page b.gain { color: #24d05a; }.cp-page b.loss { color: #ff6962; }
 .cp-footer { display: flex; justify-content: space-between; border-top: 1px solid #29404b; padding-top: 4px; font-size: 9px; }
 .cp-footer #cp-flag.green { color:#24d05a }.cp-footer #cp-flag.yellow { color:#ffe14a }
-.cp-footer #cp-flag.blue { color:#4a8dff }.cp-footer #cp-flag.white { color:#fff }
+.cp-footer #cp-flag.blue { color:#4a8dff }.cp-footer #cp-flag.red { color:#ff4a4a }
+.cp-footer #cp-flag.white { color:#fff }
 .cp-footer #cp-compound.compound-S { color:#e10600 }.cp-footer #cp-compound.compound-M { color:#ffd24a }
 .cp-footer #cp-compound.compound-H { color:#f0f0f0 }.cp-footer #cp-compound.compound-I { color:#39b54a }
 .cp-footer #cp-compound.compound-W { color:#5b9cff }

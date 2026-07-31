@@ -312,11 +312,13 @@ export class TrackState {
   // weekends, replay restoration and acceptance scenarios without introducing
   // a parallel test-only state.
   setConditions(conditions = {}) {
+    if (conditions.clear === true) return this.clearConditions();
     const wetness = conditions.wetness;
     const puddling = conditions.puddling;
     const temperature = conditions.trackTemperature ?? conditions.temperature;
     const rainfall = conditions.rainfall ??
       (Number.isFinite(conditions.intensity) ? conditions.intensity * 18 : undefined);
+    const locked = conditions.locked !== false;
     if (Number.isFinite(wetness)) {
       this.wetness.fill(clamp(wetness, 0, 1));
       this.lineDrying.fill(0);
@@ -328,15 +330,24 @@ export class TrackState {
     if (Number.isFinite(temperature)) this.temperature.fill(clamp(temperature, 0, 60));
     if (Number.isFinite(conditions.rubber)) this.rubber.fill(clamp(conditions.rubber, 0, 1));
     if (Number.isFinite(conditions.dust)) this.dust.fill(clamp(conditions.dust, 0, 1));
-    this.conditionOverride = conditions.locked === false ? null : {
+    this.conditionOverride = locked ? {
       wetness: Number.isFinite(wetness) ? clamp(wetness, 0, 1) : undefined,
       puddling: Number.isFinite(puddling) ? clamp(puddling, 0, 1)
         : (Number.isFinite(wetness) ? clamp((wetness - 0.52) * 1.15, 0, 1) : undefined),
       temperature: Number.isFinite(temperature) ? clamp(temperature, 0, 60) : undefined,
-    };
-    if (Number.isFinite(rainfall)) this.weather.setOverride({
-      rainfall: clamp(rainfall, 0, 18),
+    } : null;
+    const hasWeather = Number.isFinite(rainfall) || Number.isFinite(conditions.cloudCover) ||
+      Number.isFinite(conditions.airTemperature) || Number.isFinite(conditions.humidity) ||
+      Number.isFinite(conditions.windSpeed) || Number.isFinite(conditions.windDirection);
+    if (!locked) this.weather.clearOverride();
+    else if (hasWeather) this.weather.setOverride({
+      rainfall: Number.isFinite(rainfall) ? clamp(rainfall, 0, 18) : undefined,
       trackTemperature: Number.isFinite(temperature) ? temperature : undefined,
+      airTemperature: conditions.airTemperature,
+      cloudCover: conditions.cloudCover,
+      humidity: conditions.humidity,
+      windSpeed: conditions.windSpeed,
+      windDirection: conditions.windDirection,
     });
     return this.syncVisuals(this.weather.current);
   }

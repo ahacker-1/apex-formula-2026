@@ -42,6 +42,19 @@ const SKID_SEGS = EFFECT_POOL_LIMITS.skidSegments;
 
 function clamp01(n) { return Math.max(0, Math.min(1, n)); }
 
+export function effectSurfaceHeight(physics) {
+  const fallback = Number.isFinite(physics?.pos?.y) ? physics.pos.y : 0;
+  const circuit = physics?.circuit;
+  const sample = circuit?.samples?.[physics?.sampleIdx];
+  if (!sample || typeof circuit?.heightAt !== 'function' || !Number.isFinite(circuit?.ds) || circuit.ds <= 0) {
+    return fallback;
+  }
+  const along = (physics.pos.x - sample.p.x) * sample.t.x +
+    (physics.pos.z - sample.p.z) * sample.t.z;
+  const height = circuit.heightAt(physics.sampleIdx + along / circuit.ds);
+  return Number.isFinite(height) ? height : fallback;
+}
+
 function defaultMotionScale(options) {
   if (Number.isFinite(options.motionScale)) return clamp01(options.motionScale);
   const reduced = options.reducedMotion ??
@@ -86,6 +99,7 @@ export class Effects {
     this._entryState = new WeakMap();
     this.environment = options.environment || null;
     this._rainEmission = 0;
+    this.rainEmitterY = 0;
     this.setQualityTier(options.qualityTier);
 
     // ---- sparks (Points, additive) ----
@@ -153,7 +167,7 @@ export class Effects {
     this.rainData = [];
     for (let i = 0; i < RAIN_POOL; i++) {
       rpos[i * 3 + 1] = -50;
-      this.rainData.push({ vel: new THREE.Vector3(), life: 0 });
+      this.rainData.push({ vel: new THREE.Vector3(), life: 0, floor: 0 });
     }
     this.rainTex = radialSprite('rgba(225,238,255,0.90)', 'rgba(180,210,240,0)', 16);
     this.rainMat = new THREE.PointsMaterial({
@@ -339,6 +353,7 @@ export class Effects {
     p.array[i * 3 + 1] = y + 6 + this.random() * 12;
     p.array[i * 3 + 2] = z + (this.random() - 0.5) * 34;
     const d = this.rainData[i];
+    d.floor = y;
     d.life = 0.42 + this.random() * 0.48;
     d.vel.set(
       Math.sin(windDirection) * windSpeed * 0.45,
@@ -537,12 +552,14 @@ export class Effects {
     const focal = entries.find(entry => entry.isPlayer && !entry.dnf)?.phys ||
       entries.find(entry => !entry.dnf)?.phys;
     if (rainStrength > 0.004 && focal) {
+      const rainFloor = effectSurfaceHeight(focal);
+      this.rainEmitterY = rainFloor;
       this._rainEmission = Math.min(24.99,
         this._rainEmission + frameDt * (32 + rainStrength * 210) * this.motionScale);
       const count = Math.min(24, Math.floor(this._rainEmission));
       this._rainEmission -= count;
       for (let i = 0; i < count; i++) {
-        this._emitRain(focal.pos.x, 0, focal.pos.z, weather?.windSpeed || 0,
+        this._emitRain(focal.pos.x, rainFloor, focal.pos.z, weather?.windSpeed || 0,
           weather?.windDirection || 0, rainStrength);
       }
     } else this._rainEmission = 0;
@@ -555,7 +572,7 @@ export class Effects {
       rainPositions.array[i * 3] += d.vel.x * frameDt;
       rainPositions.array[i * 3 + 1] += d.vel.y * frameDt;
       rainPositions.array[i * 3 + 2] += d.vel.z * frameDt;
-      if (d.life <= 0 || rainPositions.array[i * 3 + 1] < -1) {
+      if (d.life <= 0 || rainPositions.array[i * 3 + 1] < d.floor - 1) {
         d.life = 0;
         rainPositions.array[i * 3 + 1] = -50;
       }

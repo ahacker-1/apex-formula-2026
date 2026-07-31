@@ -26,6 +26,7 @@ const { GTAOPass } = await import('../lib/postprocessing/GTAOPass.js');
 const { ScaledGTAOPass } = await import('../lib/postprocessing/ScaledGTAOPass.js');
 const {
   Effects, EFFECT_POOL_LIMITS, EFFECT_QUALITY_SCALES, EFFECT_QUALITY_DUST_LIMITS,
+  effectSurfaceHeight,
 } = await import('../js/effects.js');
 const { createRandom, createRendererNoiseRandom } = await import('../js/random.js');
 
@@ -202,6 +203,21 @@ ok(high.dustLimit === EFFECT_QUALITY_DUST_LIMITS.high &&
   'quality hook caps active dust draws while retaining the fixed backing pool');
 ok(high.reused && medium.reused && low.reused && reduced.reused,
   'quality and accessibility density changes preserve every pool and typed buffer');
+
+const elevatedScene = new THREE.Scene();
+const elevatedEffects = new Effects(elevatedScene, seededRandom(71));
+const elevatedEntry = makeEntry();
+elevatedEntry.phys.circuit.heightAt = () => 42.5;
+elevatedEffects.bindEnvironment({ weather: { current: { rainfall: 18, windSpeed: 2, windDirection: 0.4 } } });
+for (let frame = 0; frame < 30; frame++) elevatedEffects.update(1 / 60, [elevatedEntry]);
+const activeElevatedRain = elevatedEffects.rainData.filter(drop => drop.life > 0);
+ok(effectSurfaceHeight(elevatedEntry.phys) === 42.5,
+  'effect surface sampling resolves render-only circuit elevation');
+ok(elevatedEffects.emissionCounts.rain > 0 && activeElevatedRain.length > 0,
+  'heavy weather emits a visible active rain pool');
+ok(elevatedEffects.rainEmitterY === 42.5 && activeElevatedRain.every(drop => drop.floor === 42.5),
+  'rain emitter and culling floor follow the elevated road instead of world zero');
+elevatedEffects.dispose();
 console.log(`[effects] equal 2s density high=${JSON.stringify(high.counts)} ` +
   `medium=${JSON.stringify(medium.counts)} low=${JSON.stringify(low.counts)} ` +
   `reduced=${JSON.stringify(reduced.counts)}`);
