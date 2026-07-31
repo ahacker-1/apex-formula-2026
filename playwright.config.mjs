@@ -26,7 +26,10 @@ export default defineConfig({
   webServer: {
     command: 'python3 tools/devserver.py 8341 dist',
     url: 'http://127.0.0.1:8341/',
-    reuseExistingServer: !process.env.CI,
+    // Never trust an existing listener: a dev server from another checkout can
+    // serve stale assets and create false product regressions or false passes.
+    // A busy port must fail loudly so every run proves which build it exercised.
+    reuseExistingServer: false,
     timeout: 20_000,
   },
 });
