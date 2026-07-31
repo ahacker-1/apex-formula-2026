@@ -22,7 +22,7 @@ The source gate imports pure modules directly in Node. Canonical files and accep
 | File | Minimum API (either form is accepted) |
 | --- | --- |
 | `js/vehicleDynamics.js` | `createVehicleState` + `stepVehicleDynamics` (legacy aliases accepted) |
-| `js/trackState.js` | `createTrackState` + `stepTrackState`, or `TrackState` |
+| `js/trackState.js` | `createTrackState`, or `TrackState` |
 | `js/weather.js` | `createWeatherTimeline`, or `WeatherTimeline` |
 | `js/controls.js` | `advanceSteeringInput` |
 | `js/telemetry.js` | `createTelemetrySnapshot`, or `Telemetry` |

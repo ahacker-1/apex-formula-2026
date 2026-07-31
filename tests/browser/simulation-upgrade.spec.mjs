@@ -37,6 +37,7 @@ async function captureEvidence(page, testInfo, name) {
 
 async function openMenu(page) {
   await seed(page);
+  await page.route('**/favicon.ico', route => route.fulfill({ status: 204, body: '' }));
   await page.goto(`/?seed=${encodeURIComponent(PILOT_SEED)}`);
   await expect(page).toHaveTitle(/APEX FORMULA 2026/);
   await expect(page.getByRole('button', { name: /QUICK RACE/ })).toBeVisible();
