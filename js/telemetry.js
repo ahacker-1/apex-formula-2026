@@ -13,6 +13,51 @@ export function deterministicJSON(value) {
   return JSON.stringify(stable(value), null, 2) + '\n';
 }
 
+const finite = (value, fallback = 0) => Number.isFinite(value) ? value : fallback;
+
+// Serializable simulation telemetry used by the cockpit, replay tooling and
+// the browser acceptance seam. It reads production state only and contains no
+// wall-clock fields, so identical seeded runs remain byte-stable.
+export function createTelemetrySnapshot(physics, context = {}) {
+  const p = physics || {};
+  const wheels = Array.isArray(p.wheels) ? p.wheels.map(wheel => ({
+    key: wheel.key,
+    slipRatio: finite(wheel.slipRatio),
+    slipAngle: finite(wheel.slipAngle),
+    normalLoad: finite(wheel.normalLoad),
+    surfaceTemp: finite(wheel.surfaceTemp),
+    carcassTemp: finite(wheel.carcassTemp),
+    pressure: finite(wheel.pressure),
+    suspensionDeflection: finite(wheel.suspensionDeflection),
+    contact: wheel.contact !== false,
+  })) : [];
+  return {
+    speed: finite(p.v),
+    speedKmh: finite(p.kmh),
+    gear: finite(p.gear, 1),
+    rpm: finite(p.rpmFrac),
+    throttle: finite(p.throttle),
+    brake: finite(p.brake),
+    steer: finite(p.steer),
+    longitudinalAcceleration: finite(p.longitudinalAcceleration),
+    lateralAcceleration: finite(p.lateralAcceleration),
+    yawRate: finite(p.yawRate),
+    slipAngle: finite(p.slipAngle ?? p.sideslip),
+    aeroBalance: finite(p.aeroBalance, 0.45),
+    downforce: finite(p.downforce),
+    brakeBias: finite(p.brakeBias, 0.56),
+    battery: finite(p.battery, 1),
+    ersMode: finite(p.ersMode, 1),
+    ersDeploy: finite(p.ersDeploy),
+    fuel: finite(p.fuel, 1),
+    tyreTemp: finite(p.tyreTemp),
+    trackWetness: finite(p.surface?.wetness),
+    lap: finite(context.lap),
+    delta: finite(context.delta),
+    wheels,
+  };
+}
+
 export function downloadTelemetry(filename, value) {
   if (typeof document === 'undefined' || typeof URL === 'undefined') return false;
   const blob = new Blob([deterministicJSON(value)], { type: 'application/json' });

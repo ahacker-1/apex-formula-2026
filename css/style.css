@@ -788,3 +788,41 @@ kbd { padding: 2px 5px; color: #fff; background: #282a33; border: 1px solid #454
     animation: none !important;
   }
 }
+#sim-state-strip {
+  position: absolute;
+  top: clamp(62px, 8vh, 86px);
+  left: 50%;
+  z-index: 22;
+  display: flex;
+  max-width: min(92vw, 760px);
+  transform: translateX(-50%);
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 5px;
+  pointer-events: none;
+}
+
+#sim-state-strip span {
+  display: none;
+  padding: 4px 8px;
+  border: 1px solid rgba(255, 255, 255, .24);
+  border-radius: 2px;
+  color: #f4f7fb;
+  background: rgba(7, 11, 18, .82);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, .28);
+  font: 800 10px/1.1 var(--font, Arial, sans-serif);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  backdrop-filter: blur(5px);
+}
+
+#sim-state-strip span.active { display: inline-flex; }
+#sim-state-strip [data-sim-state="weather"] { border-color: rgba(70, 165, 255, .62); }
+#sim-state-strip [data-sim-state="damage"] { border-color: rgba(255, 75, 75, .68); }
+#sim-state-strip [data-sim-state="strategy"] { border-color: rgba(71, 220, 157, .58); }
+#sim-state-strip [data-sim-state="race-control"] { border-color: rgba(255, 206, 70, .68); }
+
+@media (max-width: 700px) {
+  #sim-state-strip { top: 54px; gap: 3px; }
+  #sim-state-strip span { padding: 3px 6px; font-size: 8px; }
+}

@@ -40,7 +40,10 @@ ok(weatherA.keyframes.length <= WEATHER_LIMITS.maxKeyframes,
   'weather timeline respects its hard keyframe cap');
 for (let t = -500; t < 8500; t += 17.3) {
   const w = weatherA.sample(t, {});
-  ok(Object.values(w).every(value => typeof value === 'boolean' || Number.isFinite(value)),
+  ok(Object.entries(w).every(([key, value]) =>
+    key === 'condition'
+      ? ['clear', 'overcast', 'rain'].includes(value)
+      : typeof value === 'boolean' || Number.isFinite(value)),
     'weather sampling remains finite outside timeline bounds');
   ok(w.rainfall >= 0 && w.rainfall <= WEATHER_LIMITS.maxRainMmH &&
     w.cloudCover >= 0 && w.cloudCover <= 1 && w.humidity >= 0 && w.humidity <= 1,

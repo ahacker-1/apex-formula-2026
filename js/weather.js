@@ -65,6 +65,7 @@ export class WeatherTimeline {
     this.climateId = options.climate || TRACK_CLIMATE[this.trackId] || 'temperate';
     this.climate = CLIMATES[this.climateId] || CLIMATES.temperate;
     this.time = 0;
+    this.override = null;
     this.keyframes = this._build();
     this.current = this.sample(0, {});
   }
@@ -102,6 +103,14 @@ export class WeatherTimeline {
 
   sample(timeS, out = {}) {
     const t = clamp(timeS, 0, this.duration);
+    if (this.override) {
+      Object.assign(out, this.override);
+      out.time = t;
+      out.raining = out.rainfall > 0.08;
+      out.intensity = clamp(out.rainfall / WEATHER_LIMITS.maxRainMmH, 0, 1);
+      out.condition = out.raining ? 'rain' : (out.cloudCover > 0.72 ? 'overcast' : 'clear');
+      return out;
+    }
     const f = t / this.step;
     const i0 = Math.min(this.keyframes.length - 1, Math.floor(f));
     const i1 = Math.min(this.keyframes.length - 1, i0 + 1);
@@ -115,7 +124,27 @@ export class WeatherTimeline {
     out.windDirection = (a.windDirection + da * k + Math.PI * 2) % (Math.PI * 2);
     out.raining = out.rainfall > 0.08;
     out.intensity = clamp(out.rainfall / WEATHER_LIMITS.maxRainMmH, 0, 1);
+    out.condition = out.raining ? 'rain' : (out.cloudCover > 0.72 ? 'overcast' : 'clear');
     return out;
+  }
+
+  setOverride(values = {}) {
+    const base = this.sample(this.time, {});
+    this.override = {
+      airTemperature: clamp(values.airTemperature ?? base.airTemperature, WEATHER_LIMITS.minAirC, WEATHER_LIMITS.maxAirC),
+      trackTemperature: clamp(values.trackTemperature ?? base.trackTemperature, 6, 55),
+      cloudCover: clamp(values.cloudCover ?? base.cloudCover, 0, 1),
+      humidity: clamp(values.humidity ?? base.humidity, 0.08, 1),
+      rainfall: clamp(values.rainfall ?? base.rainfall, 0, WEATHER_LIMITS.maxRainMmH),
+      windSpeed: clamp(values.windSpeed ?? base.windSpeed, 0, WEATHER_LIMITS.maxWindMS),
+      windDirection: (((values.windDirection ?? base.windDirection ?? 0) % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2),
+    };
+    return this.sample(this.time, this.current);
+  }
+
+  clearOverride() {
+    this.override = null;
+    return this.sample(this.time, this.current);
   }
 
   advance(dt) {

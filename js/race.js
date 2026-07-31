@@ -24,6 +24,7 @@ import {
   contactSideFor,
   orientedCarContact,
   syncContactBody,
+  velocityOf,
 } from './contact.js';
 
 // Preserve the established public race-module API for headless tooling while
@@ -283,6 +284,7 @@ export class RaceSession {
     this.fastestLap = null;    // {driverId, time}
     this.results = null;
     this.jumpStart = false;
+    this.hasForecast = opts.forecast !== undefined && opts.forecast !== null;
     this.forecast = typeof opts.forecast === 'function'
       ? opts.forecast
       : (lap) => Array.isArray(opts.forecast)
@@ -387,7 +389,7 @@ export class RaceSession {
         random: this.random,
         totalLaps: this.laps,
         aggression: 0.35 + (driver.racecraft ?? driver.pace ?? 0.8) * 0.5,
-        forecast: (lap) => this.forecast(lap),
+        forecast: (lap) => this.getForecast(lap),
       });
       const requestedStart = strategy.chooseStartCompound(gi + 1);
       const startC = physicalCompound(requestedStart);
@@ -456,7 +458,7 @@ export class RaceSession {
       lap: -1, lapStart: 0, lastLap: 0, bestLap: 0, lapTimes: [],
       position: 1, gridPos: 1, gapText: '', intervalText: '',
       pitStops: 0, pitState: null, boxThisLap: false,
-      strategy: new StrategyPlanner({ random: this.random, totalLaps: this.laps, forecast: (lap) => this.forecast(lap) }),
+      strategy: new StrategyPlanner({ random: this.random, totalLaps: this.laps, forecast: (lap) => this.getForecast(lap) }),
       strategyDecision: null, strategyCompound: 'S',
       damage: createVehicleHealth(), reliabilityWarning: null,
       finished: false, finishTime: 0, dnf: false, wheelSpin: 0,
@@ -509,7 +511,7 @@ export class RaceSession {
           lap: -1, lapStart: 0, lastLap: 0, bestLap: 0, lapTimes: [],
           position: ri + 2, gridPos: ri + 2, gapText: '', intervalText: '',
           pitStops: 0, pitState: null, boxThisLap: false,
-          strategy: new StrategyPlanner({ random: this.random, totalLaps: this.laps, forecast: (lap) => this.forecast(lap) }),
+          strategy: new StrategyPlanner({ random: this.random, totalLaps: this.laps, forecast: (lap) => this.getForecast(lap) }),
           strategyDecision: null, strategyCompound: 'S',
           damage: createVehicleHealth(), reliabilityWarning: null,
           finished: false, finishTime: 0, dnf: false, wheelSpin: 0,
@@ -541,6 +543,7 @@ export class RaceSession {
   }
 
   getForecast(lap = this.player?.lap || 0) {
+    if (!this.hasForecast) return { ...this.conditions };
     return normalizeForecast(this.forecast(Math.max(0, lap)) || this.conditions);
   }
 
@@ -1362,9 +1365,11 @@ export class RaceSession {
     const deltaVx = new Float64Array(es.length);
     const deltaVz = new Float64Array(es.length);
 
+    const worldVelocity = { x: 0, z: 0 };
     for (let i = 0; i < es.length; i++) {
-      baseVx[i] = bodies[i].fx * es[i].phys.v;
-      baseVz[i] = bodies[i].fz * es[i].phys.v;
+      velocityOf(bodies[i], worldVelocity);
+      baseVx[i] = worldVelocity.x;
+      baseVz[i] = worldVelocity.z;
     }
 
     for (const e of es) {
@@ -1469,7 +1474,12 @@ export class RaceSession {
 
     for (let i = 0; i < es.length; i++) {
       if (deltaVx[i] === 0 && deltaVz[i] === 0) continue;
-      applyContactVelocity(es[i].phys, baseVx[i] + deltaVx[i], baseVz[i] + deltaVz[i]);
+      // applyContactVelocity accepts the legacy forward-vector plus a delta and
+      // reapplies the body's existing lateral velocity internally. Supplying
+      // the full world snapshot here would count that lateral term twice.
+      applyContactVelocity(es[i].phys,
+        bodies[i].fx * es[i].phys.v + deltaVx[i],
+        bodies[i].fz * es[i].phys.v + deltaVz[i]);
     }
 
     // Apply at most one real wall impulse after contact has changed velocity and

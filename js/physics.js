@@ -140,6 +140,10 @@ export class CarPhysics {
     this.velocityLat = 0;
     this.yawRate = 0;
     this.sideslip = 0;
+    this.longitudinalAcceleration = 0;
+    this.lateralAcceleration = 0;
+    this.slipAngle = 0;
+    this.downforce = 0;
     this.brakeBias = THREE.MathUtils.clamp(opts.brakeBias ?? 0.56, 0.45, 0.68);
     this.brakeMigration = THREE.MathUtils.clamp(opts.brakeMigration ?? 0.025, -0.08, 0.08);
     this.diffLock = THREE.MathUtils.clamp(opts.diffLock ?? 0.45, 0, 1);
@@ -196,6 +200,8 @@ export class CarPhysics {
     this.v = 0;
     resetVehicleState(this.vehicle, 0, this.tyreTemp);
     this.velocityLat = 0; this.yawRate = 0; this.sideslip = 0;
+    this.longitudinalAcceleration = 0; this.lateralAcceleration = 0;
+    this.slipAngle = 0; this.downforce = 0;
     this.totalDist = 0;
     // progress = totalDist + distance already covered past S/F; the floor of
     // progress/lapLength changes exactly at S/F crossings (in either direction)
@@ -297,6 +303,7 @@ export class CarPhysics {
     const cda = (this.aeroX ? CDA_X : CDA_Z) * (1 - 0.28 * this.slipstream);
     const cla = this.aeroX ? CLA_X : CLA_Z;
     const downF = 0.5 * RHO * cla * speed * speed;
+    this.downforce = downF;
     const mu = this.muEff();
 
     // ---- gears / rpm ----
@@ -420,6 +427,9 @@ export class CarPhysics {
     this.velocityLat = this.vehicle.velocityLat;
     this.yawRate = this.vehicle.yawRate;
     this.sideslip = this.vehicle.sideslip;
+    this.longitudinalAcceleration = this.vehicle.accelLong;
+    this.lateralAcceleration = this.vehicle.accelLat;
+    this.slipAngle = this.vehicle.sideslip;
     this.slip ||= dynamics.slip;
     const latUse = dynamics.tyreUse;
     const longUse = Math.max(fDrive, fBrake) / Math.max(1, mu * (m * G + downF));

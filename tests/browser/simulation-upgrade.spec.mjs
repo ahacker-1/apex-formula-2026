@@ -71,13 +71,13 @@ async function bootPilot(page, beforeLaunch) {
 
 async function debugSnapshot(page) {
   return page.evaluate(() => {
-    const debug = window.__apexDebug;
+    const debug = window.__game;
     if (!debug || typeof debug.snapshot !== 'function') {
-      throw new Error('window.__apexDebug.snapshot() is required by SIMULATION_ACCEPTANCE.md');
+      throw new Error('window.__game.snapshot() is required by SIMULATION_ACCEPTANCE.md');
     }
     const snapshot = debug.snapshot();
     if (!snapshot || typeof snapshot !== 'object') {
-      throw new Error('window.__apexDebug.snapshot() must return a serializable object');
+      throw new Error('window.__game.snapshot() must return a serializable object');
     }
     return snapshot;
   });
@@ -85,9 +85,9 @@ async function debugSnapshot(page) {
 
 async function applyScenario(page) {
   await page.evaluate(async () => {
-    const debug = window.__apexDebug;
+    const debug = window.__game;
     if (!debug || typeof debug.applyScenario !== 'function') {
-      throw new Error('window.__apexDebug.applyScenario() is required for deterministic weather/race acceptance');
+      throw new Error('window.__game.applyScenario() is required for deterministic weather/race acceptance');
     }
     await debug.applyScenario({
       weather: { condition: 'rain', intensity: 0.65 },
@@ -154,7 +154,7 @@ test('arrow controls, cockpit dash, telemetry, pause and recovery share one stab
   for (const [key, field, accepted] of controls) {
     await page.keyboard.down(key);
     await expect.poll(async () => accepted((await debugSnapshot(page)).controls?.[field]), {
-      message: `${key} must update window.__apexDebug.snapshot().controls.${field}`,
+      message: `${key} must update window.__game.snapshot().controls.${field}`,
     }).toBe(true);
     await page.keyboard.up(key);
   }

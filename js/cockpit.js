@@ -26,7 +26,7 @@ export class CockpitView {
       <div class="cockpit-wheel" id="cp-wheel" aria-hidden="true">
         <i class="grip left"></i><i class="grip right"></i><i class="wheel-top"></i>
       </div>
-      <section class="cockpit-screen" aria-label="Formula steering wheel display">
+      <section class="cockpit-screen" data-sim-panel="telemetry" aria-label="Formula steering wheel display">
         <div class="cp-shift" id="cp-shift"></div>
         <div class="cp-primary"><strong id="cp-gear">N</strong><span><b id="cp-speed">0</b><small>KM/H</small></span></div>
         <div class="cp-page page-0">
@@ -96,18 +96,18 @@ export class CockpitView {
       ? `${delta <= 0 ? '−' : '+'}${Math.abs(delta).toFixed(3)}` : '—';
     this.$('cp-delta').className = Number.isFinite(delta) ? (delta <= 0 ? 'gain' : 'loss') : '';
 
-    // The current physics exposes a single carcass channel. Surface and axle
-    // values are conservative derivations until per-corner channels land.
+    const wheels = Array.isArray(p.wheels) ? p.wheels : [];
+    const fl = wheels[0], fr = wheels[1], rl = wheels[2], rr = wheels[3];
     const carcass = finite(p.tyreTemp, 88);
-    const surface = clamp(carcass + finite(p.throttle) * 2.5 + finite(p.brake) * 5.5, 20, 180);
-    const lateralSplit = clamp(finite(p.steer) * 2.2, -3, 3);
-    this.$('cp-ts-fl').textContent = `${Math.round(surface - lateralSplit)}°`;
-    this.$('cp-ts-fr').textContent = `${Math.round(surface + lateralSplit)}°`;
-    this.$('cp-tc-rl').textContent = `${Math.round(carcass - lateralSplit * .35)}°`;
-    this.$('cp-tc-rr').textContent = `${Math.round(carcass + lateralSplit * .35)}°`;
-    const pressure = 22.4 + (carcass - 80) * 0.035;
-    this.$('cp-pf').textContent = `${pressure.toFixed(1)} psi`;
-    this.$('cp-pr').textContent = `${(pressure - .7).toFixed(1)} psi`;
+    const derivedSurface = clamp(carcass + finite(p.throttle) * 2.5 + finite(p.brake) * 5.5, 20, 180);
+    this.$('cp-ts-fl').textContent = `${Math.round(finite(fl?.surfaceTemp, derivedSurface))}°`;
+    this.$('cp-ts-fr').textContent = `${Math.round(finite(fr?.surfaceTemp, derivedSurface))}°`;
+    this.$('cp-tc-rl').textContent = `${Math.round(finite(rl?.carcassTemp, carcass))}°`;
+    this.$('cp-tc-rr').textContent = `${Math.round(finite(rr?.carcassTemp, carcass))}°`;
+    const frontPressure = (finite(fl?.pressure, 154) + finite(fr?.pressure, 154)) * 0.5 * 0.145038;
+    const rearPressure = (finite(rl?.pressure, 149) + finite(rr?.pressure, 149)) * 0.5 * 0.145038;
+    this.$('cp-pf').textContent = `${frontPressure.toFixed(1)} psi`;
+    this.$('cp-pr').textContent = `${rearPressure.toFixed(1)} psi`;
 
     let flag = 'GREEN', flagClass = 'green';
     if (session?.vsc?.active) { flag = 'VSC'; flagClass = 'yellow'; }

@@ -258,8 +258,9 @@ ok(surfaceSync.offTrack,
   `lat=${surfaceSync.lat.toFixed(3)} threshold=${(circuit.halfWidth + 0.4).toFixed(3)}`);
 
 console.log('[handling] car-to-car footprint and impulse response');
-function pairEntry(id, { x = 0, z = 0, heading = 0, speed = 0, player = false } = {}) {
+function pairEntry(id, { x = 0, z = 0, heading = 0, speed = 0, lateral = 0, player = false } = {}) {
   const phys = newCar({ x, z, heading, speed });
+  phys.velocityLat = lateral;
   return {
     driver: { id },
     phys,
@@ -319,6 +320,21 @@ ok(sideRub.distance >= 1.89 && sideRub.distance <= 2.05,
 ok(Math.abs(sideRub.A.phys.v - 34) < 0.25 && Math.abs(sideRub.B.phys.v - 34) < 0.25,
   'matched-speed side rub preserves forward momentum',
   `speeds=${sideRub.A.phys.v.toFixed(2)}/${sideRub.B.phys.v.toFixed(2)}`);
+
+const lateralImpact = pairRun(
+  { x: -0.8, z: 0, heading: 0, speed: 30, lateral: 6, player: true },
+  { x: 0.8, z: 0, heading: 0, speed: 30, lateral: -6 },
+);
+const lateralClosingAfter = lateralImpact.A.phys.velocityLat - lateralImpact.B.phys.velocityLat;
+ok(Math.abs((lateralImpact.session._touchEvent?.closingSpeed || 0) - 12) <= 1e-9,
+  'side impact severity includes full lateral relative velocity',
+  `closing=${(lateralImpact.session._touchEvent?.closingSpeed || 0).toFixed(3)}m/s`);
+ok(Math.abs((lateralImpact.session._touchEvent?.intensity || 0) - (12 - 0.5) / 18) <= 1e-9,
+  'side impact feedback scales from the full closing speed',
+  `intensity=${(lateralImpact.session._touchEvent?.intensity || 0).toFixed(3)}`);
+ok(lateralClosingAfter <= 1,
+  'side impact resolves lateral closing without double-applying sideslip',
+  `closingAfter=${lateralClosingAfter.toFixed(3)}m/s`);
 
 const rearEnd = pairRun(
   { x: 0, z: 0, heading: 0, speed: 42, player: true },

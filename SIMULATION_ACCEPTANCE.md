@@ -21,14 +21,14 @@ The source gate imports pure modules directly in Node. Canonical files and accep
 
 | File | Minimum API (either form is accepted) |
 | --- | --- |
-| `js/vehicleDynamics.js` | `createVehicleDynamicsState` + `stepVehicleDynamics`, or `VehicleDynamics` |
+| `js/vehicleDynamics.js` | `createVehicleState` + `stepVehicleDynamics` (legacy aliases accepted) |
 | `js/trackState.js` | `createTrackState` + `stepTrackState`, or `TrackState` |
-| `js/weather.js` | `createWeatherState` + `stepWeather`, or `WeatherSystem` |
+| `js/weather.js` | `createWeatherTimeline`, or `WeatherTimeline` |
 | `js/controls.js` | `advanceSteeringInput` |
 | `js/telemetry.js` | `createTelemetrySnapshot`, or `Telemetry` |
 | `js/cockpit.js` | `resolveCockpitPose`, or `CockpitView` |
-| `js/strategy.js` | `createStrategyState` + `stepStrategy`, or `StrategyEngine` |
-| `js/damage.js` | `createDamageState` + `applyDamage`, or `DamageModel` |
+| `js/strategy.js` | `StrategyPlanner` |
+| `js/damage.js` | `createVehicleHealth` + `applyImpactDamage` |
 | `js/raceControl.js` | `createRaceControlState` + `stepRaceControl`, or `RaceControl` |
 
 Every module must be directly importable in Node. State/dynamics modules (all entries except the cockpit and telemetry presentation modules) must avoid DOM/storage globals, accept simulation time and an injected seeded random stream, and avoid `Math.random()`, `Date.now()` and `performance.now()`. This makes deterministic Node probes possible without preventing cockpit and telemetry renderers from owning presentation code.
@@ -40,10 +40,8 @@ Every module must be directly importable in Node. State/dynamics modules (all en
 Production browser tests use the existing test/debug namespace rather than a second global. Driving builds must expose:
 
 ```js
-window.__apexDebug = {
-  snapshot(),
-  applyScenario(scenario),
-};
+window.__game.snapshot();
+window.__game.applyScenario(scenario);
 ```
 
 `snapshot()` must return serializable data with this minimum shape:
@@ -76,7 +74,7 @@ window.__apexDebug = {
 The object is a read-only observation seam except for `applyScenario()`. The scenario method is a deterministic acceptance adapter: applying the same scenario twice at the same seed must produce the same weather, track, race-control, damage and strategy snapshot. The gate uses:
 
 ```js
-await window.__apexDebug.applyScenario({
+await window.__game.applyScenario({
   weather: { condition: 'rain', intensity: 0.65 },
   track: { surface: 'wet', wetness: 0.6 },
   raceControl: { state: 'vsc' },
@@ -124,7 +122,7 @@ Before all feature branches are merged, these failures are expected and actionab
 
 - missing canonical modules identify the owning feature branch by exact path;
 - missing enhanced `CarPhysics` outputs name the absent output families;
-- a missing `window.__apexDebug` reports the required method;
+- a missing `window.__game.snapshot()` or `window.__game.applyScenario()` reports the required method;
 - missing cockpit/telemetry/weather/damage/strategy/race-control markers report the exact attribute;
 - browser state mismatches show the required snapshot path and value.
 

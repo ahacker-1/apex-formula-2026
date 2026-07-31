@@ -99,8 +99,9 @@ export function resetVehicleState(state, speed = 0, tyreTemp = 70) {
 export function readSurfaceSample(circuit, sampleIdx, position, out) {
   const sample = circuit?.samples?.[sampleIdx] || null;
   let source = sample?.surface || sample || null;
+  let lateral = 0;
   if (typeof circuit?.surfaceAt === 'function') {
-    const lateral = typeof circuit?.lateralAt === 'function'
+    lateral = typeof circuit?.lateralAt === 'function'
       ? finite(circuit.lateralAt(position, sampleIdx), 0)
       : 0;
     // Clear aliases this adapter wrote on the previous tick. TrackState reuses
@@ -119,7 +120,16 @@ export function readSurfaceSample(circuit, sampleIdx, position, out) {
   out.grade = clamp(finite(source?.grade, 0), -0.35, 0.35);
   out.camber = clamp(finite(source?.camber, 0), -0.35, 0.35);
   out.bump = clamp(finite(source?.bump, 0), -0.08, 0.08);
-  out.grip = clamp(finite(source?.grip ?? source?.multiplier ?? source?.baseGrip, 1), 0.15, 1.4);
+  let liveGrip = source?.grip ?? source?.multiplier ?? source?.baseGrip;
+  out.gripIncludesWetness = false;
+  if (typeof circuit?.gripAt === 'function') {
+    const gripOut = out._gripResult || (out._gripResult = { surface: {} });
+    const gripOptions = out._gripOptions || (out._gripOptions = {});
+    const sampled = circuit.gripAt(sampleIdx, lateral, gripOptions, gripOut);
+    liveGrip = sampled?.multiplier ?? liveGrip;
+    out.gripIncludesWetness = Number.isFinite(sampled?.multiplier);
+  }
+  out.grip = clamp(finite(liveGrip, 1), 0.15, 1.4);
   out.wetness = clamp(finite(source?.wetness, 0), 0, 1);
   const wb = source?.wheelBumps || source?.wheels;
   out.bumpFL = clamp(finite(wb?.FL?.bump ?? wb?.FL, out.bump), -0.08, 0.08);
@@ -252,7 +262,9 @@ export function stepVehicleDynamics(state, params, dt) {
     wheel.pressure += (hotPressure - wheel.pressure) * Math.min(1, dt * 1.8);
     const thermal = tyreThermalPressureGrip(wheel.surfaceTemp, wheel.carcassTemp,
       wheel.pressure, surface.wetness);
-    const wetGrip = 1 - 0.42 * surface.wetness;
+    // TrackState.gripAt already includes wetness, puddling and line choice. A
+    // legacy/static surface still receives the local wetness fallback here.
+    const wetGrip = surface.gripIncludesWetness ? 1 : 1 - 0.42 * surface.wetness;
     const mu = Math.max(0.05, finite(params.mu, 1.6) * surface.grip * wetGrip * thermal);
     const target = combinedTyreForces({
       slipRatio: wheel.slipRatio,

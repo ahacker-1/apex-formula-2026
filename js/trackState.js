@@ -127,6 +127,7 @@ export class TrackState {
     this.time = 0;
     this._accumulator = 0;
     this._visualHook = null;
+    this.conditionOverride = null;
     this.visualState = {
       wetness: 0, puddling: 0, rainfall: 0, rubber: average(this.rubber),
       roadRoughness: 1, reflectionStrength: 0, racingLineOpacity: 0.25,
@@ -233,11 +234,12 @@ export class TrackState {
     activity.fill(0);
     if (Array.isArray(traffic)) {
       for (const vehicle of traffic) {
-        const sample = Number(vehicle?.sampleIndex ?? vehicle?.idx ?? 0);
+        const state = vehicle?.phys || vehicle;
+        const sample = Number(state?.sampleIndex ?? state?.sampleIdx ?? state?.idx ?? 0);
         const seg = Math.floor(this._segmentIndex(sample)) % this.segmentCount;
-        const speed = clamp(Math.abs(vehicle?.speed ?? vehicle?.v ?? 35), 0, 110);
-        const load = clamp(vehicle?.load ?? 1, 0, 2);
-        const lateral = Math.abs(vehicle?.lateral ?? vehicle?.lat ?? 0);
+        const speed = clamp(Math.abs(state?.speed ?? state?.v ?? 35), 0, 110);
+        const load = clamp(state?.load ?? vehicle?.load ?? 1, 0, 2);
+        const lateral = Math.abs(state?.lateral ?? state?.lat ?? 0);
         const a = load * (0.35 + speed / 110);
         activity[seg] += a;
         this.rubber[seg] = clamp(this.rubber[seg] + dt * a * (lateral < 2.2 ? 0.00034 : 0.00005), 0, 1);
@@ -265,6 +267,12 @@ export class TrackState {
         this.lineDrying[i] = clamp(this.lineDrying[i] - dt * rain * 0.00020, 0, 1);
       } else {
         this.lineDrying[i] = clamp(this.lineDrying[i] - dt * 0.00016, 0, 1);
+      }
+      if (this.conditionOverride) {
+        const authored = this.conditionOverride;
+        if (Number.isFinite(authored.wetness)) this.wetness[i] = authored.wetness;
+        if (Number.isFinite(authored.puddling)) this.puddling[i] = authored.puddling;
+        if (Number.isFinite(authored.temperature)) this.temperature[i] = authored.temperature;
       }
     }
   }
@@ -297,6 +305,46 @@ export class TrackState {
   setVisualHook(hook) {
     this._visualHook = typeof hook === 'function' ? hook : null;
     this.syncVisuals();
+  }
+
+  // Deterministic offline race-director hook. This mutates the same fixed
+  // arrays sampled by physics, AI and visuals; it is useful for authored race
+  // weekends, replay restoration and acceptance scenarios without introducing
+  // a parallel test-only state.
+  setConditions(conditions = {}) {
+    const wetness = conditions.wetness;
+    const puddling = conditions.puddling;
+    const temperature = conditions.trackTemperature ?? conditions.temperature;
+    const rainfall = conditions.rainfall ??
+      (Number.isFinite(conditions.intensity) ? conditions.intensity * 18 : undefined);
+    if (Number.isFinite(wetness)) {
+      this.wetness.fill(clamp(wetness, 0, 1));
+      this.lineDrying.fill(0);
+    }
+    if (Number.isFinite(puddling)) this.puddling.fill(clamp(puddling, 0, 1));
+    else if (Number.isFinite(wetness)) {
+      this.puddling.fill(clamp((wetness - 0.52) * 1.15, 0, 1));
+    }
+    if (Number.isFinite(temperature)) this.temperature.fill(clamp(temperature, 0, 60));
+    if (Number.isFinite(conditions.rubber)) this.rubber.fill(clamp(conditions.rubber, 0, 1));
+    if (Number.isFinite(conditions.dust)) this.dust.fill(clamp(conditions.dust, 0, 1));
+    this.conditionOverride = conditions.locked === false ? null : {
+      wetness: Number.isFinite(wetness) ? clamp(wetness, 0, 1) : undefined,
+      puddling: Number.isFinite(puddling) ? clamp(puddling, 0, 1)
+        : (Number.isFinite(wetness) ? clamp((wetness - 0.52) * 1.15, 0, 1) : undefined),
+      temperature: Number.isFinite(temperature) ? clamp(temperature, 0, 60) : undefined,
+    };
+    if (Number.isFinite(rainfall)) this.weather.setOverride({
+      rainfall: clamp(rainfall, 0, 18),
+      trackTemperature: Number.isFinite(temperature) ? temperature : undefined,
+    });
+    return this.syncVisuals(this.weather.current);
+  }
+
+  clearConditions() {
+    this.conditionOverride = null;
+    this.weather.clearOverride();
+    return this.syncVisuals(this.weather.current);
   }
 
   syncVisuals(weather = this.weather.current) {

@@ -86,8 +86,14 @@ export class HUD {
       <div id="race-msg" role="group" aria-label="Race messages"></div>
       <div id="startlights" role="img" aria-label="Race start lights"></div>
       <div id="bigflash" role="group" aria-label="Race event banner"></div>
+      <div id="sim-state-strip" role="status" aria-live="polite">
+        <span data-sim-state="weather"></span>
+        <span data-sim-state="damage"></span>
+        <span data-sim-state="strategy"></span>
+        <span data-sim-state="race-control"></span>
+      </div>
       <div class="boost-vignette" id="boostvin"></div>
-      <div id="cockpit-view" aria-label="Seated Formula cockpit"></div>
+      <div id="cockpit-view" data-sim-panel="cockpit" aria-label="Seated Formula cockpit"></div>
       <div id="pit-overlay" role="dialog" aria-modal="false" aria-label="Select tyre compound" aria-hidden="true">
         <h3>SELECT TYRE COMPOUND</h3>
         <div class="tyre-choices">
@@ -290,6 +296,25 @@ export class HUD {
   }
 
   nextCockpitPage() { return this.cockpit.nextPage(); }
+
+  updateSimulationState(snapshot = {}) {
+    const values = {
+      weather: snapshot.weather?.condition === 'rain'
+        ? `RAIN ${Math.round((snapshot.weather.intensity || 0) * 100)}%` : '',
+      damage: (snapshot.damage?.frontWing || 0) > 0
+        ? `FRONT WING ${Math.round(snapshot.damage.frontWing * 100)}%` : '',
+      strategy: snapshot.strategy?.recommendation && snapshot.strategy.recommendation !== 'stay-out'
+        ? `${snapshot.strategy.recommendation.replace('-', ' ').toUpperCase()} · ${snapshot.strategy.compound}` : '',
+      'race-control': snapshot.raceControl?.state && snapshot.raceControl.state !== 'green'
+        ? snapshot.raceControl.state.replace('-', ' ').toUpperCase() : '',
+    };
+    for (const [key, value] of Object.entries(values)) {
+      const element = this.root.querySelector(`[data-sim-state="${key}"]`);
+      if (!element) continue;
+      element.textContent = value;
+      element.classList.toggle('active', !!value);
+    }
+  }
 
   showOnboarding(onDone) {
     const overlay = this.$('onboarding');

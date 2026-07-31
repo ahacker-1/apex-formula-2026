@@ -10,6 +10,7 @@ import { RGBELoader } from '../lib/loaders/RGBELoader.js';
 import { CAMERA_FRAMING, resolveChaseCamera } from './cameraFraming.js';
 import { advanceSteeringInput } from './controls.js';
 import { cockpitFov, cockpitSeat } from './cockpit.js';
+import { createTelemetrySnapshot } from './telemetry.js';
 
 // Photographic HDRI skies (CC0, PolyHaven). Load only the selected session's
 // theme; fetching all three at boot used 19.8 MB before the player chose a race.
@@ -235,6 +236,15 @@ class Game {
     this._graphicsContextLosses = 0;
     this._graphicsContextRestores = 0;
     this._wasPausedBeforeContextLoss = null;
+    this._simStatusTimer = 0;
+    this._audioNearbyEntries = [null, null, null, null];
+    this._audioNearbyDistances = [Infinity, Infinity, Infinity, Infinity];
+    this._audioOpponentCuePool = Array.from({ length: 4 }, () => ({
+      id: '', side: 0, distance: 0, relativeSpeed: 0, rpmFrac: 0, intensity: 0,
+    }));
+    this._audioOpponentCues = [];
+    this._trackGripOptions = {};
+    this._trackGripResult = { surface: {} };
 
     addEventListener('resize', () => {
       this.camera.aspect = innerWidth / innerHeight;
@@ -341,6 +351,121 @@ class Game {
       document.body.appendChild(el);
     }
     el.innerHTML = `<strong style="font-size:clamp(18px,3vw,34px)">${title}</strong><span style="margin-top:12px;color:#aeb4bd;font-size:12px">${detail}</span>`;
+  }
+
+  snapshot() {
+    const session = this.session;
+    const entry = session?.player;
+    const physics = entry?.phys;
+    const trackState = this.circuit?.trackState;
+    const visual = trackState?.visualState || {};
+    const weatherState = this.circuit?.weather?.current || {};
+    const wetness = Number.isFinite(visual.wetness) ? visual.wetness : (physics?.surface?.wetness || 0);
+    const damage = entry?.damage || {};
+    const frontWingDamage = Number.isFinite(damage.frontWing)
+      ? 1 - damage.frontWing : (entry?.wingDamage || 0);
+    const strategy = entry?.strategyDecision || {};
+    const telemetry = createTelemetrySnapshot(physics, {
+      lap: entry?.lap,
+      delta: this._timeTrialStatus?.delta,
+    });
+    telemetry.visible = this.camMode === 1 && !!this.hud?.cockpit?.active;
+    const tier = this.quality?.appliedTier || this.quality?.tier || 'medium';
+    const mobile = typeof innerWidth === 'number' && innerWidth <= 700;
+    const cameraMode = ['chase', 'cockpit', 't-cam', 'nose'][this.camMode] || 'chase';
+    const round = (value, places = 4) => Number.isFinite(value)
+      ? Number(value.toFixed(places)) : 0;
+    return {
+      state: this.state,
+      paused: !!this.paused,
+      player: {
+        driverId: entry?.driver?.id || null,
+        teamId: entry?.team?.id || entry?.driver?.team || null,
+        physics: telemetry,
+      },
+      track: {
+        id: this.circuit?.id || this.raceConfig?.race?.trackId || null,
+        name: this.circuit?.publicName || this.raceConfig?.race?.circuitName || this.circuit?.def?.name || null,
+        state: {
+          surface: wetness >= 0.15 ? 'wet' : 'dry',
+          wetness: round(wetness, 3),
+          puddling: round(visual.puddling, 3),
+          rubber: round(visual.rubber, 3),
+        },
+      },
+      controls: {
+        throttle: this.paused ? 0 : round(physics?.throttle),
+        brake: this.paused ? 0 : round(physics?.brake),
+        steer: this.paused ? 0 : round(this.keySteer),
+      },
+      camera: { mode: cameraMode },
+      telemetry,
+      weather: {
+        condition: weatherState.condition || (weatherState.raining ? 'rain' : 'clear'),
+        intensity: round(weatherState.intensity ?? ((weatherState.rainfall || 0) / 18), 3),
+        rainfall: round(weatherState.rainfall, 3),
+      },
+      raceControl: { state: session?.raceControl?.state || (session?.vsc?.active ? 'vsc' : 'green') },
+      damage: { frontWing: round(frontWingDamage, 3), severity: round(frontWingDamage, 3) },
+      strategy: {
+        recommendation: strategy.recommendation || (strategy.shouldPit ? 'pit-now' : 'stay-out'),
+        compound: strategy.compound || strategy.nextCompound || entry?.strategyCompound || physics?.compound || 'M',
+      },
+      quality: {
+        adaptive: this.quality?.mode === 'auto',
+        profile: `${mobile ? 'mobile' : 'desktop'}-${tier}`,
+      },
+    };
+  }
+
+  // Offline authored-race adapter. Every field is applied to the production
+  // track, race-control, damage and strategy models before the resulting state
+  // is observed; no parallel test-only simulation is maintained.
+  applyScenario(scenario = {}) {
+    const session = this.session;
+    const entry = session?.player;
+    const track = this.circuit?.trackState;
+    const weather = scenario.weather || {};
+    const trackScenario = scenario.track || {};
+    track?.setConditions?.({
+      wetness: trackScenario.wetness,
+      intensity: weather.intensity,
+      rainfall: Number.isFinite(weather.intensity) ? weather.intensity * 18 : undefined,
+      locked: true,
+    });
+    session?.setTrackConditions?.({
+      wetness: trackScenario.wetness,
+      trackGrip: this.circuit?.gripAt?.(
+        entry?.phys?.sampleIdx || 0,
+        entry?.phys?.lat || 0,
+        this._trackGripOptions,
+        this._trackGripResult,
+      )?.multiplier,
+      rainfall: this.circuit?.weather?.current?.rainfall,
+    });
+    const requestedControl = scenario.raceControl?.state;
+    if (requestedControl === 'green') session?.resumeRace?.({ immediate: true });
+    else if (requestedControl && session?.raceControl?.state !== requestedControl) {
+      session?.requestRaceControl?.(requestedControl, { duration: 90, reason: 'authored-scenario' });
+    }
+    if (entry?.damage && scenario.damage?.component === 'frontWing') {
+      const severity = Math.max(0, Math.min(1, Number(scenario.damage.severity) || 0));
+      entry.damage.frontWing = 1 - severity;
+      entry.wingDamage = severity;
+    }
+    if (entry && scenario.strategy) {
+      entry.strategyDecision = {
+        ...(entry.strategyDecision || {}),
+        recommendation: scenario.strategy.recommendation || 'stay-out',
+        shouldPit: scenario.strategy.recommendation === 'pit-now',
+        compound: scenario.strategy.compound || entry.strategyCompound || 'M',
+        nextCompound: scenario.strategy.compound || entry.strategyCompound || 'M',
+      };
+      entry.strategyCompound = scenario.strategy.compound || entry.strategyCompound;
+    }
+    const result = this.snapshot();
+    this.hud?.updateSimulationState?.(result);
+    return result;
   }
 
   get renderTelemetry() {
@@ -933,6 +1058,7 @@ class Game {
     // The controller selects its initial tier before a session owns an Effects
     // instance, so apply it once here as well as in the live tier callback.
     this.effects.setQualityTier(this.quality.tier);
+    this.effects.bindEnvironment?.(this.circuit?.trackState);
 
     // Lighting: photographic HDRI sky + true IBL when loaded; PMREM-from-dome
     // fallback renders immediately while only this session's theme downloads.
@@ -1158,6 +1284,45 @@ class Game {
     const ok = this.timeTrial.downloadReplay();
     this.hud.message(ok ? 'DETERMINISTIC GHOST JSON EXPORTED' : 'COMPLETE A LAP TO EXPORT', ok ? 'green' : 'yellow');
     return ok;
+  }
+
+  _nearbyOpponentAudio(session, player) {
+    const entries = this._audioNearbyEntries;
+    const distances = this._audioNearbyDistances;
+    for (let i = 0; i < 4; i++) { entries[i] = null; distances[i] = Infinity; }
+    const fx = Math.sin(player.heading), fz = Math.cos(player.heading);
+    for (const entry of session?.entries || []) {
+      if (entry.isPlayer || entry.dnf || entry.phys?.disabled) continue;
+      const dx = entry.phys.pos.x - player.pos.x, dz = entry.phys.pos.z - player.pos.z;
+      const d2 = dx * dx + dz * dz;
+      if (d2 > 70 * 70 || d2 >= distances[3]) continue;
+      let slot = 3;
+      while (slot > 0 && d2 < distances[slot - 1]) {
+        distances[slot] = distances[slot - 1]; entries[slot] = entries[slot - 1]; slot--;
+      }
+      distances[slot] = d2; entries[slot] = entry;
+    }
+    const cues = this._audioOpponentCues;
+    cues.length = 0;
+    for (let i = 0; i < 4 && entries[i]; i++) {
+      const other = entries[i].phys;
+      const dx = other.pos.x - player.pos.x, dz = other.pos.z - player.pos.z;
+      const cue = this._audioOpponentCuePool[i];
+      cue.id = entries[i].driver?.id || String(i);
+      cue.side = Math.sign(dx * fz - dz * fx) || 1;
+      cue.distance = Math.sqrt(distances[i]);
+      cue.relativeSpeed = other.v - player.v;
+      cue.rpmFrac = other.rpmFrac;
+      cue.intensity = Math.max(0, 1 - cue.distance / 70);
+      cues.push(cue);
+    }
+    return cues;
+  }
+
+  _wheelLockup(physics) {
+    let lockup = 0;
+    for (const wheel of physics?.wheels || []) lockup = Math.max(lockup, -Number(wheel.slipRatio || 0));
+    return Math.min(1, lockup);
   }
 
   playerInput(dt) {
@@ -1401,8 +1566,25 @@ class Game {
 
     if (!this.paused && (this.state === 'race' || this.state === 'quali')) {
       this.pacing = this.fixedStep.advance(rawDt, (dt) => {
+        const weather = this.circuit?.advanceEnvironment?.(dt, s.entries);
+        const visual = this.circuit?.trackState?.visualState;
+        if (s.setTrackConditions && visual) {
+          const player = s.player?.phys;
+          const grip = player && this.circuit.gripAt
+            ? this.circuit.gripAt(
+              player.sampleIdx,
+              player.lat,
+              this._trackGripOptions,
+              this._trackGripResult,
+            ).multiplier : 1;
+          s.setTrackConditions({
+            wetness: visual.wetness,
+            trackGrip: grip,
+            rainfall: weather?.rainfall || 0,
+          });
+        }
         s.update(dt, this.playerInput(dt));
-        if (this.effects) this.effects.update(dt, s.entries);
+        if (this.effects) this.effects.update(dt, s.entries, this.circuit?.trackState);
         if (this.timeTrial) this._timeTrialStatus = this.timeTrial.update(dt);
       });
       s.render?.(this.pacing.alpha);
@@ -1459,6 +1641,19 @@ class Game {
           contactSide: p.wallScrape >= p.carScrape
             ? (p.lat < 0 ? -1 : 1)
             : p.carScrapeSide,
+          lockup: this._wheelLockup(p),
+          surface: p.surface?.material,
+          surfaceRoughness: Math.min(1, Math.abs(p.surface?.bump || 0) / 0.02),
+          bottoming: Math.min(1, Math.abs(p.surface?.bump || 0) / 0.025 + (p.onKerb ? p.kerbScrub * 0.3 : 0)),
+          damage: s.player?.damage ? Math.max(0, 1 - (s.player.damage.frontWing ?? 1)) : (s.player?.wingDamage || 0),
+          wetness: p.surface?.wetness || this.circuit?.trackState?.visualState?.wetness || 0,
+          rain: this.circuit?.weather?.current?.intensity || 0,
+          spray: Math.min(1, (p.surface?.wetness || 0) * Math.max(0, p.v) / 55),
+          cockpit: this.camMode === 1,
+          load: Math.min(1, Math.hypot(p.longitudinalAcceleration || 0, p.lateralAcceleration || 0) / 35),
+          ersDeploy: p.boosting || p.ersMode === 2,
+          regen: p.ersMode === 0,
+          opponents: this._nearbyOpponentAudio(s, p),
         });
         // close high-speed passes: panned doppler whoosh (audio has its own cooldown)
         if (this.audio.passBy && s.entries) {
@@ -1477,6 +1672,11 @@ class Game {
         }
       }
       this.hud.update(renderDt);
+      this._simStatusTimer -= renderDt;
+      if (this._simStatusTimer <= 0) {
+        this._simStatusTimer = 0.25;
+        this.hud.updateSimulationState?.(this.snapshot());
+      }
       if (this._timeTrialStatus) {
         this.hud.updateTimeTrial(this._timeTrialStatus.personalBest, this._timeTrialStatus.delta);
       }

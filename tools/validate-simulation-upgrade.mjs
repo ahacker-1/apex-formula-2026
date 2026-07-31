@@ -53,7 +53,7 @@ async function importModule(relative) {
 const moduleContracts = [
   {
     file: 'js/vehicleDynamics.js',
-    exports: [['createVehicleDynamicsState', 'stepVehicleDynamics'], ['VehicleDynamics']],
+    exports: [['createVehicleState', 'stepVehicleDynamics'], ['createVehicleDynamicsState', 'stepVehicleDynamics'], ['VehicleDynamics']],
   },
   {
     file: 'js/trackState.js',
@@ -61,7 +61,7 @@ const moduleContracts = [
   },
   {
     file: 'js/weather.js',
-    exports: [['createWeatherState', 'stepWeather'], ['WeatherSystem']],
+    exports: [['createWeatherTimeline'], ['WeatherTimeline'], ['createWeatherState', 'stepWeather'], ['WeatherSystem']],
   },
   {
     file: 'js/controls.js',
@@ -79,11 +79,11 @@ const moduleContracts = [
   },
   {
     file: 'js/strategy.js',
-    exports: [['createStrategyState', 'stepStrategy'], ['StrategyEngine']],
+    exports: [['StrategyPlanner'], ['createStrategyState', 'stepStrategy'], ['StrategyEngine']],
   },
   {
     file: 'js/damage.js',
-    exports: [['createDamageState', 'applyDamage'], ['DamageModel']],
+    exports: [['createVehicleHealth', 'applyImpactDamage'], ['createDamageState', 'applyDamage'], ['DamageModel']],
   },
   {
     file: 'js/raceControl.js',
@@ -198,8 +198,8 @@ await check('runtime source has no remote network dependency', () => {
 await check('browser acceptance hook and stable data-sim surfaces are wired', () => {
   const runtime = [read('index.html'), ...fs.readdirSync(path.join(ROOT, 'js')).filter(name => name.endsWith('.js')).map(name => read(`js/${name}`))].join('\n');
   const gaps = [];
-  if (!/window\.__apexDebug\s*=/.test(runtime)) {
-    gaps.push('Expose window.__apexDebug with snapshot() and applyScenario()');
+  if (!/window\.__game\s*=/.test(runtime) || !/\bsnapshot\s*\(/.test(runtime) || !/\bapplyScenario\s*\(/.test(runtime)) {
+    gaps.push('Expose snapshot() and applyScenario() on the existing window.__game runtime hook');
   }
   for (const value of ['telemetry', 'cockpit', 'weather', 'damage', 'strategy', 'race-control']) {
     const marker = new RegExp(
