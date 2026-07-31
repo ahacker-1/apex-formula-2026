@@ -447,8 +447,11 @@ export class RaceSession {
     const startIdx = (c.N - Math.round(140 / c.ds)) % c.N;
     const s = c.samples[startIdx];
     phys.placeAt(s.p.clone(), Math.atan2(s.t.x, s.t.z), startIdx);
-    phys.v = 46;
-    phys.gear = 5;
+    // Browser sessions now wait behind an explicit start gate. The player must
+    // also be physically stationary there; a hidden 46m/s initial velocity was
+    // launching FP1 before any input and sending the car off the curved straight.
+    phys.v = 0;
+    phys.gear = 1;
     const carHandle = buildCarMesh(team, driver);
     const { group, wheels, wheelRadius } = carHandle;
     if (CAR.setTyreCompound) CAR.setTyreCompound(carHandle, 'S');
@@ -1022,7 +1025,7 @@ export class RaceSession {
     applyImpactDamage(e.damage, {
       severity: intensity,
       front: !!e.phys.wallImpactFront,
-      side: e.phys.wallImpactFront ? 0.2 : 0.85,
+      side: (e.phys.lat < 0 ? -1 : 1) * (e.phys.wallImpactFront ? 0.2 : 0.85),
     }, this.random);
     if (e.isPlayer) {
       const candidate = {
@@ -1500,8 +1503,14 @@ export class RaceSession {
         }
         const aFront = contactLongitudinalFor(a, contact.nx, contact.nz, true) > 0.45;
         const bFront = contactLongitudinalFor(b, contact.nx, contact.nz, false) > 0.45;
-        applyImpactDamage(A.damage, { severity: intensity * 0.55, front: aFront, side: aFront ? 0.2 : 0.8 }, this.random);
-        applyImpactDamage(B.damage, { severity: intensity * 0.55, front: bFront, side: bFront ? 0.2 : 0.8 }, this.random);
+        const aSide = contactSideFor(a, contact.nx, contact.nz, true);
+        const bSide = contactSideFor(b, contact.nx, contact.nz, false);
+        applyImpactDamage(A.damage, {
+          severity: intensity * 0.55, front: aFront, side: aSide * (aFront ? 0.2 : 1),
+        }, this.random);
+        applyImpactDamage(B.damage, {
+          severity: intensity * 0.55, front: bFront, side: bSide * (bFront ? 0.2 : 1),
+        }, this.random);
       }
     }
 
@@ -1787,7 +1796,7 @@ export class RaceSession {
     target.heading = p.heading;
     target.v = p.v || 0;
     target.wheelSpin = e.wheelSpin || 0;
-    target.steer = p.steer || 0;
+    target.steer = p.roadWheelAngle || 0;
     target.pitch = p.pitch || 0;
     target.roll = p.roll || 0;
     target.rideBump = p.rideBump || 0;
@@ -1866,11 +1875,11 @@ export class RaceSession {
       const w = e.wheels && e.wheels[k];
       if (!w) continue;
       w.rotation.x = pose.wheelSpin;
-      if (k === 'fl' || k === 'fr') w.rotation.y = pose.steer * 0.32;
+      if (k === 'fl' || k === 'fr') w.rotation.y = pose.steer;
       const farWheel = e.carHandle?.farProxy?.wheels?.[k];
       if (farWheel) {
         farWheel.rotation.x = pose.wheelSpin;
-        if (k === 'fl' || k === 'fr') farWheel.rotation.y = pose.steer * 0.32;
+        if (k === 'fl' || k === 'fr') farWheel.rotation.y = pose.steer;
       }
     }
 

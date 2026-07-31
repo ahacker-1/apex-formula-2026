@@ -242,7 +242,13 @@ console.log('\n[S2] virtual safety car — deploy, neutralise the field, end and
 
   const speedBefore = meanSpeed(liveAI(session));
 
-  // force retirements until one of them brings out the VSC (bounded attempts)
+  // Own the incident decision locally: this scenario validates the retirement
+  // -> VSC integration, so unrelated physics RNG consumption must not decide
+  // whether the branch is exercised. First draw deploys; second gives 24s.
+  const incidentDraws = [0.2, 0.5];
+  session.random = () => incidentDraws.shift() ?? 0.5;
+
+  // Force a retirement and retain the bounded loop as a defensive guard.
   let attempts = 0;
   const victims = session.entries.filter(e => e.ai && !e.dnf);
   while (!session.vsc.active && attempts < 20 && attempts < victims.length) {

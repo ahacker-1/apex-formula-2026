@@ -711,6 +711,44 @@ kbd { padding: 2px 5px; color: #fff; background: #282a33; border: 1px solid #454
 }
 #onboarding-go:focus-visible { outline: 3px solid #fff; outline-offset: 4px; }
 
+/* Per-session start gate: the 3D scene and elevated chase view remain visible,
+   but no physics, AI, timing or start-light phase advances until confirmation. */
+#session-ready {
+  position: absolute;
+  left: 50%;
+  bottom: 48px;
+  z-index: 240;
+  display: none;
+  transform: translateX(-50%);
+  pointer-events: auto;
+}
+#session-ready.active { display: block; }
+.session-ready-card {
+  min-width: min(420px, calc(100vw - 32px));
+  padding: 14px 16px;
+  border: 1px solid rgba(255,255,255,.28);
+  border-left: 4px solid var(--red);
+  color: #fff;
+  background: rgba(7,9,14,.9);
+  box-shadow: 0 14px 42px rgba(0,0,0,.45);
+  backdrop-filter: blur(9px);
+  text-align: center;
+}
+.session-ready-card span,
+.session-ready-card strong { display: block; }
+.session-ready-card span { color: var(--text-dim); font: 800 9px/1.2 var(--mono); letter-spacing: .16em; }
+.session-ready-card strong { margin: 6px 0 10px; font: 900 18px/1 var(--font); font-style: italic; letter-spacing: .05em; }
+#session-ready-go {
+  padding: 10px 18px;
+  border: 0;
+  color: #fff;
+  background: var(--red);
+  font: 900 11px/1 var(--font);
+  letter-spacing: .1em;
+  cursor: pointer;
+}
+#session-ready-go:focus-visible { outline: 3px solid #fff; outline-offset: 3px; }
+
 /* Coarse-pointer driving surface. Hidden unless both the setting and device agree. */
 #touch-controls { display: none; position: absolute; inset: 0; z-index: 80; pointer-events: none; }
 #touch-controls.enabled { display: block; }
@@ -834,6 +872,8 @@ kbd { padding: 2px 5px; color: #fff; background: #282a33; border: 1px solid #454
 #sim-state-strip [data-sim-state="race-control"] { border-color: rgba(255, 206, 70, .68); }
 
 @media (max-width: 700px) {
+  #session-ready { bottom: 122px; }
+  .session-ready-card { min-width: min(330px, calc(100vw - 24px)); }
   #sim-state-strip { top: 88px; right: 8px; max-width: 48vw; gap: 3px; }
   #sim-state-strip span { padding: 3px 6px; font-size: 8px; }
 }

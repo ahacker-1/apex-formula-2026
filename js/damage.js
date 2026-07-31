@@ -8,6 +8,7 @@ export function createVehicleHealth() {
     frontWing: 1, floor: 1, suspension: 1, powerUnit: 1,
     gearbox: 1, brakes: 1, cooling: 1,
     temperature: 0.42,
+    suspensionBias: 0,
     puncture: false,
     terminal: false,
     cause: null,
@@ -26,10 +27,16 @@ export function applyImpactDamage(health, impact = {}, random = () => 0.5) {
   const force = clamp(impact.severity ?? impact.intensity ?? 0, 0, 1);
   if (force <= 0) return h;
   const front = impact.front !== false;
-  const side = clamp(Math.abs(impact.side || 0), 0, 1);
+  const signedSide = clamp(impact.side || 0, -1, 1);
+  const side = Math.abs(signedSide);
   if (front) h.frontWing = clamp(h.frontWing - force * (0.38 + random() * 0.28), 0, 1);
   h.floor = clamp(h.floor - force * (0.08 + random() * 0.16), 0, 1);
-  if (side > 0.25 || !front) h.suspension = clamp(h.suspension - force * side * (0.22 + random() * 0.3), 0, 1);
+  if (side > 0.25 || !front) {
+    h.suspension = clamp(h.suspension - force * side * (0.22 + random() * 0.3), 0, 1);
+    if (side > 0.25) {
+      h.suspensionBias = clamp(finite(h.suspensionBias, 0) * 0.35 + signedSide * 0.65, -1, 1);
+    }
+  }
   if (force > 0.7 && random() < (force - 0.6) * 0.42) h.puncture = true;
   if (h.suspension < 0.08 || (force > 0.94 && random() < 0.22)) {
     h.terminal = true;
@@ -74,7 +81,9 @@ export function performanceModifiers(health) {
     topSpeed: clamp(0.82 + h.powerUnit * 0.18, 0.72, 1),
     grip: clamp(0.5 + h.suspension * 0.3 + h.floor * 0.2, 0.42, 1) * (h.puncture ? 0.55 : 1),
     braking: clamp(0.45 + h.brakes * 0.55, 0.38, 1),
-    steeringBias: (1 - h.suspension) * 0.055,
+    // Unsided wear/reliability loss reduces grip without silently pulling left.
+    // A genuinely sided impact carries a signed bias supplied by collision data.
+    steeringBias: clamp(finite(h.suspensionBias, 0), -1, 1) * (1 - h.suspension) * 0.055,
     aeroLoss: clamp((1 - h.frontWing) * 0.72 + (1 - h.floor) * 0.3, 0, 0.85),
   };
 }

@@ -5,7 +5,7 @@
 import * as THREE from 'three';
 import { CarPhysics, wallSupportDistance } from '../js/physics.js';
 import { RaceSession } from '../js/race.js';
-import { advanceSteeringInput } from '../js/controls.js';
+import { advanceSteeringInput, digitalSteeringLimit } from '../js/controls.js';
 import { orientedCarContact, syncContactBody } from '../js/contact.js';
 
 let failures = 0;
@@ -124,6 +124,91 @@ for (let frame = 0; frame < 30; frame++) {
 ok(steeringCar.heading >= 0.215,
   'real CarPhysics gains materially faster yaw in the first 0.5s',
   `yaw=${steeringCar.heading.toFixed(4)}rad`);
+
+console.log('[handling] keyboard stability envelope');
+const keyboardLimit50 = digitalSteeringLimit(50);
+const keyboardLimit80 = digitalSteeringLimit(80);
+ok(keyboardLimit50 >= 0.60 && keyboardLimit50 <= 0.65 &&
+    keyboardLimit80 >= 0.40 && keyboardLimit80 <= 0.44,
+  'high-speed arrow input retains decisive authority without requesting full rack',
+  `50=${keyboardLimit50.toFixed(3)} 80=${keyboardLimit80.toFixed(3)}`);
+
+function keyboardTap({ speed = 50, hold = 0.2, direction = 1 } = {}) {
+  const car = new CarPhysics(steeringCircuit, {
+    isPlayer: true, random: () => 0.5,
+    assists: { tc: true, abs: true, autoGear: true },
+  });
+  car.placeAt(new THREE.Vector3(), 0, 0);
+  car.v = speed;
+  car.gear = speed >= 70 ? 7 : 5;
+  car.tyreTemp = 100;
+  for (const wheel of car.wheels) {
+    wheel.surfaceTemp = 100;
+    wheel.carcassTemp = 95;
+  }
+  let key = 0;
+  let maxBeta = 0;
+  let maxYaw = 0;
+  let minLoad = Infinity;
+  let headingAtRelease = 0;
+  for (let frame = 0; frame < 120; frame++) {
+    const target = frame / 60 < hold ? direction * digitalSteeringLimit(car.v) : 0;
+    key = advanceSteeringInput(key, target, car.v, DT, true, 'balanced');
+    car.step(DT, { ...ZERO_INPUT, steer: key });
+    maxBeta = Math.max(maxBeta, Math.abs(car.sideslip));
+    maxYaw = Math.max(maxYaw, Math.abs(car.yawRate));
+    minLoad = Math.min(minLoad, ...car.wheels.map(wheel => wheel.normalLoad));
+    if (frame === Math.max(0, Math.round(hold * 60) - 1)) headingAtRelease = car.heading;
+  }
+  return { car, maxBeta, maxYaw, minLoad, headingAtRelease };
+}
+
+for (const speed of [50, 80]) {
+  const tap = keyboardTap({ speed, hold: 0.2 });
+  ok(tap.maxBeta <= 0.045,
+    `${speed}m/s 200ms arrow tap stays below 2.6 degrees sideslip`,
+    `beta=${(tap.maxBeta * 180 / Math.PI).toFixed(2)}deg`);
+  ok(tap.maxYaw <= 0.72,
+    `${speed}m/s 200ms arrow tap stays inside the grip-feasible yaw envelope`,
+    `yaw=${tap.maxYaw.toFixed(3)}rad/s`);
+  ok(Math.abs(tap.headingAtRelease) >= 0.04,
+    `${speed}m/s 200ms arrow tap produces a clearly visible turn`,
+    `turn=${(Math.abs(tap.headingAtRelease) * 180 / Math.PI).toFixed(2)}deg`);
+  ok(tap.minLoad >= 80,
+    `${speed}m/s arrow tap keeps all four tyres in contact on flat asphalt`,
+    `minLoad=${tap.minLoad.toFixed(1)}N`);
+}
+
+const longHold = keyboardTap({ speed: 50, hold: 0.5 });
+ok(longHold.maxBeta <= 0.075,
+  '50m/s half-second arrow hold remains planted instead of drifting',
+  `beta=${(longHold.maxBeta * 180 / Math.PI).toFixed(2)}deg`);
+ok(Math.abs(longHold.headingAtRelease) >= 0.18,
+  '50m/s half-second arrow hold turns decisively instead of feeling numb',
+  `turn=${(Math.abs(longHold.headingAtRelease) * 180 / Math.PI).toFixed(2)}deg`);
+
+const topSpeedHold = keyboardTap({ speed: 95, hold: 0.5 });
+ok(topSpeedHold.maxBeta <= 0.105,
+  '95m/s half-second arrow hold stays below 6 degrees transient sideslip',
+  `beta=${(topSpeedHold.maxBeta * 180 / Math.PI).toFixed(2)}deg`);
+ok(Math.abs(topSpeedHold.car.sideslip) <= 0.002 && Math.abs(topSpeedHold.car.yawRate) <= 0.005,
+  'top-speed steering settles instead of leaving a persistent drift after release',
+  `beta=${(topSpeedHold.car.sideslip * 180 / Math.PI).toFixed(3)}deg yaw=${topSpeedHold.car.yawRate.toFixed(4)}rad/s`);
+
+const straight = new CarPhysics(steeringCircuit, {
+  isPlayer: true, random: () => 0.25,
+  assists: { tc: false, abs: true, autoGear: true },
+});
+straight.placeAt(new THREE.Vector3(), 0, 0);
+straight.v = 22;
+straight.gear = 2;
+straight.tyreTemp = 100;
+for (let frame = 0; frame < 300; frame++) {
+  straight.step(DT, { ...ZERO_INPUT, throttle: 1 });
+}
+ok(Math.abs(straight.heading) <= 0.002 && Math.abs(straight.pos.x) <= 0.12,
+  'full-throttle zero-steer running has no seeded left/right yaw bias with TC disabled',
+  `heading=${straight.heading.toFixed(5)} x=${straight.pos.x.toFixed(3)}m`);
 
 function newCar({ x = 0, z = 0, heading = 0, speed = 0 } = {}) {
   const car = new CarPhysics(circuit, { isPlayer: true, random: () => 0.5 });

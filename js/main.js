@@ -8,7 +8,7 @@ import { OutputPass } from '../lib/postprocessing/OutputPass.js';
 import { FXAAPass } from '../lib/postprocessing/FXAAPass.js';
 import { RGBELoader } from '../lib/loaders/RGBELoader.js';
 import { CAMERA_FRAMING, resolveChaseCamera } from './cameraFraming.js';
-import { advanceSteeringInput } from './controls.js';
+import { advanceSteeringInput, digitalSteeringLimit } from './controls.js';
 import { cockpitFov, cockpitSeat } from './cockpit.js';
 import { createTelemetrySnapshot } from './telemetry.js';
 
@@ -215,6 +215,7 @@ class Game {
     this.keySteer = 0;
     this._steerInputMode = null;
     this.paused = false;
+    this.awaitingStart = false;
     this.raceConfig = null;
     this.clock = new THREE.Clock();
     this.fixedStep = new FixedStepAccumulator();
@@ -223,6 +224,7 @@ class Game {
     this._gamepadShiftUp = false;
     this._gamepadShiftDown = false;
     this._gamepadNeedsNeutral = true;
+    this._gamepadSteeringActive = false;
     this._timeTrialStatus = null;
     this._lightsShown = 0;
     this._resultsShown = false;
@@ -380,6 +382,7 @@ class Game {
     return {
       state: this.state,
       paused: !!this.paused,
+      awaitingStart: !!this.awaitingStart,
       player: {
         driverId: entry?.driver?.id || null,
         teamId: entry?.team?.id || entry?.driver?.team || null,
@@ -396,9 +399,9 @@ class Game {
         },
       },
       controls: {
-        throttle: this.paused ? 0 : round(physics?.throttle),
-        brake: this.paused ? 0 : round(physics?.brake),
-        steer: this.paused ? 0 : round(this.keySteer),
+        throttle: this.paused || this.awaitingStart ? 0 : round(physics?.throttle),
+        brake: this.paused || this.awaitingStart ? 0 : round(physics?.brake),
+        steer: this.paused || this.awaitingStart ? 0 : round(this.keySteer),
       },
       camera: { mode: cameraMode },
       telemetry,
@@ -653,7 +656,6 @@ class Game {
           this.ui.sel.mode = 'weekend';
           this.ui.sel.driverId = driverId;
           this.ui.sel.trackId = 'spa';
-          this.camMode = 1;
           this.startSession({
             race, driverId, mode: 'practice', pilot: true, fullWeekend: true,
             qualiStage: 'FP1', qualiFormat: 'staged',
@@ -745,7 +747,7 @@ class Game {
         this.state = 'quali';
         this.ui.hideAll();
         this.hud.show();
-        this.camMode = advanced.playerActive ? 1 : 2;
+        this.camMode = advanced.playerActive ? 0 : 2;
         this.updateTouchControls();
         this.snapCamera();
         this.resetSimulationTiming();
@@ -833,7 +835,9 @@ class Game {
     const sessionSeed = requestedSeed == null ? createRandom().state : normalizeSeed(requestedSeed);
     cfg = { ...cfg, seed: sessionSeed };
     if (cfg.fullWeekend) cfg.weekendSeed = normalizeSeed(cfg.weekendSeed ?? sessionSeed);
-    if (cfg.pilot) this.camMode = 1;
+    // Every player-controlled session opens in the elevated rear chase view.
+    // Cockpit/T-cam/nose remain available through C after the session is ready.
+    this.camMode = 0;
     this.raceConfig = cfg;
     const simulationRandom = createRandom(deriveSeed(sessionSeed, 'simulation'));
     const effectsRandom = createRandom(deriveSeed(sessionSeed, 'effects'));
@@ -914,9 +918,15 @@ class Game {
       this.state = cfg.mode === 'race' ? 'race' : 'quali';
       this.updateTouchControls();
       this.snapCamera();
+      // Populate the stationary start screen from real session state without
+      // advancing physics. Otherwise the frozen gate displayed constructor
+      // placeholders (neutral/Medium) until after the player pressed Start.
+      this.hud.update(0);
+      this.hud.updateSimulationState?.(this.snapshot());
       // Circuit/PMREM/car construction is synchronous and can take hundreds of
       // milliseconds. Rebase after it so no build time becomes simulation time.
       this.resetSimulationTiming();
+      this.awaitingStart = true;
       let onboardingSeen = false;
       try { onboardingSeen = localStorage.getItem('apexf1_onboarding_v1') === '1'; } catch {}
       const shouldPauseOnReady = () => !!(this.ui.settings.autoPause &&
@@ -939,16 +949,15 @@ class Game {
           }
           this.paused = false;
           this.resetSimulationTiming();
-          if (documentIsActive()) this.audio.startEngine();
-          else this.audio.stopEngine();
+          this.beginSessionFromGate();
         });
       } else if (shouldPauseOnReady()) {
         // Visibility or window focus may have changed while assets/build ran.
         this.togglePause(true);
       } else {
         this.paused = false;
-        if (documentIsActive()) this.audio.startEngine();
-        else this.audio.stopEngine();
+        this.audio.stopEngine();
+        this.hud.showSessionReady(() => this.beginSessionFromGate());
       }
     }, 60);
   }
@@ -1023,6 +1032,7 @@ class Game {
     this._vscAudio = false; this._radioLen = 0; this._pitAudio = false;
     this._timeTrialStatus = null;
     this.onboardingActive = false;
+    this.awaitingStart = false;
     this.resetSimulationTiming();
     if (!keepConfig) this.paused = false;
   }
@@ -1304,14 +1314,18 @@ class Game {
     if (!code) return;
     const driving = this.state === 'race' || this.state === 'quali';
     // stop the page from scrolling / space-activating buttons while driving
-    if (driving && (code.startsWith('Arrow') || code === 'Space')) e.preventDefault();
+    if (driving && (code.startsWith('Arrow') || code === 'Space' || code === 'Enter')) e.preventDefault();
     if (e.repeat) return;
     if (!down) { this.keys[code] = false; return; }
+    if (driving && this.awaitingStart && code === 'Enter') {
+      this.beginSessionFromGate();
+      return;
+    }
     if (code === 'Escape') {
       if (driving) this.togglePause();
       return;
     }
-    if (!driving || this.paused) return;
+    if (!driving || this.paused || this.awaitingStart) return;
     this.keys[code] = true;
     if (code === 'KeyE') this.queueShift(1);
     if (code === 'KeyQ') this.queueShift(-1);
@@ -1352,9 +1366,23 @@ class Game {
     }
     else {
       this.ui.hidePause();
-      if (documentIsActive()) this.audio.startEngine();
+      if (this.awaitingStart) {
+        this.audio.stopEngine();
+        this.hud.showSessionReady(() => this.beginSessionFromGate());
+      } else if (documentIsActive()) this.audio.startEngine();
       else this.audio.stopEngine();
     }
+  }
+
+  beginSessionFromGate() {
+    if (!this.awaitingStart) return false;
+    this.awaitingStart = false;
+    this.paused = false;
+    this.hud.hideSessionReady();
+    this.resetSimulationTiming();
+    if (documentIsActive()) this.audio.startEngine();
+    else this.audio.stopEngine();
+    return true;
   }
 
   resetSimulationTiming() {
@@ -1375,6 +1403,7 @@ class Game {
     this._gamepadShiftUp = false;
     this._gamepadShiftDown = false;
     this._gamepadNeedsNeutral = true;
+    this._gamepadSteeringActive = false;
     this.hud?.clearTouchState?.();
   }
 
@@ -1456,11 +1485,12 @@ class Game {
     const gp = navigator.getGamepads && navigator.getGamepads()[0];
     if (gp) {
       const ax = gp.axes[0] || 0;
+      const axisMagnitude = Math.abs(ax);
       const rt = gp.buttons[7]?.value || 0, lt = gp.buttons[6]?.value || 0;
       const gamepadBoost = !!gp.buttons[0]?.pressed;
       const gamepadUp = !!gp.buttons[5]?.pressed;
       const gamepadDown = !!gp.buttons[4]?.pressed;
-      const neutral = Math.abs(ax) <= 0.08 && rt <= 0.03 && lt <= 0.03 &&
+      const neutral = axisMagnitude <= 0.12 && rt <= 0.03 && lt <= 0.03 &&
         !gamepadBoost && !gamepadUp && !gamepadDown;
       if (this._gamepadNeedsNeutral) {
         // After pause/focus loss, require every relevant control to be released
@@ -1470,6 +1500,7 @@ class Game {
         this._gamepadShiftDown = gamepadDown;
         if (neutral) {
           this._gamepadNeedsNeutral = false;
+          this._gamepadSteeringActive = false;
           this._gamepadShiftUp = false;
           this._gamepadShiftDown = false;
         }
@@ -1477,8 +1508,14 @@ class Game {
         // An actively held key/touch control always wins over a connected
         // controller's idle-axis drift. Analog steering remains unchanged when
         // no digital direction is being requested.
-        if (Math.abs(ax) > 0.08 && !digitalSteerActive) {
-          dir = -ax;
+        if (!this._gamepadSteeringActive && axisMagnitude >= 0.22) {
+          this._gamepadSteeringActive = true;
+        } else if (this._gamepadSteeringActive && axisMagnitude <= 0.10) {
+          this._gamepadSteeringActive = false;
+        }
+        if (this._gamepadSteeringActive && !digitalSteerActive) {
+          const scaledAxis = Math.sign(ax) * Math.max(0, (axisMagnitude - 0.12) / 0.88);
+          dir = -scaledAxis;
           steerInputMode = 'analog';
         }
         if (rt > 0.03) throttle = rt;
@@ -1493,6 +1530,7 @@ class Game {
       this._gamepadShiftUp = false;
       this._gamepadShiftDown = false;
       this._gamepadNeedsNeutral = false;
+      this._gamepadSteeringActive = false;
     }
     const phys = this.session?.player?.phys;
     if (this.ui.settings.autoGear) {
@@ -1516,8 +1554,11 @@ class Game {
     if (steerInputMode) this._steerInputMode = steerInputMode;
     const digitalResponse = steerInputMode === 'digital' ||
       (dir === 0 && this._steerInputMode === 'digital');
+    const steeringTarget = steerInputMode === 'digital'
+      ? dir * digitalSteeringLimit(v)
+      : dir;
     this.keySteer = advanceSteeringInput(
-      this.keySteer, dir, v, dt, digitalResponse, this.ui.settings.steeringResponse,
+      this.keySteer, steeringTarget, v, dt, digitalResponse, this.ui.settings.steeringResponse,
     );
     if (dir === 0 && this.keySteer === 0) this._steerInputMode = null;
     return { steer: this.keySteer, throttle, brake, boost, shiftUp, shiftDown, ersMode: this.ersMode ?? 1 };
@@ -1671,7 +1712,7 @@ class Game {
     if (!this.paused) this.quality.update(rawDt);
     const s = this.session;
 
-    if (!this.paused && (this.state === 'race' || this.state === 'quali')) {
+    if (!this.paused && !this.awaitingStart && (this.state === 'race' || this.state === 'quali')) {
       this.pacing = this.fixedStep.advance(rawDt, (dt) => {
         const weather = this.circuit?.advanceEnvironment?.(dt, s.entries);
         const trackState = this.circuit?.trackState;

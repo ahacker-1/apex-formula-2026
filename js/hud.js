@@ -86,6 +86,14 @@ export class HUD {
       <div id="race-msg" role="group" aria-label="Race messages"></div>
       <div id="startlights" role="img" aria-label="Race start lights"></div>
       <div id="bigflash" role="group" aria-label="Race event banner"></div>
+      <div id="session-ready" data-sim-start-gate role="dialog" aria-modal="false"
+        aria-labelledby="session-ready-title" aria-hidden="true">
+        <div class="session-ready-card">
+          <span>CAR READY · CHASE CAMERA</span>
+          <strong id="session-ready-title">PRESS ENTER TO START</strong>
+          <button type="button" id="session-ready-go">START SESSION</button>
+        </div>
+      </div>
       <div id="sim-state-strip" role="status" aria-live="polite">
         <span data-sim-state="weather"></span>
         <span data-sim-state="damage"></span>
@@ -265,6 +273,7 @@ export class HUD {
     this.$('onboarding').classList.remove('active');
     this.$('onboarding').setAttribute('aria-hidden', 'true');
     this.$('onboarding-go').onclick = null;
+    this.hideSessionReady();
     this.$('race-msg').innerHTML = '';
     this.hideLights();
     this.flash('');
@@ -330,6 +339,23 @@ export class HUD {
       onDone?.();
     };
     setTimeout(() => button.focus(), 0);
+  }
+
+  showSessionReady(onStart) {
+    const overlay = this.$('session-ready');
+    const button = this.$('session-ready-go');
+    overlay.classList.add('active');
+    overlay.setAttribute('aria-hidden', 'false');
+    button.onclick = () => onStart?.();
+    setTimeout(() => button.focus(), 0);
+  }
+
+  hideSessionReady() {
+    const overlay = this.$('session-ready');
+    const button = this.$('session-ready-go');
+    overlay?.classList.remove('active');
+    overlay?.setAttribute('aria-hidden', 'true');
+    if (button) button.onclick = null;
   }
 
   bindSession(session, circuit) {

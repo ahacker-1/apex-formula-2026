@@ -3,10 +3,21 @@
 const clamp = (value, lo, hi) => Math.max(lo, Math.min(hi, value));
 
 export const STEERING_PROFILES = Object.freeze({
-  calm: Object.freeze({ inputRate: 0.82, returnRate: 0.78, filter: 0.88 }),
+  // Calm slows initial turn-in but recentres promptly. The old calm return was
+  // slower than balanced, so a supposedly safer profile held lock after the
+  // key was released and encouraged correction oscillation.
+  calm: Object.freeze({ inputRate: 0.78, returnRate: 1.18, filter: 0.88 }),
   balanced: Object.freeze({ inputRate: 1, returnRate: 1, filter: 1 }),
   direct: Object.freeze({ inputRate: 1.22, returnRate: 1.18, filter: 1.14 }),
 });
+
+// Binary keys must not request a full Formula steering rack at 180-300 km/h.
+// Low-speed authority is retained for hairpins and recovery, while the high-
+// speed envelope maps a held arrow to a physically usable road-wheel angle.
+export function digitalSteeringLimit(speed) {
+  const velocity = Math.abs(Number.isFinite(speed) ? speed : 0);
+  return clamp(1.15 - velocity * 0.0105, 0.42, 1);
+}
 
 export function steeringProfile(value) {
   return STEERING_PROFILES[value] || STEERING_PROFILES.balanced;

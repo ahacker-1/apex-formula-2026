@@ -44,6 +44,7 @@ const THREE = await import('../lib/three.module.js');
 const { buildCircuit } = await import('../js/trackBuilder.js');
 const { TRACKS } = await import('../js/tracks.js');
 const { CarPhysics } = await import('../js/physics.js');
+const { tyreTargetPressure, tyreThermalPressureGrip } = await import('../js/vehicleDynamics.js');
 const { AIDriver } = await import('../js/ai.js');
 
 // ---- assertion plumbing ----
@@ -201,15 +202,18 @@ ok(drivenPitch > 0 && drivenRoll > 0 && rest.pitch === 0 && rest.roll === 0,
 console.log('[env] 3. tyre temperature grip window');
 const gripCar = newCar(5);
 rollingStart(gripCar);
-ok(gripCar.tyreTemp === 65, 'a fresh set out of the pits starts at 65C', `${gripCar.tyreTemp}C`);
-const muAt = (T) => { gripCar.tyreTemp = T; return gripCar.muEff(); };
-const muWindow = muAt(100), muCold = muAt(60), muVeryHot = muAt(130), muEdgeHot = muAt(115);
-ok(Math.abs(muCold / muWindow - 0.92) < 1e-6, 'stone-cold tyres (60C) lose 8% grip',
-  `${((muCold / muWindow - 1) * 100).toFixed(2)}%`);
-ok(Math.abs(muEdgeHot / muWindow - 0.95) < 1e-6 && Math.abs(muVeryHot / muWindow - 0.95) < 1e-6,
-  'overheated tyres (>115C) lose 5% grip',
-  `${((muVeryHot / muWindow - 1) * 100).toFixed(2)}%`);
-ok(muAt(90) === muWindow && muAt(110) === muWindow, 'the 90-110C window is full grip');
+ok(gripCar.tyreTemp === 75, 'a fresh set out of the pits starts blanket-warm at 75C', `${gripCar.tyreTemp}C`);
+const thermalAt = (T) => {
+  const pressure = tyreTargetPressure(true, 0);
+  return tyreThermalPressureGrip(T, T - 6, pressure, 0, pressure);
+};
+const thermalWindow = thermalAt(101), thermalCold = thermalAt(60), thermalHot = thermalAt(130);
+ok(thermalCold < thermalWindow * 0.9, 'stone-cold tyres retain a real per-wheel grip penalty',
+  `${((thermalCold / thermalWindow - 1) * 100).toFixed(1)}%`);
+ok(thermalHot < thermalWindow * 0.94, 'overheated tyres retain a real per-wheel grip penalty',
+  `${((thermalHot / thermalWindow - 1) * 100).toFixed(1)}%`);
+ok(thermalAt(95) > 0.98 && thermalAt(107) > 0.98,
+  'the working window remains near peak per-wheel grip');
 
 // ============================================================
 // 4. brake fade
@@ -406,8 +410,8 @@ for (let i = 0; i < 30 * 90; i++) {
   pitCar.step(DT, pitAI.update(DT, [pitCar]));
   if (backInBand === null && pitCar.tyreTemp >= 90) backInBand = i * DT;
 }
-ok(hotTemp >= 90 && freshTemp === 65 && coldGrip < 1,
-  'fresh set drops to 65C and runs with reduced grip on the out-lap',
+ok(hotTemp >= 90 && freshTemp === 75 && coldGrip < 1,
+  'fresh set drops to blanket-warm 75C and retains a measured out-lap penalty',
   `hot=${hotTemp.toFixed(0)}C fresh=${freshTemp}C coldGrip=${coldGrip.toFixed(3)}`);
 ok(backInBand !== null && backInBand < 90,
   'fresh set is back in the working band inside one lap',

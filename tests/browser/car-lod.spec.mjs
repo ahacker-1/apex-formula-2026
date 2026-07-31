@@ -228,6 +228,7 @@ test('primitive race upgrades late to GLB without disturbing near/far ownership 
     session._setEntryCarLod(far, 'far');
     session._setEntryCarLod(near, 'full');
     far.phys.steer = 0.65;
+    far.phys.roadWheelAngle = 0.13;
     far.phys.pitch = 0.11;
     far.phys.roll = -0.07;
     far.phys.rideBump = 0.035;
@@ -313,7 +314,7 @@ test('primitive race upgrades late to GLB without disturbing near/far ownership 
   expect(after.directFullRoots).toBe(true);
   for (const pose of [after.nearPoseCarried, after.farPoseStable]) {
     expect(pose.spin).toBeCloseTo(9.75, 10);
-    expect(pose.steer).toBeCloseTo(0.65 * 0.32, 10);
+    expect(pose.steer).toBeCloseTo(0.13, 10);
     expect(pose.pitch).toBeCloseTo(0.11, 10);
     expect(pose.roll).toBeCloseTo(-0.07, 10);
     expect(pose.ride).toBeCloseTo(0.035, 10);

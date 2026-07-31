@@ -108,6 +108,44 @@ ok(optimalGrip > coldGrip && optimalGrip > hotGrip,
   'surface/carcass temperature and pressure have a peaked grip window',
   `${coldGrip.toFixed(3)}/${optimalGrip.toFixed(3)}/${hotGrip.toFixed(3)}`);
 
+const fresh = new CarPhysics(circuit, {
+  isPlayer: true, random: () => 0.5,
+  assists: { tc: true, abs: true, autoGear: true },
+});
+fresh.placeAt(new THREE.Vector3(), 0, 0);
+fresh.setTyre('M');
+fresh.v = 50;
+fresh.step(DT, ZERO);
+const freshFrontMu = (fresh.wheels[0]._forceScratch.limit / fresh.wheels[0].normalLoad +
+  fresh.wheels[1]._forceScratch.limit / fresh.wheels[1].normalLoad) * 0.5;
+const freshRearMu = (fresh.wheels[2]._forceScratch.limit / fresh.wheels[2].normalLoad +
+  fresh.wheels[3]._forceScratch.limit / fresh.wheels[3].normalLoad) * 0.5;
+ok(fresh.tyreTemp >= 74,
+  'a fresh Formula tyre begins blanket-warm instead of at a severe cold-grip cliff',
+  `temperature=${fresh.tyreTemp.toFixed(1)}C`);
+ok(freshRearMu / freshFrontMu >= 0.96,
+  'front and rear fresh-tyre pressure targets preserve balanced axle grip',
+  `front=${freshFrontMu.toFixed(3)} rear=${freshRearMu.toFixed(3)}`);
+
+const bumpCircuit = {
+  ...circuit,
+  samples: [{ ...sample, surface: { grade: 0, camber: 0, bump: 0.006, grip: 1, wetness: 0 } }],
+};
+const bumpCar = new CarPhysics(bumpCircuit, {
+  isPlayer: true, random: () => 0.5,
+  assists: { tc: true, abs: true, autoGear: true },
+});
+bumpCar.placeAt(new THREE.Vector3(), 0, 0);
+bumpCar.v = 45;
+bumpCar.tyreTemp = 100;
+bumpCar.step(DT, ZERO);
+const firstBumpLoads = bumpCar.wheels.map(wheel => wheel.normalLoad);
+bumpCar.step(DT, ZERO);
+const secondBumpLoads = bumpCar.wheels.map(wheel => wheel.normalLoad);
+ok(Math.max(...firstBumpLoads.map((load, index) => Math.abs(load - secondBumpLoads[index]))) <= 120,
+  'spawn-surface bump history does not create a one-tick suspension impulse',
+  `maxDelta=${Math.max(...firstBumpLoads.map((load, index) => Math.abs(load - secondBumpLoads[index]))).toFixed(1)}N`);
+
 console.log('[vehicle] four-wheel load transfer, suspension and aero platform');
 const defaultSurface = { grade: 0, camber: 0, bump: 0, grip: 1, wetness: 0,
   bumpFL: 0, bumpFR: 0, bumpRL: 0, bumpRR: 0 };

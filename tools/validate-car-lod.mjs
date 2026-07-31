@@ -185,6 +185,7 @@ check(random.state === randomBefore && JSON.stringify(session.entries.map((entry
 
 session._setEntryCarLod(target, 'far');
 target.phys.steer = 0.75;
+target.phys.roadWheelAngle = 0.14;
 target.phys.pitch = 0.12;
 target.phys.roll = -0.08;
 target.phys.rideBump = 0.04;
@@ -197,10 +198,10 @@ session._syncMesh(target);
 const farWheels = target.carHandle.farProxy.wheels;
 const farBody = target.carHandle.farProxy.body;
 check(Object.values(farWheels).every((wheel) => near(wheel.rotation.x, 7.25))
-    && near(farWheels.fl.rotation.y, 0.75 * 0.32)
-    && near(farWheels.fr.rotation.y, 0.75 * 0.32)
+    && near(farWheels.fl.rotation.y, 0.14)
+    && near(farWheels.fr.rotation.y, 0.14)
     && near(farWheels.rl.rotation.y, 0) && near(farWheels.rr.rotation.y, 0),
-  'all far wheels spin independently and only front wheels steer');
+  'all far wheels spin independently and front wheels use the physical road-wheel angle');
 check(near(farBody.rotation.x, 0.12) && near(farBody.rotation.z, -0.08)
     && near(farBody.position.y, 0.04),
   'far body follows pitch, roll, and ride animation');

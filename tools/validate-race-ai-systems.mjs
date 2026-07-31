@@ -36,6 +36,19 @@ applyImpactDamage(damageA, { severity: 0.72, front: true, side: 0.2 }, createRan
 applyImpactDamage(damageB, { severity: 0.72, front: true, side: 0.2 }, createRandom(seed));
 assert.deepEqual(damageA, damageB, 'seeded impact damage must reproduce'); checks++;
 check(damageSeverity(damageA) > 0 && performanceModifiers(damageA).aeroLoss > 0, 'damage must cost performance');
+const neutralSuspension = createVehicleHealth();
+neutralSuspension.suspension = 0.8;
+check(performanceModifiers(neutralSuspension).steeringBias === 0,
+  'unsided suspension wear must not create a permanent left pull');
+const leftSuspension = createVehicleHealth();
+const rightSuspension = createVehicleHealth();
+applyImpactDamage(leftSuspension, { severity: 0.55, front: false, side: 0.8 }, () => 0.5);
+applyImpactDamage(rightSuspension, { severity: 0.55, front: false, side: -0.8 }, () => 0.5);
+check(performanceModifiers(leftSuspension).steeringBias > 0 &&
+    performanceModifiers(rightSuspension).steeringBias < 0 &&
+    Math.abs(performanceModifiers(leftSuspension).steeringBias +
+      performanceModifiers(rightSuspension).steeringBias) <= 1e-12,
+  'mirrored suspension impacts create mirrored steering effects');
 const repair = repairPlan(damageA, 10);
 check(repair.repairs.some(item => item.part === 'frontWing'), 'pit repair plan must detect wing');
 applyRepairPlan(damageA, repair);

@@ -44,7 +44,7 @@ export function createWheelState(key, front, left, radius = VEHICLE_DEFAULTS.whe
     pressure: front ? 145 : 132, // kPa, hot pressure is derived from carcass T
     suspensionDeflection: 0,
     contact: true,
-    _lastBump: 0,
+    _lastBump: null,
     _forceScratch: { fx: 0, fy: 0, utilization: 0, limit: 0 },
   };
 }
@@ -89,7 +89,10 @@ export function resetVehicleState(state, speed = 0, tyreTemp = 70) {
     wheel.forceUtilization = 0;
     wheel.surfaceTemp = tyreTemp;
     wheel.carcassTemp = tyreTemp;
-    wheel._lastBump = 0;
+    // The first surface sample establishes the suspension datum. Treating the
+    // authored road height as a step from zero injected a one-frame damper hit
+    // as soon as a car spawned.
+    wheel._lastBump = null;
   }
 }
 
@@ -139,11 +142,19 @@ export function readSurfaceSample(circuit, sampleIdx, position, out) {
   return out;
 }
 
-export function tyreThermalPressureGrip(surfaceTemp, carcassTemp, pressure, wetness = 0) {
+export function tyreTargetPressure(front, wetness = 0) {
+  const baseline = front ? 145 : 132;
+  const targetCarcass = 95 - 8 * clamp(wetness, 0, 1);
+  return baseline * (targetCarcass + 273.15) / (70 + 273.15);
+}
+
+export function tyreThermalPressureGrip(
+  surfaceTemp, carcassTemp, pressure, wetness = 0, targetPressure = 151,
+) {
   const targetT = 101 - 13 * clamp(wetness, 0, 1);
   const tLoss = 0.000075 * Math.pow(finite(surfaceTemp, targetT) - targetT, 2) +
     0.000025 * Math.pow(finite(carcassTemp, targetT - 6) - (targetT - 6), 2);
-  const targetP = 151 - 8 * clamp(wetness, 0, 1);
+  const targetP = finite(targetPressure, 151);
   const pLoss = 0.00018 * Math.pow(finite(pressure, targetP) - targetP, 2);
   return clamp(1 - tLoss - pLoss, 0.68, 1.02);
 }
@@ -243,7 +254,9 @@ export function stepVehicleDynamics(state, params, dt) {
     const cos = Math.cos(delta);
     const sin = Math.sin(delta);
     const bump = finite(bumps[i], wheelBump(surface, i));
-    const bumpVelocity = (bump - wheel._lastBump) / Math.max(dt, 1e-4);
+    const bumpVelocity = Number.isFinite(wheel._lastBump)
+      ? clamp((bump - wheel._lastBump) / Math.max(dt, 1e-4), -0.18, 0.18)
+      : 0;
     wheel._lastBump = bump;
     const suspensionLoad = cfg.springRate * bump + 1350 * bumpVelocity;
     wheel.normalLoad = clamp(loads[i] + suspensionLoad, 0, mass * G * 0.65 + aeroEffective * 0.5);
@@ -261,13 +274,19 @@ export function stepVehicleDynamics(state, params, dt) {
     const hotPressure = (wheel.front ? 145 : 132) * (wheel.carcassTemp + 273.15) / (70 + 273.15);
     wheel.pressure += (hotPressure - wheel.pressure) * Math.min(1, dt * 1.8);
     const thermal = tyreThermalPressureGrip(wheel.surfaceTemp, wheel.carcassTemp,
-      wheel.pressure, surface.wetness);
+      wheel.pressure, surface.wetness, tyreTargetPressure(wheel.front, surface.wetness));
     // TrackState.gripAt already includes wetness, puddling and line choice. A
     // legacy/static surface still receives the local wetness fallback here.
     const wetGrip = surface.gripIncludesWetness ? 1 : 1 - 0.42 * surface.wetness;
     const mu = Math.max(0.05, finite(params.mu, 1.6) * surface.grip * wetGrip * thermal);
+    const drivenCap = drive * driveShares[i];
+    const brakingCap = braking * brakeShares[i] + engineBrake * (wheel.front ? 0 : 0.5);
+    // A freely rolling axle cannot consume the friction circle with a phantom
+    // longitudinal demand that is immediately clamped away below. Its wheel
+    // speed still relaxes through inertia, but lateral grip remains available.
+    const forceSlipRatio = drivenCap + brakingCap > 1 ? wheel.slipRatio : 0;
     const target = combinedTyreForces({
-      slipRatio: wheel.slipRatio,
+      slipRatio: forceSlipRatio,
       slipAngle: wheel.slipAngle,
       normalLoad: wheel.normalLoad,
       mu,
@@ -277,8 +296,6 @@ export function stepVehicleDynamics(state, params, dt) {
     // The contact patch cannot transmit more longitudinal force than the
     // applied shaft/brake torque can support. This keeps power, brake fade and
     // brake migration observable even when the tyre itself is at saturation.
-    const drivenCap = drive * driveShares[i];
-    const brakingCap = braking * brakeShares[i] + engineBrake * (wheel.front ? 0 : 0.5);
     target.fx = clamp(target.fx, -brakingCap, drivenCap);
     if (target.fx < 0 && braking > 0) {
       target.fx *= clamp(finite(params.brakeEffectiveness, 1), 0.5, 1);
@@ -329,15 +346,24 @@ export function stepVehicleDynamics(state, params, dt) {
       -mass * G * 0.7, mass * G * 0.7);
     forceLat -= lateralDamping;
   }
-  const desiredYaw = Math.abs(u0) > 1
+  const rawDesiredYaw = Math.abs(u0) > 1
     ? u0 * Math.tan(finite(params.steerAngle, 0)) / cfg.wheelbase
     : 0;
+  const lateralCapacity = wheels.reduce((sum, wheel) => sum + wheel._forceScratch.limit, 0) / mass;
+  const yawLimit = clamp(0.85 * lateralCapacity / Math.max(3, Math.abs(u0)), 0.18, 2.4);
+  const desiredYaw = clamp(rawDesiredYaw, -yawLimit, yawLimit);
   yawMoment -= (r0 - desiredYaw) * (14500 + absSpeed * 240);
-  const accelLong = forceLong / mass + r0 * v0;
-  const accelLat = forceLat / mass - r0 * u0;
+  // Integrate body-frame velocity derivatives, but publish and retain physical
+  // CG acceleration for telemetry and the next tick's load transfer. Using
+  // dv/dt directly as lateral acceleration inverted transfer at high yaw and
+  // could unload both tyres on one side on flat asphalt.
+  const bodyAccelLong = forceLong / mass + r0 * v0;
+  const bodyAccelLat = forceLat / mass - r0 * u0;
+  const accelLong = forceLong / mass;
+  const accelLat = forceLat / mass;
   const yawAccel = yawMoment / Math.max(1, finite(params.yawInertia, cfg.yawInertia));
-  state.velocityLong = clamp(u0 + accelLong * dt, -8, 115);
-  state.velocityLat = clamp(v0 + accelLat * dt, -32, 32);
+  state.velocityLong = clamp(u0 + bodyAccelLong * dt, -8, 115);
+  state.velocityLat = clamp(v0 + bodyAccelLat * dt, -32, 32);
   state.yawRate = clamp(r0 + yawAccel * dt, -3.2, 3.2);
 
   // Parked-state regularisation prevents slip-angle noise from walking a car.

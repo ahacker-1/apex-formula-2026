@@ -10,8 +10,11 @@ export const CAMERA_FRAMING = Object.freeze({
   speedEffectCapMps: 90,
   boostFovDegrees: 1,
   lookHeightM: 0.75,
-  headingAimWeight: 0.35,
-  aheadAimWeight: 0.65,
+  // Keep the chase camera attached primarily to the car. Looking mostly down
+  // the future racing line made the chassis slide sideways in frame before it
+  // actually rotated, exaggerating even modest physical sideslip.
+  headingAimWeight: 0.72,
+  aheadAimWeight: 0.28,
 });
 
 // `pull`, `rise`, and `fovSpeed` are deliberately restrained: the car should

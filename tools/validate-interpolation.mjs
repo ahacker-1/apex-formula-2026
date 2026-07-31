@@ -50,11 +50,11 @@ function checkNear(actual, expected, label, tolerance = 1e-10) {
 const rad = degrees => degrees * Math.PI / 180;
 const previous = {
   x: 0, y: 2, z: -4, heading: rad(170), v: 20,
-  wheelSpin: 10, steer: -1, pitch: -0.1, roll: 0.2, rideBump: 0.05,
+  wheelSpin: 10, steer: -0.2, pitch: -0.1, roll: 0.2, rideBump: 0.05,
 };
 const current = {
   x: 10, y: 6, z: 4, heading: rad(-170), v: 40,
-  wheelSpin: 14, steer: 1, pitch: 0.3, roll: -0.2, rideBump: 0.15,
+  wheelSpin: 14, steer: 0.2, pitch: 0.3, roll: -0.2, rideBump: 0.15,
 };
 
 console.log('\n[interpolation] pure snapshot math');
@@ -110,7 +110,8 @@ function makeEntry() {
   return {
     phys: {
       pos: { x: current.x, z: current.z }, sampleIdx: 0,
-      heading: current.heading, v: current.v, steer: current.steer,
+      heading: current.heading, v: current.v, steer: 1,
+      roadWheelAngle: current.steer,
       pitch: current.pitch, roll: current.roll, rideBump: current.rideBump,
       brake: 0, throttle: 1,
     },
@@ -176,10 +177,10 @@ console.log('\n[interpolation] RaceSession.render() application');
 
   session.render(0.25);
   checkNear(entry.mesh.position.z, -2, 'quarter-alpha mesh z cannot pass via its default value');
-  checkNear(entry.wheels.fl.rotation.y, -0.16,
-    'quarter-alpha front-left steer applies pose.steer * 0.32');
-  checkNear(entry.wheels.fr.rotation.y, -0.16,
-    'quarter-alpha front-right steer matches front-left');
+  checkNear(entry.wheels.fl.rotation.y, -0.1,
+    'quarter-alpha front-left steer applies the interpolated road-wheel angle');
+  checkNear(entry.wheels.fr.rotation.y, -0.1,
+    'quarter-alpha front-right road-wheel angle matches front-left');
   checkNear(entry.wheels.rl.rotation.y, 0,
     'quarter-alpha rear-left wheel remains unsteered');
   checkNear(entry.wheels.rr.rotation.y, 0,
@@ -232,6 +233,7 @@ console.log('\n[interpolation] fixed-tick snapshot lifecycle');
   entry.phys.pos.z = 8;
   entry.phys.heading = rad(-150);
   entry.phys.steer = 0.5;
+  entry.phys.roadWheelAngle = 0.1;
   entry.phys.pitch = 0.5;
   entry.phys.roll = -0.4;
   entry.phys.rideBump = 0.25;
@@ -246,7 +248,8 @@ console.log('\n[interpolation] fixed-tick snapshot lifecycle');
   checkNear(entry.mesh.position.x, 12, 'render midpoint uses detached tick snapshots');
   check(angleNear(entry.mesh.rotation.y, rad(-160)),
     'tick lifecycle preserves shortest-path heading interpolation');
-  checkNear(entry.wheels.fl.rotation.y, 0.24, 'tick lifecycle interpolates steer independently');
+  checkNear(entry.wheels.fl.rotation.y, 0.15,
+    'tick lifecycle interpolates physical road-wheel angle independently of normalized steer');
 }
 
 console.log('\n[interpolation] teleport/reset and disposal');
@@ -258,6 +261,7 @@ console.log('\n[interpolation] teleport/reset and disposal');
   entry.phys.heading = rad(-45);
   entry.phys.v = 23;
   entry.phys.steer = 0.25;
+  entry.phys.roadWheelAngle = 0.08;
   entry.wheelSpin = 77;
   session.resetRenderState(entry);
   check(entry.renderPrev !== entry.renderCurr && entry.renderCurr !== entry.renderPose,

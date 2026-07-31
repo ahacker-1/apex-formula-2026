@@ -64,9 +64,18 @@ async function selectPilot(page, beforeLaunch) {
   await expect(page.locator('#hud')).toHaveClass(/active/);
 }
 
+async function startReadySession(page) {
+  const start = page.getByRole('button', { name: /START SESSION/i });
+  await expect(start).toBeVisible();
+  await start.click();
+  await expect(start).toBeHidden();
+  await expect.poll(async () => (await debugSnapshot(page)).awaitingStart).toBe(false);
+}
+
 async function bootPilot(page, beforeLaunch) {
   await openMenu(page);
   await selectPilot(page, beforeLaunch);
+  await startReadySession(page);
 }
 
 async function debugSnapshot(page) {
@@ -193,9 +202,74 @@ test('TACN full weekend is reachable from the keyboard-first main menu and opens
     cars: 22,
     trial: false,
   });
+  await expect(page.locator('[data-sim-start-gate]')).toBeVisible();
+  await startReadySession(page);
   await expect(page.locator('#tw-title')).toContainText('PRACTICE · FP1');
   await expect(page.locator('#t-lap')).toContainText('FP1');
   await captureEvidence(page, testInfo, 'tacn-full-weekend-fp1');
+  expect(runtimeErrors, `Runtime emitted errors:\n${runtimeErrors.join('\n')}`).toEqual([]);
+});
+
+test('driving session waits at zero speed in elevated chase view until explicit start', async ({ page }, testInfo) => {
+  const runtimeErrors = monitorRuntime(page);
+  await openMenu(page);
+  const weekend = page.getByRole('button', { name: /TACN RACE WEEKEND · GREENWOOD FOREST/i });
+  await weekend.focus();
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(
+    () => window.__game?.session?.mode === 'practice' && window.__game?.state === 'quali',
+    null,
+    { timeout: 45_000, polling: 50 },
+  );
+
+  const gate = page.locator('[data-sim-start-gate]');
+  await expect(gate).toBeVisible();
+  const before = await page.evaluate(() => {
+    const game = window.__game;
+    const player = game.session.player.phys;
+    return {
+      snapshot: game.snapshot(),
+      phase: game.session.phase,
+      phaseT: game.session.phaseT,
+      raceTime: game.session.raceTime,
+      x: player.pos.x,
+      z: player.pos.z,
+    };
+  });
+  expect(before.snapshot).toMatchObject({
+    awaitingStart: true,
+    paused: false,
+    camera: { mode: 'chase' },
+    player: { physics: { speed: 0, gear: 1 } },
+  });
+  await captureEvidence(page, testInfo, 'stationary-chase-start-gate');
+
+  await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 1200)));
+  const held = await page.evaluate(() => {
+    const game = window.__game;
+    const player = game.session.player.phys;
+    return {
+      phase: game.session.phase,
+      phaseT: game.session.phaseT,
+      raceTime: game.session.raceTime,
+      x: player.pos.x,
+      z: player.pos.z,
+      speed: player.v,
+    };
+  });
+  expect(held).toEqual({
+    phase: before.phase,
+    phaseT: before.phaseT,
+    raceTime: before.raceTime,
+    x: before.x,
+    z: before.z,
+    speed: 0,
+  });
+
+  await page.keyboard.press('Enter');
+  await expect(gate).toBeHidden();
+  await expect.poll(async () => (await debugSnapshot(page)).awaitingStart).toBe(false);
+  await expect.poll(() => page.evaluate(() => window.__game.session.phaseT)).toBeGreaterThan(before.phaseT);
   expect(runtimeErrors, `Runtime emitted errors:\n${runtimeErrors.join('\n')}`).toEqual([]);
 });
 
@@ -432,6 +506,7 @@ test('@mobile adaptive fallback remains usable without desktop overflow', async 
   await captureEvidence(page, testInfo, 'mobile-main-menu');
 
   await selectPilot(page);
+  await startReadySession(page);
   await expect(page.locator('#touch-controls')).toHaveClass(/enabled/);
   await expect(page.getByRole('button', { name: 'Throttle' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Brake' })).toBeVisible();

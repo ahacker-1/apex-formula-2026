@@ -43,7 +43,7 @@ function syncSurfaceFlags(car, circuit, sample) {
 
 // ---- thermal / ERS model constants (additive; see CarPhysics fields) ----
 const TYRE_START_T = 70;          // blanket-warmed set on the grid
-const TYRE_FRESH_T = 65;          // fresh set fitted in the pits (out-lap)
+const TYRE_FRESH_T = 75;          // blanket-warm fresh set, still below peak
 const TYRE_COLD_T = 80;           // below this the compound is off temperature
 const TYRE_HOT_T = 110;           // above this it starts to grain/overheat
 const TYRE_COLD_LOSS = 0.08;      // up to -8% grip when stone cold
@@ -78,7 +78,7 @@ export class CarPhysics {
     this.v = 0;
     this.gear = 1;
     this.rpmFrac = 0.2;
-    this.steer = 0; this.throttle = 0; this.brake = 0;
+    this.steer = 0; this.roadWheelAngle = 0; this.throttle = 0; this.brake = 0;
 
     this.battery = 1;
     this.boosting = false;
@@ -221,6 +221,7 @@ export class CarPhysics {
     this.wallHit = 0; this.wallContact = false; this.wallScrape = 0;
     this.wallImpactNormalSpeed = 0; this.wallImpactFront = false;
     this.carScrape = 0; this.carScrapeSide = 0; this.impactKick = 0; this._wallIncidentSide = 0;
+    this.roadWheelAngle = 0;
   }
 
   setTyre(key) {
@@ -256,7 +257,9 @@ export class CarPhysics {
     const perfF = 0.965 + 0.45 * (this.perf - 0.9); // 0.965..1.01
     const dirty = 1 - 0.05 * this.dirtyAir;
     this.tyreGrip = this.tyreTempGrip();
-    return BASE_MU * c.grip * wearF * surface * perfF * dirty * this.tyreGrip;
+    // Per-wheel dynamics already applies thermal and pressure grip. Keep the
+    // public aggregate for telemetry without charging the same cold loss twice.
+    return BASE_MU * c.grip * wearF * surface * perfF * dirty;
   }
 
   // returns events { crossedSF, wallHit, wrongWay }
@@ -266,7 +269,7 @@ export class CarPhysics {
     const c = this.circuit;
     const m = this.mass;
 
-    this.steer += (THREE.MathUtils.clamp(input.steer, -1, 1) - this.steer) * Math.min(1, dt * 10);
+    this.steer += (THREE.MathUtils.clamp(input.steer, -1, 1) - this.steer) * Math.min(1, dt * 16);
     this.throttle = THREE.MathUtils.clamp(input.throttle, 0, 1);
     this.brake = THREE.MathUtils.clamp(input.brake, 0, 1);
     this.slip = false;
@@ -334,6 +337,7 @@ export class CarPhysics {
     const cornering = THREE.MathUtils.clamp((Math.abs(this.steer) - 0.12) / 0.18, 0, 1);
     this.frontAeroLoss = 0.06 * THREE.MathUtils.clamp((this.dirtyAir - 0.3) / 0.35, 0, 1) * cornering;
     const delta = this.steer * dMax * (1 - this.frontAeroLoss);
+    this.roadWheelAngle = delta;
     let pf = THREE.MathUtils.clamp(0.35 + this.rpmFrac * 0.75, 0, 1.05);
     if (this.rpmFrac > 1.0) pf *= 0.55; // limiter
     // team performance scales effective power 94%..103%
@@ -361,9 +365,8 @@ export class CarPhysics {
     let fDrive = this.throttle * power / Math.max(Math.abs(this.v), 5.5);
     const rearSlip = Math.max(Math.abs(this.wheels[2].slipRatio), Math.abs(this.wheels[3].slipRatio));
     if (this.assists.tc && rearSlip > 0.11) fDrive *= THREE.MathUtils.clamp(1.7 - rearSlip * 6, 0.18, 1);
-    else if (!this.assists.tc && rearSlip > 0.2 && this.gear <= 3 && this.throttle > 0.85) {
-      this._spinJitter += (this.random() - 0.5) * 0.15;
-    }
+    // Unequal rear contact forces already generate real yaw in the four-wheel
+    // solver. Random heading injection made symmetric TC-off launches veer.
     // brakes — heat soak fades the discs (brakeTemp updated below)
     this.brakeFade = BRAKE_FADE_MAX *
       THREE.MathUtils.clamp((this.brakeTemp - BRAKE_FADE_T) / BRAKE_FADE_SPAN, 0, 1);
@@ -416,7 +419,7 @@ export class CarPhysics {
     dyn.diffLock = this.diffLock;
     dyn.abs = this.assists.abs;
     dyn.tc = this.assists.tc;
-    dyn.stabilityAssist = this.assists.abs && this.assists.tc;
+    dyn.stabilityAssist = this.assists.abs || this.assists.tc;
     dyn.downforce = downF;
     dyn.aeroBalance = this.aeroBalance;
     dyn.rideHeightFront = rideFront;
