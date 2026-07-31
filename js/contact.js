@@ -5,12 +5,6 @@ export const CAR_HALF_WIDTH = 0.99;
 export const CAR_BROADPHASE_RADIUS_SQ = Math.pow(2 * Math.hypot(CAR_HALF_LENGTH, CAR_HALF_WIDTH), 2);
 
 const clamp = (value, lo, hi) => Math.max(lo, Math.min(hi, value));
-const angleDiff = (a, b) => {
-  let d = a - b;
-  while (d > Math.PI) d -= Math.PI * 2;
-  while (d < -Math.PI) d += Math.PI * 2;
-  return d;
-};
 
 export function syncContactBody(out, phys) {
   const heading = phys.heading;
@@ -63,23 +57,50 @@ export function orientedCarContact(a, b) {
 }
 
 export function velocityOf(body, out) {
-  out.x = body.fx * body.phys.v;
-  out.z = body.fz * body.phys.v;
+  const lateral = Number.isFinite(body.phys.vehicle?.velocityLat)
+    ? body.phys.vehicle.velocityLat
+    : (Number.isFinite(body.phys.velocityLat) ? body.phys.velocityLat : 0);
+  out.x = body.fx * body.phys.v + body.rx * lateral;
+  out.z = body.fz * body.phys.v + body.rz * lateral;
   return out;
 }
 
 export function applyContactVelocity(phys, vx, vz, maxHeadingChange = 0.1) {
-  const magnitude = Math.hypot(vx, vz);
-  if (!(magnitude > 1e-8)) {
-    phys.v = 0;
+  const sin = Math.sin(phys.heading), cos = Math.cos(phys.heading);
+  const oldLong = phys.v;
+  const oldLat = Number.isFinite(phys.vehicle?.velocityLat)
+    ? phys.vehicle.velocityLat
+    : (Number.isFinite(phys.velocityLat) ? phys.velocityLat : 0);
+  // RaceSession passes `heading * v + collisionDelta` for compatibility with
+  // the former scalar model. Reapply that delta to the full pre-impact world
+  // velocity so an existing drift angle survives the impulse.
+  const deltaX = vx - sin * oldLong;
+  const deltaZ = vz - cos * oldLong;
+  const nextX = sin * oldLong + cos * oldLat + deltaX;
+  const nextZ = cos * oldLong - sin * oldLat + deltaZ;
+  if (!(Math.hypot(nextX, nextZ) > 1e-8)) {
+    if (phys.vehicle) {
+      phys.vehicle.velocityLong = 0;
+      phys.vehicle.velocityLat = 0;
+      phys.vehicle.sideslip = 0;
+    } else {
+      phys.v = 0;
+    }
+    phys.velocityLat = 0;
+    phys.sideslip = 0;
     return;
   }
-  const motionSign = phys.v < 0 ? -1 : 1;
-  const targetHeading = Math.atan2(vx * motionSign, vz * motionSign);
-  phys.heading += clamp(angleDiff(targetHeading, phys.heading), -maxHeadingChange, maxHeadingChange);
-  // The scalar-velocity model cannot retain sideslip. Projecting the resolved
-  // vector onto the bounded new heading sheds, rather than invents, energy.
-  phys.v = vx * Math.sin(phys.heading) + vz * Math.cos(phys.heading);
+  const nextLong = nextX * sin + nextZ * cos;
+  const nextLat = nextX * cos - nextZ * sin;
+  if (phys.vehicle) {
+    phys.vehicle.velocityLong = nextLong;
+    phys.vehicle.velocityLat = nextLat;
+    phys.vehicle.sideslip = Math.atan2(nextLat, Math.max(0.5, Math.abs(nextLong)));
+  } else {
+    phys.v = nextLong;
+  }
+  phys.velocityLat = nextLat;
+  phys.sideslip = Math.atan2(nextLat, Math.max(0.5, Math.abs(nextLong)));
 }
 
 export function contactSideFor(body, nx, nz, bodyIsA) {

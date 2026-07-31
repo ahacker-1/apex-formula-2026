@@ -2,6 +2,14 @@
 // Manual Override boost (replaces DRS), tyre compounds + wear, grip circle.
 import * as THREE from 'three';
 import { CAR_HALF_LENGTH, CAR_HALF_WIDTH } from './contact.js';
+import {
+  bodyToWorldVelocity,
+  createVehicleState,
+  readSurfaceSample,
+  resetVehicleState,
+  setBodyVelocityFromWorld,
+  stepVehicleDynamics,
+} from './vehicleDynamics.js';
 
 export const COMPOUNDS = {
   S: { key: 'S', name: 'SOFT', grip: 1.045, wearRate: 1.6 },
@@ -15,7 +23,6 @@ const CDA_Z = 1.45, CDA_X = 0.92;   // drag area: Z-mode vs X-mode (active aero)
 const CLA_Z = 4.3, CLA_X = 1.5;     // downforce area
 const P_BASE = 585e3;               // ICE + standard MGU-K deploy (W)
 const P_OVERRIDE = 240e3;           // Manual Override extra deploy (W)
-const WHEELBASE = 3.4;
 
 export function wallSupportDistance(relativeHeading) {
   return CAR_HALF_WIDTH * Math.abs(Math.cos(relativeHeading)) +
@@ -30,11 +37,8 @@ function syncSurfaceFlags(car, circuit, sample) {
 }
 
 // ---- thermal / ERS model constants (additive; see CarPhysics fields) ----
-const TRACK_TEMP = 30;            // ambient air/track reference (°C)
 const TYRE_START_T = 70;          // blanket-warmed set on the grid
 const TYRE_FRESH_T = 65;          // fresh set fitted in the pits (out-lap)
-const TYRE_HEAT_K = 1.80;         // °C/s at full working load
-const TYRE_COOL_K = 0.024;        // °C/s per °C above ambient (speed-scaled)
 const TYRE_COLD_T = 80;           // below this the compound is off temperature
 const TYRE_HOT_T = 110;           // above this it starts to grain/overheat
 const TYRE_COLD_LOSS = 0.08;      // up to -8% grip when stone cold
@@ -128,6 +132,61 @@ export class CarPhysics {
     this.offTrackSink = 0;         // 0..1 progressive sink (drag up to +60%)
     this.kerbScrub = 0;            // 0..1 how hard the kerb is scrubbing speed
     this.frontAeroLoss = 0;        // 0..0.06 dirty-air front downforce loss
+
+    // ---- four-corner rigid-body dynamics ----
+    this.vehicle = createVehicleState(opts.vehicle);
+    resetVehicleState(this.vehicle, this._pendingV || 0, TYRE_START_T);
+    this.wheels = this.vehicle.wheels; // stable public references, FL/FR/RL/RR
+    this.velocityLat = 0;
+    this.yawRate = 0;
+    this.sideslip = 0;
+    this.brakeBias = THREE.MathUtils.clamp(opts.brakeBias ?? 0.56, 0.45, 0.68);
+    this.brakeMigration = THREE.MathUtils.clamp(opts.brakeMigration ?? 0.025, -0.08, 0.08);
+    this.diffLock = THREE.MathUtils.clamp(opts.diffLock ?? 0.45, 0, 1);
+    this.engineBraking = THREE.MathUtils.clamp(opts.engineBraking ?? 0.055, 0, 0.16);
+    this.aeroBalance = THREE.MathUtils.clamp(opts.aeroBalance ?? 0.45, 0.36, 0.55);
+    this.rideHeight = THREE.MathUtils.clamp(opts.rideHeight ?? 0.038, 0.012, 0.12);
+    this.surface = { grade: 0, camber: 0, bump: 0, grip: 1, wetness: 0,
+      bumpFL: 0, bumpFR: 0, bumpRL: 0, bumpRR: 0 };
+    this._worldVelocity = { x: 0, z: 0 };
+    this._dynamicsParams = {};
+    this._lastTyreTempAggregate = this.tyreTemp;
+  }
+
+  // `v` remains the longitudinal speed API consumed by AI, HUD and race code.
+  // Assignments from those callers synchronize wheel speeds but do not erase an
+  // already-existing lateral velocity (important during collision resolution).
+  get v() { return this.vehicle ? this.vehicle.velocityLong : (this._pendingV || 0); }
+  set v(value) {
+    const next = Number.isFinite(value) ? value : 0;
+    if (!this.vehicle) { this._pendingV = next; return; }
+    const changed = Math.abs(next - this.vehicle.velocityLong) > 1e-9;
+    this.vehicle.velocityLong = next;
+    if (changed) {
+      for (const wheel of this.vehicle.wheels) wheel.omega = next / wheel.radius;
+    }
+    if (Math.abs(next) < 0.01) {
+      this.vehicle.velocityLat = 0;
+      this.vehicle.yawRate = 0;
+    }
+  }
+  get velocityLat() { return this.vehicle ? this.vehicle.velocityLat : (this._pendingLat || 0); }
+  set velocityLat(value) {
+    const next = Number.isFinite(value) ? value : 0;
+    if (this.vehicle) this.vehicle.velocityLat = next;
+    else this._pendingLat = next;
+  }
+  get yawRate() { return this.vehicle ? this.vehicle.yawRate : (this._pendingYawRate || 0); }
+  set yawRate(value) {
+    const next = Number.isFinite(value) ? value : 0;
+    if (this.vehicle) this.vehicle.yawRate = next;
+    else this._pendingYawRate = next;
+  }
+  get sideslip() { return this.vehicle ? this.vehicle.sideslip : (this._pendingSideslip || 0); }
+  set sideslip(value) {
+    const next = Number.isFinite(value) ? value : 0;
+    if (this.vehicle) this.vehicle.sideslip = next;
+    else this._pendingSideslip = next;
   }
 
   placeAt(pos, heading, idx) {
@@ -135,6 +194,8 @@ export class CarPhysics {
     this.heading = heading;
     this.sampleIdx = idx;
     this.v = 0;
+    resetVehicleState(this.vehicle, 0, this.tyreTemp);
+    this.velocityLat = 0; this.yawRate = 0; this.sideslip = 0;
     this.totalDist = 0;
     // progress = totalDist + distance already covered past S/F; the floor of
     // progress/lapLength changes exactly at S/F crossings (in either direction)
@@ -155,6 +216,12 @@ export class CarPhysics {
     this.wear = 0;
     // a fresh set comes out of the blankets cold — hence the slow out-lap
     this.tyreTemp = TYRE_FRESH_T;
+    for (const wheel of this.wheels) {
+      wheel.surfaceTemp = TYRE_FRESH_T;
+      wheel.carcassTemp = TYRE_FRESH_T;
+      wheel.pressure = wheel.front ? 145 : 132;
+    }
+    this._lastTyreTempAggregate = TYRE_FRESH_T;
   }
 
   get compoundData() { return COMPOUNDS[this.compound]; }
@@ -204,13 +271,32 @@ export class CarPhysics {
       if (em === 0 || em === 1 || em === 2) this.ersMode = em;
     }
 
+    // Optional setup/control hooks. Omitted fields retain the configured value,
+    // so every legacy AI and player input object continues to work unchanged.
+    if (Number.isFinite(input.brakeBias)) this.brakeBias = THREE.MathUtils.clamp(input.brakeBias, 0.45, 0.68);
+    if (Number.isFinite(input.brakeMigration)) this.brakeMigration = THREE.MathUtils.clamp(input.brakeMigration, -0.08, 0.08);
+    if (Number.isFinite(input.diffLock)) this.diffLock = THREE.MathUtils.clamp(input.diffLock, 0, 1);
+    if (Number.isFinite(input.engineBraking)) this.engineBraking = THREE.MathUtils.clamp(input.engineBraking, 0, 0.16);
+    if (Number.isFinite(input.aeroBalance)) this.aeroBalance = THREE.MathUtils.clamp(input.aeroBalance, 0.36, 0.55);
+
+    // A direct legacy tyreTemp assignment is treated as a blanket/setup change
+    // and propagated once into all four thermal states.
+    if (Math.abs(this.tyreTemp - this._lastTyreTempAggregate) > 0.05) {
+      for (const wheel of this.wheels) {
+        wheel.surfaceTemp = this.tyreTemp;
+        wheel.carcassTemp = this.tyreTemp;
+      }
+    }
+    readSurfaceSample(c, this.sampleIdx, this.pos, this.surface);
+
     // ---- active aero (X-mode on straights, Z-mode in corners) ----
-    const xEligible = Math.abs(this.steer) < 0.12 && this.v > 50 && this.throttle > 0.6 && this.brake < 0.05;
+    const speed = Math.hypot(this.vehicle.velocityLong, this.vehicle.velocityLat);
+    const xEligible = Math.abs(this.steer) < 0.12 && speed > 50 && this.throttle > 0.6 && this.brake < 0.05;
     this._xTimer = xEligible ? this._xTimer + dt : 0;
     this.aeroX = this._xTimer > 0.35;
     const cda = (this.aeroX ? CDA_X : CDA_Z) * (1 - 0.28 * this.slipstream);
     const cla = this.aeroX ? CLA_X : CLA_Z;
-    const downF = 0.5 * RHO * cla * this.v * this.v;
+    const downF = 0.5 * RHO * cla * speed * speed;
     const mu = this.muEff();
 
     // ---- gears / rpm ----
@@ -225,34 +311,13 @@ export class CarPhysics {
       if (input.shiftDown && this.gear > 1 && this._shiftCooldown <= 0) { this.gear--; this._shiftCooldown = 0.15; ev.shifted = -1; }
     }
 
-    // ---- lateral dynamics ----
+    // ---- steering and powertrain demand ----
     const dMax = maxSteerAngle(this.v);
     // dirty air robs front downforce first: in corners behind a car the front
     // washes out, so the same steering input yields ~6% less turn-in.
     const cornering = THREE.MathUtils.clamp((Math.abs(this.steer) - 0.12) / 0.18, 0, 1);
     this.frontAeroLoss = 0.06 * THREE.MathUtils.clamp((this.dirtyAir - 0.3) / 0.35, 0, 1) * cornering;
     const delta = this.steer * dMax * (1 - this.frontAeroLoss);
-    const wDes = this.v * Math.tan(delta) / WHEELBASE;
-    const aLatMax = mu * (G + downF / m);
-    const aNeed = Math.abs(wDes * this.v);
-    let w, latUse;
-    if (aNeed <= aLatMax || this.v < 2) {
-      w = wDes;
-      latUse = aLatMax > 0 ? aNeed / aLatMax : 0;
-    } else {
-      w = Math.sign(wDes) * aLatMax / Math.max(this.v, 1);
-      latUse = 1;
-      this.slip = true;
-      const over = Math.min(1.5, aNeed / aLatMax - 1);
-      this.v -= this.v * 0.22 * over * dt;           // understeer scrub
-      this.wear += 0.006 * over * dt * this.compoundData.wearRate;
-    }
-    this.heading += w * dt + this._spinJitter * dt;
-    this._spinJitter *= Math.max(0, 1 - dt * 4);
-
-    // ---- longitudinal ----
-    const gripCircle = Math.sqrt(Math.max(0.06, 1 - latUse * latUse * 0.92));
-    // power
     let pf = THREE.MathUtils.clamp(0.35 + this.rpmFrac * 0.75, 0, 1.05);
     if (this.rpmFrac > 1.0) pf *= 0.55; // limiter
     // team performance scales effective power 94%..103%
@@ -277,18 +342,11 @@ export class CarPhysics {
       power += P_OVERRIDE;
       this.battery = Math.max(0, this.battery - dt * 0.16);
     }
-    let fDrive = this.throttle * power / Math.max(this.v, 5.5);
-    // traction limit (rear axle ~ 62% weight + downforce share)
-    const traction = mu * (m * G * 0.62 + downF * 0.55) * gripCircle;
-    let longUse = traction > 0 ? Math.min(1, fDrive / traction) : 0;
-    if (fDrive > traction) {
-      if (this.assists.tc) fDrive = traction;
-      else {
-        fDrive = traction * 0.55;
-        this.slip = true;
-        this.wear += 0.008 * dt * this.compoundData.wearRate;
-        if (this.gear <= 3 && this.throttle > 0.85) this._spinJitter += (this.random() - 0.5) * 0.35;
-      }
+    let fDrive = this.throttle * power / Math.max(Math.abs(this.v), 5.5);
+    const rearSlip = Math.max(Math.abs(this.wheels[2].slipRatio), Math.abs(this.wheels[3].slipRatio));
+    if (this.assists.tc && rearSlip > 0.11) fDrive *= THREE.MathUtils.clamp(1.7 - rearSlip * 6, 0.18, 1);
+    else if (!this.assists.tc && rearSlip > 0.2 && this.gear <= 3 && this.throttle > 0.85) {
+      this._spinJitter += (this.random() - 0.5) * 0.15;
     }
     // brakes — heat soak fades the discs (brakeTemp updated below)
     this.brakeFade = BRAKE_FADE_MAX *
@@ -297,13 +355,15 @@ export class CarPhysics {
     // harvest mode recovers twice as much energy under braking and on the coast
     const harvestF = this.ersMode === 0 ? 2 : 1;
     if (this.brake > 0 && this.v > 0) {
-      const brakeMax = mu * (m * G + downF) * gripCircle * (1 - this.brakeFade);
+      const brakeMax = mu * (m * G + downF);
       fBrake = this.brake * brakeMax;
+      const lockSlip = Math.min(this.wheels[0].slipRatio, this.wheels[1].slipRatio,
+        this.wheels[2].slipRatio, this.wheels[3].slipRatio);
+      if (this.assists.abs && lockSlip < -0.14) fBrake *= THREE.MathUtils.clamp(1.65 + lockSlip * 5, 0.2, 1);
       if (!this.assists.abs && this.brake > 0.96 && this.v > 12) {
-        fBrake *= 0.72; this.slip = true;
+        this.slip = true;
         this.wear += 0.012 * dt * this.compoundData.wearRate;
       }
-      longUse = Math.max(longUse, brakeMax > 0 ? Math.min(1, fBrake / brakeMax) : 0);
       this.battery = Math.min(1, this.battery + dt * 0.11 * this.brake * harvestF); // harvest
     } else if (this.throttle < 0.3) {
       this.battery = Math.min(1, this.battery + dt * 0.015 * harvestF);
@@ -317,30 +377,67 @@ export class CarPhysics {
       ? (600 + 2000 * Math.min(1, Math.abs(this.v) / 6)) *
         (1 + 0.6 * this.offTrackSink * Math.min(1, Math.abs(this.v) / 14))
       : 0;
-    const fDrag = 0.5 * RHO * cda * this.v * this.v + 180 + 3.5 * this.v + offDrag;
-    const a = (fDrive - fBrake - fDrag * Math.sign(this.v || 1)) / m;
-    this.v += a * dt;
+    const fDrag = 0.5 * RHO * cda * speed * speed + 210 + 3.5 * speed + offDrag;
     this._stepBrakeTemp(dt, fBrake);
-    // reverse (recovery) when holding brake at standstill
-    if (this.v <= 0.15 && this.brake > 0.5 && this.throttle < 0.1 && this.isPlayer) {
-      this.v = Math.max(this.v - 6 * dt, -4);
-    } else if (this.v < 0 && this.brake < 0.3) {
-      this.v = Math.min(this.v + 8 * dt, 0);
-    }
-    if (this.v < 0.02 && this.v > -0.02) this.v = this.v < 0 ? 0 : this.v;
 
-    // tyre temperature: heats with lateral/longitudinal load and slip, sheds
-    // heat with airflow (so it drops down the straights)
-    this._stepTyreTemp(dt, latUse, longUse);
-    // tyre thermal/deg from lateral load
-    this.wear = Math.min(1, this.wear + latUse * latUse * 0.00038 * dt * this.compoundData.wearRate * (0.85 + this.v / 90));
+    // ---- four independent wheel/contact states + rigid body integration ----
+    const dynamicBias = THREE.MathUtils.clamp(this.brakeBias - this.brakeMigration * this.brake, 0.45, 0.68);
+    const engineBrake = this.throttle < 0.12 && this.v > 2
+      ? this.engineBraking * m * G * (1 - this.throttle / 0.12)
+      : 0;
+    const rideFront = this.rideHeight + this.rideBump + this.pitch * 0.55;
+    const rideRear = this.rideHeight + this.rideBump - this.pitch * 0.55;
+    const substeps = Math.max(1, Math.ceil(dt * 60 - 1e-9));
+    const h = dt / substeps;
+    const dyn = this._dynamicsParams;
+    dyn.mass = m;
+    dyn.steerAngle = delta;
+    dyn.driveForce = fDrive;
+    dyn.brakeForce = fBrake;
+    dyn.brakeEffectiveness = 1 - this.brakeFade;
+    dyn.engineBrakeForce = engineBrake;
+    dyn.brakeBias = dynamicBias;
+    dyn.diffLock = this.diffLock;
+    dyn.abs = this.assists.abs;
+    dyn.tc = this.assists.tc;
+    dyn.stabilityAssist = this.assists.abs && this.assists.tc;
+    dyn.downforce = downF;
+    dyn.aeroBalance = this.aeroBalance;
+    dyn.rideHeightFront = rideFront;
+    dyn.rideHeightRear = rideRear;
+    dyn.externalForceLong = -fDrag * Math.sign(this.v || 1);
+    dyn.mu = mu;
+    dyn.surface = this.surface;
+    let dynamics;
+    for (let sub = 0; sub < substeps; sub++) {
+      dynamics = stepVehicleDynamics(this.vehicle, dyn, h);
+      this.heading += (this.vehicle.yawRate + this._spinJitter) * h;
+      bodyToWorldVelocity(this.vehicle, this.heading, this._worldVelocity);
+      this.pos.x += this._worldVelocity.x * h;
+      this.pos.z += this._worldVelocity.z * h;
+    }
+    this._spinJitter *= Math.max(0, 1 - dt * 4);
+    this.velocityLat = this.vehicle.velocityLat;
+    this.yawRate = this.vehicle.yawRate;
+    this.sideslip = this.vehicle.sideslip;
+    this.slip ||= dynamics.slip;
+    const latUse = dynamics.tyreUse;
+    const longUse = Math.max(fDrive, fBrake) / Math.max(1, mu * (m * G + downF));
+    this.tyreTemp = (this.wheels[0].carcassTemp + this.wheels[1].carcassTemp +
+      this.wheels[2].carcassTemp + this.wheels[3].carcassTemp) * 0.25;
+    this._lastTyreTempAggregate = this.tyreTemp;
+    this.tyreGrip = this.tyreTempGrip();
+    this.wear = Math.min(1, this.wear + dynamics.tyreUse * dynamics.tyreUse * 0.00038 * dt *
+      this.compoundData.wearRate * (0.85 + speed / 90));
     // fuel burn
     this.fuel = Math.max(0, this.fuel - Math.abs(this.v) * dt * this.fuelBurnPerMeter);
-
-    // ---- integrate position ----
-    const dir = Math.abs(this.v) > 0.001 ? Math.sign(this.v) : 1;
-    this.pos.x += Math.sin(this.heading) * this.v * dt;
-    this.pos.z += Math.cos(this.heading) * this.v * dt;
+    // Reverse remains the established recovery control (hold brake at rest).
+    if (this.v <= 0.15 && this.brake > 0.5 && this.throttle < 0.1 && this.isPlayer) {
+      this.vehicle.velocityLong = Math.max(this.v - 6 * dt, -4);
+      for (const wheel of this.wheels) wheel.omega = this.vehicle.velocityLong / wheel.radius;
+    } else if (this.v < 0 && this.brake < 0.3) {
+      this.vehicle.velocityLong = Math.min(this.v + 8 * dt, 0);
+    }
 
     // ---- track relation ----
     const prevIdx = this.sampleIdx;
@@ -362,7 +459,7 @@ export class CarPhysics {
       this.v -= this.v * 0.035 * this.kerbScrub * dt;
       this.wear = Math.min(1, this.wear + 0.0006 * dt * this.kerbScrub * this.compoundData.wearRate);
     }
-    this._stepAttitude(dt, v0, w);
+    this._stepAttitude(dt, v0, this.yawRate);
 
     ev.wallHit = this.resolveWallCollision(true);
 
@@ -462,8 +559,9 @@ export class CarPhysics {
     this.lat = c.lateralAt(this.pos, this.sampleIdx);
 
     const oldSign = this.v < 0 ? -1 : 1;
-    const vx = Math.sin(this.heading) * this.v;
-    const vz = Math.cos(this.heading) * this.v;
+    bodyToWorldVelocity(this.vehicle, this.heading, this._worldVelocity);
+    const vx = this._worldVelocity.x;
+    const vz = this._worldVelocity.z;
     const tangentVelocity = vx * s.t.x + vz * s.t.z;
     const normalVelocity = vx * s.n.x + vz * s.n.z;
     const outwardSpeed = Math.max(0, normalVelocity * side);
@@ -478,8 +576,14 @@ export class CarPhysics {
       const normalAfter = -side * separationSpeed;
       const nextVx = s.t.x * tangentAfter + s.n.x * normalAfter;
       const nextVz = s.t.z * tangentAfter + s.n.z * normalAfter;
-      this.v = oldSign * Math.hypot(nextVx, nextVz);
-      this.heading = Math.atan2(nextVx * oldSign, nextVz * oldSign);
+      // Keep a small pre-impact sideslip rather than forcing the velocity vector
+      // onto the body axis. Heading compatibility is retained for old render and
+      // handling callers while the residual lives in the rigid-body state.
+      const retainedBeta = THREE.MathUtils.clamp(this.sideslip || 0, -0.02, 0.02);
+      this.heading = Math.atan2(nextVx * oldSign, nextVz * oldSign) - retainedBeta;
+      setBodyVelocityFromWorld(this.vehicle, this.heading, nextVx, nextVz);
+      this.velocityLat = this.vehicle.velocityLat;
+      this.sideslip = this.vehicle.sideslip;
     }
 
     this.wallScrape = THREE.MathUtils.clamp((Math.abs(tangentVelocity) - 3) / 45, 0, 1) *
@@ -498,26 +602,6 @@ export class CarPhysics {
   }
 
   // ---- additive helpers (all state they touch is new, except tyre wear) ----
-
-  // Tyre carcass temperature. Load (lateral + longitudinal + slip) pushes heat
-  // in; airflow takes it out, so temps sag on the straights and build in the
-  // corners. Overheating past 115 °C also grains the surface (extra wear).
-  _stepTyreTemp(dt, latUse, longUse) {
-    const speed = Math.abs(this.v);
-    // carcass deformation keeps feeding heat in even on a straight, so the
-    // working load never drops to zero at speed
-    const rolling = 0.30 * (speed / 80) * (speed / 80);
-    const load = Math.min(1.6,
-      0.9 * latUse * latUse + 0.5 * longUse * longUse + rolling + (this.slip ? 0.12 : 0));
-    const heat = TYRE_HEAT_K * load * (0.55 + speed / 70);
-    const cool = TYRE_COOL_K * (this.tyreTemp - TRACK_TEMP) * (0.55 + speed / 140);
-    this.tyreTemp = THREE.MathUtils.clamp(this.tyreTemp + (heat - cool) * dt, TRACK_TEMP, 165);
-    if (this.tyreTemp > 115) {
-      const over = Math.min(1, (this.tyreTemp - 115) / 25);
-      this.wear = Math.min(1, this.wear + 0.0004 * over * dt * this.compoundData.wearRate);
-    }
-    this.tyreGrip = this.tyreTempGrip();
-  }
 
   // Brake disc temperature: heats with braking power, cools with airflow.
   _stepBrakeTemp(dt, fBrake) {
