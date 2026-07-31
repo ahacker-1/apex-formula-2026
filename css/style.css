@@ -802,14 +802,13 @@ kbd { padding: 2px 5px; color: #fff; background: #282a33; border: 1px solid #454
 }
 #sim-state-strip {
   position: absolute;
-  top: clamp(62px, 8vh, 86px);
-  left: 50%;
+  top: 54px;
+  right: 16px;
   z-index: 22;
   display: flex;
-  max-width: min(92vw, 760px);
-  transform: translateX(-50%);
+  max-width: min(32vw, 360px);
   flex-wrap: wrap;
-  justify-content: center;
+  justify-content: flex-end;
   gap: 5px;
   pointer-events: none;
 }
@@ -835,6 +834,6 @@ kbd { padding: 2px 5px; color: #fff; background: #282a33; border: 1px solid #454
 #sim-state-strip [data-sim-state="race-control"] { border-color: rgba(255, 206, 70, .68); }
 
 @media (max-width: 700px) {
-  #sim-state-strip { top: 54px; gap: 3px; }
+  #sim-state-strip { top: 88px; right: 8px; max-width: 48vw; gap: 3px; }
   #sim-state-strip span { padding: 3px 6px; font-size: 8px; }
 }

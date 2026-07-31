@@ -5,7 +5,6 @@ import path from 'node:path';
 const PILOT_SEED = 'greenwood-tacn-acceptance-2026';
 
 async function seed(page) {
-  await page.route('**/favicon.ico', route => route.fulfill({ status: 204, body: '' }));
   await page.addInitScript(() => {
     localStorage.clear();
     localStorage.setItem('apexf1_onboarding_v1', '1');
@@ -38,7 +37,6 @@ async function captureEvidence(page, testInfo, name) {
 
 async function openMenu(page) {
   await seed(page);
-  await page.route('**/favicon.ico', route => route.fulfill({ status: 204, body: '' }));
   await page.goto(`/?seed=${encodeURIComponent(PILOT_SEED)}`);
   await expect(page).toHaveTitle(/APEX FORMULA 2026/);
   await expect(page.getByRole('button', { name: /QUICK RACE/ })).toBeVisible();
